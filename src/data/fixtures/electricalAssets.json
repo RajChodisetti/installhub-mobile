@@ -1,0 +1,318 @@
+[
+  {
+    "id": "board_001",
+    "audit_id": "inst_001",
+    "zone_id": "zone_001",
+    "asset_name": "MSB-B1",
+    "display_code": "MSB-B1",
+    "asset_type": "MSB",
+    "electrical_parent_id": null,
+    "electrical_parent_tbc": false,
+    "location_description": "Basement switchroom north wall",
+    "phase": "3P+N",
+    "amperage_rating": "800A",
+    "site_nmi": "NMI40001234567",
+    "photo": "",
+    "extra_photos": [],
+    "meter_present": true,
+    "meters": [
+      {
+        "id": "meter_001",
+        "device_name": "WW A3RM Main",
+        "device_type": "A3RM",
+        "device_id": "A3RM-10021",
+        "classification": "Main supply",
+        "coverage": "Whole board incoming",
+        "ww_prestart": {
+          "site_induction": true,
+          "safe_access": true,
+          "correct_ppe": true,
+          "live_points_aware": true,
+          "can_isolate": true,
+          "additional_hazards": false,
+          "safe_to_proceed": true
+        },
+        "ww_switchboard": {
+          "sb_name": "MSB-B1",
+          "sb_location": "Basement switchroom",
+          "device_serial": "A3RM-10021",
+          "firmware": "2.4.1",
+          "antenna_type": "External",
+          "signal_strength": "High",
+          "notes": ""
+        },
+        "ww_channels": [
+          {
+            "purpose": "MAIN_SUPPLY",
+            "load_type": "Mains Supply",
+            "rogowski_size": "20cm-3000A",
+            "description": "Incoming supply",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SUB_CIRCUIT",
+            "load_type": "General Power",
+            "rogowski_size": "10cm-200A",
+            "description": "Tenant riser A",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SPARE",
+            "load_type": "Not Used",
+            "rogowski_size": "Not Used",
+            "description": "",
+            "ct_ratio": ""
+          }
+        ],
+        "ww_verification": {
+          "voltage_checked": true,
+          "polarity_checked": true,
+          "communications_ok": true,
+          "notes": ""
+        },
+        "ww_commissioning": {
+          "device_online": true,
+          "channels_reporting": true,
+          "labeled": true,
+          "photos_taken": false,
+          "notes": "Pending final photos"
+        },
+        "ww_photos": {
+          "device_installed": "",
+          "switchboard_overview": "",
+          "labeling": "",
+          "extra": []
+        }
+      }
+    ],
+    "sub_circuits_description": "Feeds MSSB-1 and DB-Retail",
+    "comments": "Parent board for basement",
+    "created_at": "2026-07-10T02:00:00.000Z",
+    "updated_at": "2026-07-12T03:00:00.000Z"
+  },
+  {
+    "id": "board_002",
+    "audit_id": "inst_001",
+    "zone_id": "zone_001",
+    "asset_name": "DB-Retail",
+    "display_code": "DB-R1",
+    "asset_type": "DB",
+    "electrical_parent_id": null,
+    "electrical_parent_tbc": true,
+    "location_description": "Retail corridor cupboard",
+    "phase": "3P+N",
+    "amperage_rating": "250A",
+    "site_nmi": "",
+    "photo": "",
+    "extra_photos": [],
+    "meter_present": false,
+    "meters": [],
+    "sub_circuits_description": "",
+    "comments": "Parent TBC — confirm feed from MSB-B1",
+    "created_at": "2026-07-11T02:00:00.000Z",
+    "updated_at": "2026-07-11T02:00:00.000Z"
+  },
+  {
+    "id": "board_003",
+    "audit_id": "inst_001",
+    "zone_id": "zone_002",
+    "asset_name": "HVAC-DB Roof",
+    "display_code": "HVAC-DB-R",
+    "asset_type": "HVAC-DB",
+    "electrical_parent_id": "board_001",
+    "electrical_parent_tbc": false,
+    "location_description": "Roof plant room",
+    "phase": "3P+N",
+    "amperage_rating": "400A",
+    "site_nmi": "",
+    "photo": "",
+    "extra_photos": [],
+    "meter_present": true,
+    "meters": [
+      {
+        "id": "meter_002",
+        "device_name": "WW A6M HVAC",
+        "device_type": "A6M",
+        "device_id": "A6M-55012",
+        "classification": "HVAC",
+        "coverage": "Chiller and AHUs",
+        "ww_prestart": {
+          "site_induction": true,
+          "safe_access": true,
+          "correct_ppe": true,
+          "live_points_aware": true,
+          "can_isolate": false,
+          "additional_hazards": true,
+          "safe_to_proceed": true
+        },
+        "ww_switchboard": {
+          "sb_name": "HVAC-DB Roof",
+          "sb_location": "Roof plant",
+          "device_serial": "A6M-55012",
+          "firmware": "1.9.0",
+          "antenna_type": "Internal",
+          "signal_strength": "Medium",
+          "notes": "Work near live chillers"
+        },
+        "ww_channels": [
+          {
+            "purpose": "MAIN_SUPPLY",
+            "load_type": "HVAC",
+            "rogowski_size": "20cm-3000A",
+            "description": "Board supply",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SUB_CIRCUIT",
+            "load_type": "HVAC",
+            "rogowski_size": "10cm-200A",
+            "description": "Chiller 1",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SUB_CIRCUIT",
+            "load_type": "HVAC",
+            "rogowski_size": "10cm-200A",
+            "description": "AHU-1",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SPARE",
+            "load_type": "Not Used",
+            "rogowski_size": "Not Used",
+            "description": "",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SPARE",
+            "load_type": "Not Used",
+            "rogowski_size": "Not Used",
+            "description": "",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SPARE",
+            "load_type": "Not Used",
+            "rogowski_size": "Not Used",
+            "description": "",
+            "ct_ratio": ""
+          }
+        ],
+        "ww_verification": {
+          "voltage_checked": true,
+          "polarity_checked": true,
+          "communications_ok": false,
+          "notes": "Signal intermittent"
+        },
+        "ww_commissioning": {
+          "device_online": false,
+          "channels_reporting": false,
+          "labeled": true,
+          "photos_taken": false,
+          "notes": ""
+        },
+        "ww_photos": {
+          "device_installed": "",
+          "switchboard_overview": "",
+          "labeling": "",
+          "extra": []
+        }
+      }
+    ],
+    "sub_circuits_description": "",
+    "comments": "",
+    "created_at": "2026-07-12T01:00:00.000Z",
+    "updated_at": "2026-07-12T04:00:00.000Z"
+  },
+  {
+    "id": "board_004",
+    "audit_id": "inst_002",
+    "zone_id": "zone_003",
+    "asset_name": "MSB Warehouse",
+    "display_code": "MSB-W7",
+    "asset_type": "MSB",
+    "electrical_parent_id": null,
+    "electrical_parent_tbc": false,
+    "location_description": "Main switchroom",
+    "phase": "3P+N",
+    "amperage_rating": "1250A",
+    "site_nmi": "NMI40009876543",
+    "photo": "",
+    "extra_photos": [],
+    "meter_present": true,
+    "meters": [
+      {
+        "id": "meter_003",
+        "device_name": "WW A3RM Warehouse",
+        "device_type": "A3RM",
+        "device_id": "A3RM-20044",
+        "classification": "Main supply",
+        "coverage": "Whole site",
+        "ww_prestart": {
+          "site_induction": true,
+          "safe_access": true,
+          "correct_ppe": true,
+          "live_points_aware": true,
+          "can_isolate": true,
+          "additional_hazards": false,
+          "safe_to_proceed": true
+        },
+        "ww_switchboard": {
+          "sb_name": "MSB Warehouse",
+          "sb_location": "Switchroom",
+          "device_serial": "A3RM-20044",
+          "firmware": "2.4.1",
+          "antenna_type": "CSM550 - External High Gain",
+          "signal_strength": "High",
+          "notes": ""
+        },
+        "ww_channels": [
+          {
+            "purpose": "MAIN_SUPPLY",
+            "load_type": "Mains Supply",
+            "rogowski_size": "30cm-3000A",
+            "description": "Incoming",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SUB_CIRCUIT",
+            "load_type": "Lighting",
+            "rogowski_size": "10cm-200A",
+            "description": "High bay lighting",
+            "ct_ratio": ""
+          },
+          {
+            "purpose": "SUB_CIRCUIT",
+            "load_type": "General Power",
+            "rogowski_size": "10cm-333mV",
+            "description": "Dock power",
+            "ct_ratio": ""
+          }
+        ],
+        "ww_verification": {
+          "voltage_checked": true,
+          "polarity_checked": true,
+          "communications_ok": true,
+          "notes": ""
+        },
+        "ww_commissioning": {
+          "device_online": true,
+          "channels_reporting": true,
+          "labeled": true,
+          "photos_taken": true,
+          "notes": "Completed"
+        },
+        "ww_photos": {
+          "device_installed": "",
+          "switchboard_overview": "",
+          "labeling": "",
+          "extra": []
+        }
+      }
+    ],
+    "sub_circuits_description": "Warehouse lighting and dock power",
+    "comments": "",
+    "created_at": "2026-06-22T03:00:00.000Z",
+    "updated_at": "2026-06-24T07:00:00.000Z"
+  }
+]

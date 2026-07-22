@@ -1,0 +1,35 @@
+[
+  {
+    "id": "inst_001",
+    "client_name": "Harbour Retail Group",
+    "site_name": "Pacific Plaza Level B1",
+    "site_address": "120 Harbour St, Sydney NSW 2000",
+    "inspector_name": "Alex Installer",
+    "audit_date": "2026-07-10",
+    "status": "Draft",
+    "created_at": "2026-07-10T01:00:00.000Z",
+    "updated_at": "2026-07-12T04:30:00.000Z"
+  },
+  {
+    "id": "inst_002",
+    "client_name": "Greenfield Logistics",
+    "site_name": "Warehouse 7 Switchroom",
+    "site_address": "88 Industrial Ave, Melbourne VIC 3000",
+    "inspector_name": "Alex Installer",
+    "audit_date": "2026-06-22",
+    "status": "Completed",
+    "created_at": "2026-06-22T02:00:00.000Z",
+    "updated_at": "2026-06-24T08:00:00.000Z"
+  },
+  {
+    "id": "inst_003",
+    "client_name": "Northside Medical",
+    "site_name": "Clinic Main Building",
+    "site_address": "15 Health Rd, Brisbane QLD 4000",
+    "inspector_name": "Sam Field",
+    "audit_date": "2026-07-01",
+    "status": "Draft",
+    "created_at": "2026-07-01T03:00:00.000Z",
+    "updated_at": "2026-07-01T03:00:00.000Z"
+  }
+]

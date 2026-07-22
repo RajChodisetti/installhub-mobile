@@ -1,0 +1,88 @@
+[
+  {
+    "id": "site_001",
+    "audit_id": "inst_001",
+    "zone_id": "zone_001",
+    "asset_name": "Tenant Riser A",
+    "asset_type": "Power Outlet",
+    "electrical_board_id": "board_001",
+    "electrical_board_tbc": false,
+    "location_description": "Riser cupboard east",
+    "location_photo": "",
+    "display_code": "RISER-A",
+    "meter_present": true,
+    "meter_switchboard_id": "board_001",
+    "meter_switchboard_tbc": false,
+    "meter_channels": [
+      { "channel": "2", "description": "Tenant riser A" }
+    ],
+    "comments": "",
+    "extra_photos": [],
+    "created_at": "2026-07-10T03:00:00.000Z",
+    "updated_at": "2026-07-10T03:00:00.000Z"
+  },
+  {
+    "id": "site_002",
+    "audit_id": "inst_001",
+    "zone_id": "zone_002",
+    "asset_name": "Chiller 1",
+    "asset_type": "HVAC",
+    "electrical_board_id": "board_003",
+    "electrical_board_tbc": false,
+    "location_description": "Roof plant pad",
+    "location_photo": "",
+    "display_code": "CH-1",
+    "meter_present": true,
+    "meter_switchboard_id": "board_003",
+    "meter_switchboard_tbc": false,
+    "meter_channels": [
+      { "channel": "2", "description": "Chiller 1" }
+    ],
+    "comments": "",
+    "extra_photos": [],
+    "created_at": "2026-07-12T02:00:00.000Z",
+    "updated_at": "2026-07-12T02:00:00.000Z"
+  },
+  {
+    "id": "site_003",
+    "audit_id": "inst_001",
+    "zone_id": "zone_001",
+    "asset_name": "EV Bay 3",
+    "asset_type": "EV Charger",
+    "electrical_board_id": null,
+    "electrical_board_tbc": true,
+    "location_description": "Carpark EV bay",
+    "location_photo": "",
+    "display_code": "EV-3",
+    "meter_present": false,
+    "meter_switchboard_id": null,
+    "meter_switchboard_tbc": true,
+    "meter_channels": [],
+    "comments": "Board feed TBC",
+    "extra_photos": [],
+    "created_at": "2026-07-12T05:00:00.000Z",
+    "updated_at": "2026-07-12T05:00:00.000Z"
+  },
+  {
+    "id": "site_004",
+    "audit_id": "inst_002",
+    "zone_id": "zone_003",
+    "asset_name": "High Bay Lighting",
+    "asset_type": "Lighting",
+    "electrical_board_id": "board_004",
+    "electrical_board_tbc": false,
+    "location_description": "Warehouse floor",
+    "location_photo": "",
+    "display_code": "LGT-HB",
+    "meter_present": true,
+    "meter_switchboard_id": "board_004",
+    "meter_switchboard_tbc": false,
+    "meter_channels": [
+      { "channel": "2", "description": "High bay lighting" }
+    ],
+    "comments": "",
+    "extra_photos": [],
+    "created_at": "2026-06-22T04:00:00.000Z",
+    "updated_at": "2026-06-22T04:00:00.000Z"
+  }
+]

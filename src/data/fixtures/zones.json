@@ -1,0 +1,38 @@
+[
+  {
+    "id": "zone_001",
+    "audit_id": "inst_001",
+    "zone_name": "Basement Carpark",
+    "zone_description": "MSB and tenant DBs serving retail tenancies",
+    "photos": [],
+    "created_at": "2026-07-10T01:10:00.000Z",
+    "updated_at": "2026-07-10T01:10:00.000Z"
+  },
+  {
+    "id": "zone_002",
+    "audit_id": "inst_001",
+    "zone_name": "Roof Plant",
+    "zone_description": "HVAC and solar switchboards",
+    "photos": [],
+    "created_at": "2026-07-10T01:15:00.000Z",
+    "updated_at": "2026-07-10T01:15:00.000Z"
+  },
+  {
+    "id": "zone_003",
+    "audit_id": "inst_002",
+    "zone_name": "Main Switchroom",
+    "zone_description": "Primary MSB and warehouse lighting DBs",
+    "photos": [],
+    "created_at": "2026-06-22T02:10:00.000Z",
+    "updated_at": "2026-06-22T02:10:00.000Z"
+  },
+  {
+    "id": "zone_004",
+    "audit_id": "inst_003",
+    "zone_name": "Ground Floor",
+    "zone_description": "Clinic distribution",
+    "photos": [],
+    "created_at": "2026-07-01T03:10:00.000Z",
+    "updated_at": "2026-07-01T03:10:00.000Z"
+  }
+]

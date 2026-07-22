@@ -1,25 +1,52 @@
 {
   "expo": {
-    "name": "installhub-mobile",
+    "name": "InstallHub",
     "slug": "installhub-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F7FAF8"
+    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tuvi.installhub",
+      "infoPlist": {
+        "NSCameraUsageDescription": "InstallHub needs camera access to scan device barcodes and capture switchboard and device photos.",
+        "NSPhotoLibraryUsageDescription": "InstallHub needs photo library access to attach site photos."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#F7FAF8",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "package": "com.tuvi.installhub",
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-sharing",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "InstallHub needs camera access to scan device barcodes and capture installation photos.",
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow InstallHub to attach site and device photos."
+        }
+      ]
+    ]
   }
 }
