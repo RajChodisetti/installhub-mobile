@@ -11,8 +11,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
 export function LoginScreen({}: Props) {
   const { login } = useAuth();
   const { colors } = useTheme();
-  const [email, setEmail] = useState('installer@installhub.demo');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -24,7 +24,7 @@ export function LoginScreen({}: Props) {
       <View style={styles.inner}>
         <Text style={[typography.title, { color: colors.primary }]}>InstallHub</Text>
         <Text style={{ color: colors.mutedForeground, marginBottom: spacing.xl, marginTop: 8 }}>
-          Field installation app (demo login)
+          Sign in to InstallHub Cloud Backup
         </Text>
         <Card>
           <TextField
@@ -57,7 +57,7 @@ export function LoginScreen({}: Props) {
             }}
           />
           <Text style={{ color: colors.mutedForeground, marginTop: 12, fontSize: 12 }}>
-            Demo: any email + password123
+            Your work stays available offline after the first successful sign-in.
           </Text>
         </Card>
       </View>

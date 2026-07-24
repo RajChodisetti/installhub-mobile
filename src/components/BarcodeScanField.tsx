@@ -5,6 +5,19 @@ import { useTheme } from '../context/AppProviders';
 import { radii, spacing, typography } from '../theme';
 import { Button, TextField } from './ui';
 
+export type ScanMode = 'barcode' | 'qr';
+
+const ONE_DIMENSIONAL_BARCODE_TYPES = [
+  'code128',
+  'code39',
+  'ean13',
+  'ean8',
+  'upc_a',
+  'upc_e',
+  'codabar',
+  'itf14',
+] as const;
+
 /**
  * Text field + barcode/QR camera scan (Expo Camera).
  * Manual typing always works as fallback.
@@ -14,16 +27,32 @@ export function BarcodeScanField({
   value,
   onChangeText,
   placeholder,
+  modes = ['barcode', 'qr'],
+  editable = true,
 }: {
   label?: string;
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
+  modes?: ScanMode[];
+  editable?: boolean;
 }) {
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+  const includesBarcode = modes.includes('barcode');
+  const includesQr = modes.includes('qr');
+  const scanLabel =
+    includesBarcode && includesQr
+      ? 'Scan barcode / QR'
+      : includesQr
+        ? 'Scan QR code'
+        : 'Scan barcode';
+  const barcodeTypes = [
+    ...(includesQr ? ['qr' as const] : []),
+    ...(includesBarcode ? ONE_DIMENSIONAL_BARCODE_TYPES : []),
+  ];
 
   const openScanner = async () => {
     setScanned(false);
@@ -42,8 +71,10 @@ export function BarcodeScanField({
         onChangeText={onChangeText}
         placeholder={placeholder}
         autoCapitalize="characters"
+        editable={editable}
       />
       <Pressable
+        disabled={!editable}
         onPress={() => void openScanner()}
         style={{
           alignSelf: 'flex-start',
@@ -55,9 +86,12 @@ export function BarcodeScanField({
           borderWidth: 1,
           borderColor: colors.primary,
           backgroundColor: colors.card,
+          opacity: editable ? 1 : 0.55,
         }}
       >
-        <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Scan barcode / QR</Text>
+        <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>
+          {scanLabel}
+        </Text>
       </Pressable>
       {permission && !permission.granted ? (
         <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: -8, marginBottom: spacing.sm }}>
@@ -79,7 +113,7 @@ export function BarcodeScanField({
               backgroundColor: 'rgba(0,0,0,0.55)',
             }}
           >
-            <Text style={[typography.subheading, { color: '#fff' }]}>Scan barcode / QR</Text>
+            <Text style={[typography.subheading, { color: '#fff' }]}>{scanLabel}</Text>
             <Pressable onPress={() => setOpen(false)} hitSlop={12}>
               <Text style={{ color: '#fff', fontWeight: '600' }}>Close</Text>
             </Pressable>
@@ -90,17 +124,7 @@ export function BarcodeScanField({
               style={StyleSheet.absoluteFill}
               facing="back"
               barcodeScannerSettings={{
-                barcodeTypes: [
-                  'qr',
-                  'code128',
-                  'code39',
-                  'ean13',
-                  'ean8',
-                  'upc_a',
-                  'upc_e',
-                  'codabar',
-                  'itf14',
-                ],
+                barcodeTypes,
               }}
               onBarcodeScanned={
                 scanned

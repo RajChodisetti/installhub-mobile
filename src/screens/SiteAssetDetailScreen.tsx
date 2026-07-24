@@ -12,7 +12,7 @@ import type { RootStackParamList } from '../navigation/types';
 type Props = NativeStackScreenProps<RootStackParamList, 'SiteAssetDetail'>;
 
 export function SiteAssetDetailScreen({ navigation, route }: Props) {
-  const { assetId } = route.params;
+  const { assetId, installationId, zoneId } = route.params;
   const { colors } = useTheme();
   const [asset, setAsset] = useState<SiteAsset | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -56,21 +56,37 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
 
       <Button title="Edit asset" style={{ marginTop: spacing.lg }} onPress={() => setEditOpen(true)} />
       <Button
+        title="New Water / Logger Form"
+        variant="secondary"
+        style={{ marginTop: spacing.md }}
+        onPress={() =>
+          navigation.navigate('FormTypePicker', {
+            installationId,
+            zoneId,
+            siteAssetId: assetId,
+          })
+        }
+      />
+      <Button
         title="Delete asset"
         variant="danger"
         style={{ marginTop: spacing.md }}
         onPress={() => {
-          Alert.alert('Delete asset?', undefined, [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Delete',
-              style: 'destructive',
-              onPress: async () => {
-                await siteAssetsRepo.remove(assetId);
-                navigation.goBack();
+          Alert.alert(
+            'Delete asset?',
+            'Forms linked to this site asset and their on-device evidence will also be removed.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  await siteAssetsRepo.remove(assetId);
+                  navigation.goBack();
+                },
               },
-            },
-          ]);
+            ],
+          );
         }}
       />
 

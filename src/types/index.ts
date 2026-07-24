@@ -24,6 +24,90 @@ export type SiteAssetType =
 
 export type MeterDeviceType = 'A3RM' | 'A6M' | 'Other';
 
+export type FormType =
+  | 'ww-installation'
+  | 'a3rm-installation'
+  | 'a6m-installation'
+  | 'comms-fault'
+  | 'ace-switchboard'
+  | 'honeywell-q400'
+  | 'captis-logger'
+  | 'sums-logger';
+
+export type FormStatus = 'Draft' | 'Completed';
+export type FormAnswer = 'yes' | 'no' | 'not_applicable' | '';
+export type FormValue = string | FormAnswer;
+export type CloudUploadStatus = 'pending' | 'uploading' | 'failed' | 'cleared';
+export type ThumbnailDownloadStatus = 'pending' | 'downloading' | 'failed' | 'ready';
+
+export interface CloudUploadQueueItem {
+  id: string;
+  installation_id: string;
+  entity_type: 'zone' | 'electrical_asset' | 'site_asset' | 'form_submission';
+  entity_id: string;
+  field_name: string;
+  local_uri: string;
+  mime_type: string;
+  status: CloudUploadStatus;
+  attempts: number;
+  checksum?: string;
+  session_id?: string;
+  remote_url?: string;
+  last_error?: string;
+  updated_at: string;
+}
+
+export interface CloudSyncState {
+  synced_at_by_installation: Record<string, string>;
+  force_dirty_installation_ids: string[];
+  upload_queue: CloudUploadQueueItem[];
+  thumbnail_queue: ThumbnailDownloadQueueItem[];
+}
+
+export interface ThumbnailDownloadQueueItem {
+  id: string;
+  installation_id: string;
+  remote_uri: string;
+  local_uri?: string;
+  status: ThumbnailDownloadStatus;
+  attempts: number;
+  last_error?: string;
+  updated_at: string;
+}
+
+export interface FormAttachment {
+  id: string;
+  slot: string;
+  uri: string;
+  mime_type: string;
+  caption?: string;
+  captured_at: string;
+}
+
+export interface FormSubmission {
+  id: string;
+  /**
+   * Immutable API identity retained only for an unchanged imported copy.
+   * It lets server-side PDF generation use the original full-resolution
+   * evidence without downloading originals into the mobile app.
+   */
+  import_source_server_id?: string;
+  form_type: FormType;
+  schema_version: number;
+  status: FormStatus;
+  installation_id: string;
+  zone_id?: string;
+  board_id?: string;
+  meter_id?: string;
+  site_asset_id?: string;
+  answers: Record<string, FormValue>;
+  attachments: FormAttachment[];
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  supersedes_id?: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -39,6 +123,22 @@ export interface Installation {
   inspector_name: string;
   audit_date: string;
   status: InstallationStatus;
+  cloud_backup_enabled: boolean;
+  /** A server copy still exists while future automatic backups are disabled. */
+  cloud_backup_retained?: boolean;
+  is_imported_copy?: boolean;
+  import_source_server_id?: string;
+  /**
+   * Import-time tree anchor written by provenance-aware app versions.
+   * Older imported copies without it must be backed up under their local ID.
+   */
+  import_provenance_watermark?: string;
+  /** Stable hash of the exact server tree observed when this cpN copy was imported. */
+  import_source_tree_revision?: string;
+  copy_index?: number;
+  thumbnail_status?: 'pending' | 'ready';
+  thumbnail_total?: number;
+  thumbnail_ready?: number;
   created_at: string;
   updated_at: string;
 }
@@ -175,6 +275,8 @@ export interface AppDataStore {
   zones: Zone[];
   electricalAssets: ElectricalAsset[];
   siteAssets: SiteAsset[];
+  formSubmissions: FormSubmission[];
+  cloudSync: CloudSyncState;
 }
 
 export const BOARD_TYPES: BoardType[] = [

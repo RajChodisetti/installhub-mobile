@@ -204,7 +204,10 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           title="Delete zone"
           variant="danger"
           onPress={() => {
-            Alert.alert('Delete zone?', 'Boards and assets in this zone will be removed.', [
+            Alert.alert(
+              'Delete zone?',
+              'Boards, site assets, linked forms, and form evidence in this zone will be removed from this device. References from other zones will be marked TBC.',
+              [
               { text: 'Cancel', style: 'cancel' },
               {
                 text: 'Delete',
@@ -214,7 +217,8 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
                   navigation.goBack();
                 },
               },
-            ]);
+              ],
+            );
           }}
         />
       </FormModal>

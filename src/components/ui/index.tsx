@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { radii, spacing, typography } from '../../theme';
 import { useTheme } from '../../context/AppProviders';
+import { cachedThumbnailUri } from '../../repositories/cloudSyncRepository';
 
 export function Button({
   title,
@@ -252,7 +253,7 @@ export function PhotoThumbnailGrid({
           onLongPress={() => onRemove?.(uri)}
           style={[styles.photoThumb, { borderColor: colors.border, backgroundColor: colors.muted }]}
         >
-          <Image source={{ uri }} style={styles.photoImage} />
+          <Image source={{ uri: cachedThumbnailUri(uri) ?? uri }} style={styles.photoImage} />
         </Pressable>
       ))}
       {onAdd ? (

@@ -1,12 +1,27 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useColorScheme } from 'react-native';
 import { ColorTokens, ThemeMode, colors } from '../theme';
 import { User } from '../types';
 import { initStore } from '../data/seed';
 import { userRepo } from '../repositories';
+import {
+  loginToCloud,
+  logoutFromCloud,
+  restoreCloudSession,
+  type CloudUser,
+} from '../api/apiClient';
 
 const THEME_KEY = 'installhub.theme';
-const AUTH_KEY = 'installhub.auth';
+
+function localUserFromCloud(user: CloudUser): User {
+  return {
+    id: user.id,
+    email: user.email,
+    full_name: user.fullName || user.email,
+    role: user.role === 'admin' ? 'admin' : 'user',
+  };
+}
 
 interface AuthState {
   user: User | null;
@@ -18,6 +33,7 @@ interface AuthState {
 
 interface ThemeState {
   mode: ThemeMode;
+  resolvedMode: 'light' | 'dark';
   colors: ColorTokens;
   toggleTheme: () => void;
   setMode: (mode: ThemeMode) => Promise<void>;
@@ -27,22 +43,34 @@ const AuthContext = createContext<AuthState | null>(null);
 const ThemeContext = createContext<ThemeState | null>(null);
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
+  const systemColorScheme = useColorScheme();
   const [mode, setModeState] = useState<ThemeMode>('light');
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      await initStore();
-      const [savedTheme, savedAuth] = await Promise.all([
-        AsyncStorage.getItem(THEME_KEY),
-        AsyncStorage.getItem(AUTH_KEY),
-      ]);
-      if (savedTheme === 'dark' || savedTheme === 'light') setModeState(savedTheme);
-      if (savedAuth === '1') {
-        setUser(await userRepo.getCurrent());
+      try {
+        await initStore();
+        const [savedTheme, cloudUser] = await Promise.all([
+          AsyncStorage.getItem(THEME_KEY),
+          restoreCloudSession(),
+        ]);
+        if (
+          savedTheme === 'dark' ||
+          savedTheme === 'light' ||
+          savedTheme === 'system'
+        ) setModeState(savedTheme);
+        if (cloudUser) {
+          const next = localUserFromCloud(cloudUser);
+          await userRepo.updateProfile(next);
+          setUser(next);
+        }
+      } catch {
+        // A server error must not prevent the local app shell from starting.
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     })();
   }, []);
 
@@ -56,19 +84,22 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   }, [mode, setMode]);
 
   const login = useCallback(async (email: string, password: string) => {
-    // Demo auth: any email, password must be "password123"
-    if (!email.trim() || password !== 'password123') {
-      throw new Error('Invalid credentials. Use any email and password123');
-    }
     const current = await userRepo.getCurrent();
-    const next = await userRepo.updateProfile({ email: email.trim() });
-    setUser({ ...current, ...next, email: email.trim() });
-    await AsyncStorage.setItem(AUTH_KEY, '1');
+    const cloudUser = await loginToCloud({
+      email,
+      password,
+      localUserId: current.id,
+      fullName: current.full_name,
+      role: current.role === 'admin' ? 'admin' : 'inspector',
+    });
+    const next = localUserFromCloud(cloudUser);
+    await userRepo.updateProfile(next);
+    setUser(next);
   }, []);
 
   const logout = useCallback(async () => {
     setUser(null);
-    await AsyncStorage.removeItem(AUTH_KEY);
+    await logoutFromCloud();
   }, []);
 
   const authValue = useMemo(
@@ -83,13 +114,20 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   );
 
   const themeValue = useMemo(
-    () => ({
-      mode,
-      colors: colors[mode],
-      toggleTheme,
-      setMode,
-    }),
-    [mode, toggleTheme, setMode],
+    () => {
+      const resolvedMode =
+        mode === 'system'
+          ? systemColorScheme === 'dark' ? 'dark' : 'light'
+          : mode;
+      return {
+        mode,
+        resolvedMode,
+        colors: colors[resolvedMode],
+        toggleTheme,
+        setMode,
+      };
+    },
+    [mode, systemColorScheme, toggleTheme, setMode],
   );
 
   return (

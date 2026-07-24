@@ -6,6 +6,7 @@ import { Button, Card, LoadingState, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { cachedThumbnailUri } from '../repositories/cloudSyncRepository';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PhotoPreview'>;
 
@@ -75,7 +76,7 @@ export function PhotoPreviewScreen({ navigation, route }: Props) {
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
               <View style={{ flex: 1, paddingRight: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {p.uri ? (
-                  <Image source={{ uri: p.uri }} style={styles.thumb} />
+                  <Image source={{ uri: cachedThumbnailUri(p.uri) ?? p.uri }} style={styles.thumb} />
                 ) : (
                   <View style={[styles.thumb, { backgroundColor: colors.muted }]} />
                 )}

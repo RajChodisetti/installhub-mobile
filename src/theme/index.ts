@@ -39,7 +39,7 @@ export const colors = {
   },
 } as const;
 
-export type ThemeMode = 'light' | 'dark';
+export type ThemeMode = 'light' | 'dark' | 'system';
 export type ColorTokens = (typeof colors)['light'] | (typeof colors)['dark'];
 
 export const spacing = {

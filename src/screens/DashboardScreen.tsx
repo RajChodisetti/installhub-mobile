@@ -18,6 +18,7 @@ export function DashboardScreen({ navigation }: Props) {
   const filtered = useMemo(
     () =>
       items.filter((i) =>
+        i.thumbnail_status !== 'pending' &&
         searchMatch(`${i.site_name} ${i.client_name} ${i.site_address} ${i.inspector_name}`, query),
       ),
     [items, query],
@@ -35,6 +36,12 @@ export function DashboardScreen({ navigation }: Props) {
       <Button
         title="Start New Site Installation"
         onPress={() => navigation.navigate('InstallationForm')}
+        style={{ marginBottom: spacing.md }}
+      />
+      <Button
+        title="Browse Cloud Backups"
+        variant="secondary"
+        onPress={() => navigation.navigate('RemoteInstallations')}
         style={{ marginBottom: spacing.md }}
       />
       {loading && !items.length ? (

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ElectricalAsset, Installation, SiteAsset, Zone } from '../types';
+import type { ElectricalAsset, FormSubmission, Installation, SiteAsset, Zone } from '../types';
 import {
   electricalAssetsRepo,
+  formsRepo,
   installationsRepo,
   siteAssetsRepo,
   zonesRepo,
@@ -20,6 +21,30 @@ export function useInstallations() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    void refresh();
+    return subscribeStore(() => {
+      void refresh();
+    });
+  }, [refresh]);
+
+  return { items, loading, refresh };
+}
+
+export function useForms(installationId?: string) {
+  const [items, setItems] = useState<FormSubmission[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!installationId) return;
+    setLoading(true);
+    try {
+      setItems(await formsRepo.listByInstallation(installationId));
+    } finally {
+      setLoading(false);
+    }
+  }, [installationId]);
 
   useEffect(() => {
     void refresh();

@@ -12,6 +12,25 @@ export type RootStackParamList = {
   InstallationReport: { installationId: string };
   ClientReport: { installationId: string };
   PhotoPreview: { installationId: string };
+  FormsList: { installationId: string };
+  FormTypePicker: {
+    installationId: string;
+    zoneId?: string;
+    boardId?: string;
+    meterId?: string;
+    siteAssetId?: string;
+  };
+  FormEditor: { formId: string };
+  RemoteInstallations: undefined;
+  UserManagement: undefined;
+  UserEditor: { userId?: string };
+  ChangePassword: undefined;
+  Diagnostics: undefined;
+  InstallationAccess: { installationId: string };
+  CloudStorage: {
+    installationId: string;
+    serverInstallationId: string;
+  };
 };
 
 export type MainTabParamList = {

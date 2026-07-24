@@ -1,6 +1,9 @@
 import { registerRootComponent } from 'expo';
 
 import App from './App';
+import { registerCloudBackupTask } from './src/services/backgroundSync';
+
+void registerCloudBackupTask().catch(() => {});
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);
 // It also ensures that whether you load the app in Expo Go or in a native build,

@@ -1,5 +1,7 @@
 import type {
   ElectricalAsset,
+  FormSubmission,
+  FormType,
   Installation,
   Meter,
   SiteAsset,
@@ -8,13 +10,38 @@ import type {
 } from '../types';
 import { createId, nowIso } from '../utils';
 import { getStore, initStore, persistStore, resetStore, updateStore } from '../data/seed';
+import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
+import {
+  applyLocalDeletionPlan,
+  planLocalDeletion,
+  type LocalDeletionTarget,
+} from './deletionIntegrity';
+
+export * from './cloudSyncRepository';
+export * from './deletionIntegrity';
+export * from './remoteInstallationsRepository';
 
 export interface InstallationsRepository {
   list(): Promise<Installation[]>;
   getById(id: string): Promise<Installation | null>;
-  create(input: Omit<Installation, 'id' | 'created_at' | 'updated_at' | 'status'> & { status?: Installation['status'] }): Promise<Installation>;
+  create(input: Omit<
+    Installation,
+    | 'id'
+    | 'created_at'
+    | 'updated_at'
+    | 'status'
+    | 'cloud_backup_enabled'
+    | 'cloud_backup_retained'
+    | 'is_imported_copy'
+    | 'import_source_server_id'
+    | 'copy_index'
+    | 'thumbnail_status'
+    | 'thumbnail_total'
+    | 'thumbnail_ready'
+  > & { status?: Installation['status']; cloud_backup_enabled?: boolean }): Promise<Installation>;
   update(id: string, patch: Partial<Installation>): Promise<Installation>;
   remove(id: string): Promise<void>;
+  setCloudBackupEnabled(id: string, enabled: boolean): Promise<Installation>;
 }
 
 export interface ZonesRepository {
@@ -56,6 +83,54 @@ export interface UserRepository {
   updateProfile(patch: Partial<User>): Promise<User>;
 }
 
+export interface FormsRepository {
+  listByInstallation(installationId: string): Promise<FormSubmission[]>;
+  getById(id: string): Promise<FormSubmission | null>;
+  create(input: {
+    form_type: FormType;
+    schema_version: number;
+    installation_id: string;
+    zone_id?: string;
+    board_id?: string;
+    meter_id?: string;
+    site_asset_id?: string;
+    answers?: FormSubmission['answers'];
+  }): Promise<FormSubmission>;
+  updateDraft(
+    id: string,
+    patch: Pick<FormSubmission, 'answers' | 'attachments'>,
+  ): Promise<FormSubmission>;
+  complete(id: string): Promise<FormSubmission>;
+  cloneAmendment(id: string): Promise<FormSubmission>;
+  removeDraft(id: string): Promise<void>;
+}
+
+async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void> {
+  await initStore();
+  const currentPlan = planLocalDeletion(getStore(), target);
+  if (!currentPlan) return;
+  if (
+    target.kind === 'form_draft' &&
+    currentPlan.formIds.some((id) => id !== target.id)
+  ) {
+    throw new Error(
+      'This draft cannot be deleted while a later amendment refers to it.',
+    );
+  }
+
+  let effects: ReturnType<typeof applyLocalDeletionPlan> | null = null;
+  await updateStore((store) => {
+    const plan = planLocalDeletion(store, target);
+    if (!plan) return;
+    effects = applyLocalDeletionPlan(store, plan, nowIso());
+  });
+  if (!effects) return;
+  const { cleanupDeletedTreeStorage } = await import(
+    '../services/deletionStorageCleanup'
+  );
+  cleanupDeletedTreeStorage(effects);
+}
+
 export const installationsRepo: InstallationsRepository = {
   async list() {
     await initStore();
@@ -70,6 +145,7 @@ export const installationsRepo: InstallationsRepository = {
       ...input,
       id: createId('inst'),
       status: input.status ?? 'Draft',
+      cloud_backup_enabled: input.cloud_backup_enabled ?? false,
       created_at: nowIso(),
       updated_at: nowIso(),
     };
@@ -89,11 +165,12 @@ export const installationsRepo: InstallationsRepository = {
     return updated!;
   },
   async remove(id) {
-    await updateStore((s) => {
-      s.installations = s.installations.filter((i) => i.id !== id);
-      s.zones = s.zones.filter((z) => z.audit_id !== id);
-      s.electricalAssets = s.electricalAssets.filter((e) => e.audit_id !== id);
-      s.siteAssets = s.siteAssets.filter((a) => a.audit_id !== id);
+    await removeLocalTreeTarget({ kind: 'installation', id });
+  },
+  async setCloudBackupEnabled(id, enabled) {
+    return this.update(id, {
+      cloud_backup_enabled: enabled,
+      ...(enabled ? { cloud_backup_retained: false } : {}),
     });
   },
 };
@@ -131,11 +208,7 @@ export const zonesRepo: ZonesRepository = {
     return updated!;
   },
   async remove(id) {
-    await updateStore((s) => {
-      s.zones = s.zones.filter((z) => z.id !== id);
-      s.electricalAssets = s.electricalAssets.filter((e) => e.zone_id !== id);
-      s.siteAssets = s.siteAssets.filter((a) => a.zone_id !== id);
-    });
+    await removeLocalTreeTarget({ kind: 'zone', id });
   },
 };
 
@@ -186,9 +259,7 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     return updated!;
   },
   async remove(id) {
-    await updateStore((s) => {
-      s.electricalAssets = s.electricalAssets.filter((e) => e.id !== id);
-    });
+    await removeLocalTreeTarget({ kind: 'electrical_asset', id });
   },
 };
 
@@ -231,9 +302,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     return updated!;
   },
   async remove(id) {
-    await updateStore((s) => {
-      s.siteAssets = s.siteAssets.filter((a) => a.id !== id);
-    });
+    await removeLocalTreeTarget({ kind: 'site_asset', id });
   },
 };
 
@@ -252,9 +321,113 @@ export const userRepo: UserRepository = {
   },
 };
 
+export const formsRepo: FormsRepository = {
+  async listByInstallation(installationId) {
+    await initStore();
+    return getStore()
+      .formSubmissions.filter((form) => form.installation_id === installationId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  },
+  async getById(id) {
+    await initStore();
+    return getStore().formSubmissions.find((form) => form.id === id) ?? null;
+  },
+  async create(input) {
+    const timestamp = nowIso();
+    const record: FormSubmission = {
+      id: createId('form'),
+      form_type: input.form_type,
+      schema_version: input.schema_version,
+      status: 'Draft',
+      installation_id: input.installation_id,
+      zone_id: input.zone_id,
+      board_id: input.board_id,
+      meter_id: input.meter_id,
+      site_asset_id: input.site_asset_id,
+      answers: input.answers ?? {},
+      attachments: [],
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    await updateStore((store) => {
+      store.formSubmissions.unshift(record);
+    });
+    return record;
+  },
+  async updateDraft(id, patch) {
+    let updated: FormSubmission | null = null;
+    await updateStore((store) => {
+      const index = store.formSubmissions.findIndex((form) => form.id === id);
+      if (index < 0) throw new Error('Form submission not found');
+      if (store.formSubmissions[index].status === 'Completed') {
+        throw new Error('Completed forms are read-only. Create an amendment instead.');
+      }
+      updated = {
+        ...store.formSubmissions[index],
+        ...patch,
+        id,
+        import_source_server_id: undefined,
+        updated_at: nowIso(),
+      };
+      store.formSubmissions[index] = updated;
+    });
+    return updated!;
+  },
+  async complete(id) {
+    let updated: FormSubmission | null = null;
+    await updateStore((store) => {
+      const index = store.formSubmissions.findIndex((form) => form.id === id);
+      if (index < 0) throw new Error('Form submission not found');
+      const timestamp = nowIso();
+      updated = {
+        ...store.formSubmissions[index],
+        status: 'Completed',
+        completed_at: timestamp,
+        updated_at: timestamp,
+      };
+      store.formSubmissions[index] = updated;
+    });
+    return updated!;
+  },
+  async cloneAmendment(id) {
+    const original = await this.getById(id);
+    if (!original) throw new Error('Form submission not found');
+    const timestamp = nowIso();
+    const clone: FormSubmission = {
+      ...original,
+      id: createId('form'),
+      import_source_server_id: undefined,
+      schema_version: FORM_DEFINITION_BY_TYPE[original.form_type].schemaVersion,
+      status: 'Draft',
+      attachments: original.attachments.map((item) => ({ ...item })),
+      created_at: timestamp,
+      updated_at: timestamp,
+      completed_at: undefined,
+      supersedes_id: original.id,
+    };
+    await updateStore((store) => {
+      store.formSubmissions.unshift(clone);
+    });
+    return clone;
+  },
+  async removeDraft(id) {
+    const form = await this.getById(id);
+    if (form?.status === 'Completed') {
+      throw new Error('Completed forms cannot be deleted');
+    }
+    await removeLocalTreeTarget({ kind: 'form_draft', id });
+  },
+};
+
 export async function resetDemoData() {
+  await initStore();
+  const forms = [...getStore().formSubmissions];
   await resetStore();
   await persistStore();
+  const { deleteFormsLocalFiles } = await import(
+    '../services/formStorageCleanup'
+  );
+  deleteFormsLocalFiles(forms);
 }
 
 /**

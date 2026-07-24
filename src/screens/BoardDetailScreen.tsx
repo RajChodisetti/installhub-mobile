@@ -51,16 +51,9 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.lg, flexWrap: 'wrap' }}>
         <Button title="Edit board" variant="secondary" onPress={() => setEditOpen(true)} />
         <Button
-          title="Add A3RM"
+          title="New Installation Form"
           onPress={() =>
-            navigation.navigate('MeterForm', { boardId, deviceType: 'A3RM' })
-          }
-        />
-        <Button
-          title="Add A6M"
-          variant="secondary"
-          onPress={() =>
-            navigation.navigate('MeterForm', { boardId, deviceType: 'A6M' })
+            navigation.navigate('FormTypePicker', { installationId, zoneId, boardId })
           }
         />
       </View>
@@ -76,7 +69,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               {m.device_type} · {m.device_id || 'no serial'}
             </Text>
             <Button
-              title="Edit Wattwatcher form"
+              title="Edit legacy meter summary"
               variant="ghost"
               style={{ marginTop: 10 }}
               onPress={() =>
@@ -84,6 +77,19 @@ export function BoardDetailScreen({ navigation, route }: Props) {
                   boardId,
                   meterId: m.id,
                   deviceType: m.device_type,
+                })
+              }
+            />
+            <Button
+              title="Start Comms Fault"
+              variant="secondary"
+              style={{ marginTop: 8 }}
+              onPress={() =>
+                navigation.navigate('FormTypePicker', {
+                  installationId,
+                  zoneId,
+                  boardId,
+                  meterId: m.id,
                 })
               }
             />
@@ -96,17 +102,21 @@ export function BoardDetailScreen({ navigation, route }: Props) {
         variant="danger"
         style={{ marginTop: spacing.xl }}
         onPress={() => {
-          Alert.alert('Delete board?', undefined, [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Delete',
-              style: 'destructive',
-              onPress: async () => {
-                await electricalAssetsRepo.remove(boardId);
-                navigation.goBack();
+          Alert.alert(
+            'Delete board?',
+            'Forms linked to this board or its meters will also be removed from this device. Other board and site-asset links will be marked TBC.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  await electricalAssetsRepo.remove(boardId);
+                  navigation.goBack();
+                },
               },
-            },
-          ]);
+            ],
+          );
         }}
       />
 

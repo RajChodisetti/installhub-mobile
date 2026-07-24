@@ -3,13 +3,18 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProviders, useTheme } from './src/context/AppProviders';
 import { RootNavigator } from './src/navigation/RootNavigator';
+import { SyncStatusProvider } from './src/services/SyncStatusContext';
+import { SyncStatusBanner } from './src/components/SyncStatusBanner';
 
 function AppShell() {
-  const { mode } = useTheme();
+  const { resolvedMode } = useTheme();
   return (
     <>
-      <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
-      <RootNavigator />
+      <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
+      <SyncStatusProvider>
+        <RootNavigator />
+        <SyncStatusBanner />
+      </SyncStatusProvider>
     </>
   );
 }

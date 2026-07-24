@@ -20,6 +20,16 @@ import { MeteringTableScreen } from '../screens/MeteringTableScreen';
 import { InstallationReportScreen } from '../screens/InstallationReportScreen';
 import { ClientReportScreen } from '../screens/ClientReportScreen';
 import { PhotoPreviewScreen } from '../screens/PhotoPreviewScreen';
+import { FormsListScreen } from '../screens/FormsListScreen';
+import { FormTypePickerScreen } from '../screens/FormTypePickerScreen';
+import { FormEditorScreen } from '../screens/FormEditorScreen';
+import { RemoteInstallationsScreen } from '../screens/RemoteInstallationsScreen';
+import { UserManagementScreen } from '../screens/UserManagementScreen';
+import { UserEditorScreen } from '../screens/UserEditorScreen';
+import { ChangePasswordScreen } from '../screens/ChangePasswordScreen';
+import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
+import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
+import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabParamList>();
@@ -57,16 +67,16 @@ function MainTabs() {
 
 export function RootNavigator() {
   const { isAuthenticated, isLoading } = useAuth();
-  const { colors, mode } = useTheme();
+  const { colors, resolvedMode } = useTheme();
 
   if (isLoading) {
     return <LoadingState />;
   }
 
   const navTheme = {
-    ...(mode === 'dark' ? DarkTheme : DefaultTheme),
+    ...(resolvedMode === 'dark' ? DarkTheme : DefaultTheme),
     colors: {
-      ...(mode === 'dark' ? DarkTheme.colors : DefaultTheme.colors),
+      ...(resolvedMode === 'dark' ? DarkTheme.colors : DefaultTheme.colors),
       primary: colors.primary,
       background: colors.background,
       card: colors.card,
@@ -101,6 +111,16 @@ export function RootNavigator() {
             <Stack.Screen name="InstallationReport" component={InstallationReportScreen} options={{ title: 'Report' }} />
             <Stack.Screen name="ClientReport" component={ClientReportScreen} options={{ title: 'Client Report' }} />
             <Stack.Screen name="PhotoPreview" component={PhotoPreviewScreen} options={{ title: 'Photos' }} />
+            <Stack.Screen name="FormsList" component={FormsListScreen} options={{ title: 'Field Forms' }} />
+            <Stack.Screen name="FormTypePicker" component={FormTypePickerScreen} options={{ title: 'New Form' }} />
+            <Stack.Screen name="FormEditor" component={FormEditorScreen} options={{ title: 'Field Form' }} />
+            <Stack.Screen name="RemoteInstallations" component={RemoteInstallationsScreen} options={{ title: 'Cloud Backups' }} />
+            <Stack.Screen name="UserManagement" component={UserManagementScreen} options={{ title: 'User Management' }} />
+            <Stack.Screen name="UserEditor" component={UserEditorScreen} options={{ title: 'User' }} />
+            <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ title: 'Change Password' }} />
+            <Stack.Screen name="Diagnostics" component={DiagnosticsScreen} options={{ title: 'Diagnostics' }} />
+            <Stack.Screen name="InstallationAccess" component={InstallationAccessScreen} options={{ title: 'Cloud Access' }} />
+            <Stack.Screen name="CloudStorage" component={CloudStorageScreen} options={{ title: 'Cloud Files & History' }} />
           </>
         )}
       </Stack.Navigator>

@@ -263,8 +263,8 @@ const LOAD_TYPES = [
   'Other',
   'Not Used',
 ];
-const ROGOWSKI = ['3000A-9cm', '3000A-20cm', '3000A-29cm', 'Not Used'];
-const CT_RATINGS = ['CT-60A', 'CT-120A', 'CT-200A', 'CT-400A', 'CT-600A', 'Not Used'];
+const ROGOWSKI = ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'];
+const CT_RATINGS = ['60A', '120A', '200A', '400A', '600A'];
 
 export function WattwatcherForm({
   deviceType,
@@ -375,7 +375,7 @@ export function WattwatcherForm({
               {isA6M ? (
                 <SelectChips
                   label="CT rating"
-                  value={(ch.ct_ratio as string) || 'Not Used'}
+                  value={(ch.ct_ratio as string) || ''}
                   options={withLegacyOption(CT_RATINGS, ch.ct_ratio)}
                   onChange={(v) => setChannel(idx, 'ct_ratio', v)}
                 />
@@ -383,7 +383,7 @@ export function WattwatcherForm({
               {isA3RM ? (
                 <SelectChips
                   label="Rogowski coil"
-                  value={(ch.rogowski_size as string) || 'Not Used'}
+                  value={(ch.rogowski_size as string) || ''}
                   options={withLegacyOption(ROGOWSKI, ch.rogowski_size)}
                   onChange={(v) => setChannel(idx, 'rogowski_size', v)}
                 />

@@ -6,17 +6,13 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#F7FAF8"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tuvi.installhub",
       "infoPlist": {
         "NSCameraUsageDescription": "InstallHub needs camera access to scan device barcodes and capture switchboard and device photos.",
-        "NSPhotoLibraryUsageDescription": "InstallHub needs photo library access to attach site photos."
+        "NSPhotoLibraryUsageDescription": "InstallHub needs photo library access to attach site photos.",
+        "NSLocationWhenInUseUsageDescription": "InstallHub uses your location to record installation coordinates on field forms."
       }
     },
     "android": {
@@ -46,7 +42,25 @@
         {
           "photosPermission": "Allow InstallHub to attach site and device photos."
         }
-      ]
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow InstallHub to record installation coordinates on field forms."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#F7FAF8"
+        }
+      ],
+      "expo-asset",
+      "expo-secure-store",
+      "expo-background-task"
     ]
   }
 }
