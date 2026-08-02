@@ -144,9 +144,11 @@ const LEGACY_SITE_ALIASES: Record<string, SiteAssetTypeCode> = {
   VEHICLEHOIST: 'VEHICLE_HOIST',
   VEHICLEHOISTS: 'VEHICLE_HOIST',
   FORKLIFT: 'FORKLIFT',
+  FORKLIFTCHARGER: 'FORKLIFT',
   EXHAUSTFANSYSTEM: 'EXHAUST_FAN_SYSTEM',
   EXHAUSTFANSSYSTEM: 'EXHAUST_FAN_SYSTEM',
   POWEROUTLET: 'POWER_OUTLET',
+  GENERALPOWER: 'POWER_OUTLET',
   HOTWATER: 'HEATER_GEYSER',
   HEATERGEYSER: 'HEATER_GEYSER',
   OTHER: 'OTHER',
@@ -276,15 +278,22 @@ function legacyChannelToCanonical(
   const ordinal = Number.isSafeInteger(channel.ordinal) && (channel.ordinal ?? 0) > 0
     ? channel.ordinal!
     : index + 1;
-  const loadTypeCode = channel.load_type
+  const purpose = channel.purpose === 'MAIN_SUPPLY'
+    || channel.purpose === 'SUB_CIRCUIT'
+    || channel.purpose === 'SPARE'
+    ? channel.purpose
+    : channel.load_type === 'Mains Supply'
+      ? 'MAIN_SUPPLY'
+      : channel.load_type === 'Not Used'
+        ? 'SPARE'
+        : 'SUB_CIRCUIT';
+  const loadTypeCode = purpose === 'SUB_CIRCUIT' && channel.load_type
     ? siteAssetTypeCode(channel.load_type as SiteAssetType)
     : undefined;
   return {
     id: channel.id?.trim() || `${meterId}:${ordinal}`,
     ordinal,
-    purpose: channel.purpose === 'MAIN_SUPPLY' || channel.purpose === 'SPARE'
-      ? channel.purpose
-      : 'SUB_CIRCUIT',
+    purpose,
     phaseLabel: channel.phase_label,
     capabilities: channel.capabilities,
     loadTypeCode,

@@ -93,6 +93,36 @@ test('legacy normalization is idempotent and preserves arbitrary custom meter ch
   assert.equal(JSON.stringify(store), once);
 });
 
+test('legacy meter load labels map to canonical codes only for sub-circuits', () => {
+  const store = storeFixture();
+  store.electricalAssets[0]!.meters[0]!.ww_channels = [
+    { load_type: 'Mains Supply', rogowski_size: '3000A - 9cm' },
+    { load_type: 'Not Used' },
+    { purpose: 'SUB_CIRCUIT', load_type: 'Lighting', ct_ratio: '120A' },
+    { purpose: 'SUB_CIRCUIT', load_type: 'General Power', ct_ratio: '120A' },
+    { purpose: 'SUB_CIRCUIT', load_type: 'Forklift Charger', ct_ratio: '120A' },
+    { purpose: 'SUB_CIRCUIT', load_type: 'Refrigeration', ct_ratio: '120A' },
+  ];
+
+  normalizeCanonicalStore(store);
+
+  assert.deepEqual(
+    store.meterDevices[0]!.channels.map((channel) => ({
+      purpose: channel.purpose,
+      loadTypeCode: channel.loadTypeCode ?? null,
+      customLoadTypeName: channel.customLoadTypeName ?? null,
+    })),
+    [
+      { purpose: 'MAIN_SUPPLY', loadTypeCode: null, customLoadTypeName: null },
+      { purpose: 'SPARE', loadTypeCode: null, customLoadTypeName: null },
+      { purpose: 'SUB_CIRCUIT', loadTypeCode: 'LIGHTING', customLoadTypeName: null },
+      { purpose: 'SUB_CIRCUIT', loadTypeCode: 'POWER_OUTLET', customLoadTypeName: null },
+      { purpose: 'SUB_CIRCUIT', loadTypeCode: 'FORKLIFT', customLoadTypeName: null },
+      { purpose: 'SUB_CIRCUIT', loadTypeCode: 'OTHER', customLoadTypeName: 'Refrigeration' },
+    ],
+  );
+});
+
 test('legacy normalization preserves a non-empty historical site code and fills only a missing one', () => {
   const historical = storeFixture();
   historical.installations[0]!.site_code = 'Legacy Site Code / 2024';
