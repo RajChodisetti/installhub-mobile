@@ -88,6 +88,42 @@ export interface MeterChannel {
   direction?: MeasurementDirection;
 }
 
+export interface MeterCommissioningData {
+  classification?: string | null;
+  coverage?: string | null;
+  prestart?: {
+    siteInduction?: boolean;
+    safeAccess?: boolean;
+    correctPpe?: boolean;
+    livePointsAware?: boolean;
+    canIsolate?: boolean;
+    additionalHazards?: boolean;
+    safeToProceed?: boolean;
+  };
+  switchboard?: {
+    name?: string | null;
+    location?: string | null;
+    deviceSerial?: string | null;
+    firmware?: string | null;
+    antennaType?: string | null;
+    signalStrength?: string | null;
+    notes?: string | null;
+  };
+  verification?: {
+    voltageChecked?: boolean;
+    polarityChecked?: boolean;
+    communicationsOk?: boolean;
+    notes?: string | null;
+  };
+  commissioning?: {
+    deviceOnline?: boolean;
+    channelsReporting?: boolean;
+    labeled?: boolean;
+    photosTaken?: boolean;
+    notes?: string | null;
+  };
+}
+
 export interface MeterDevice {
   id: string;
   installationId: string;
@@ -100,6 +136,7 @@ export interface MeterDevice {
   serialNumber: string;
   displayName: DisplayCode;
   channels: MeterChannel[];
+  commissioningData?: MeterCommissioningData;
   wwPhotos?: {
     deviceInstalled?: string;
     switchboardOverview?: string;

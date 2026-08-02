@@ -602,6 +602,19 @@ export async function importRemoteInstallationAsCopy(
         : 'OTHER';
     const rawFamilyText = text(meter, 'deviceFamily', 'device_family');
     const photos = objectRecord(meter, 'wwPhotos', 'ww_photos');
+    const commissioningData = objectRecord(meter, 'commissioningData', 'commissioning_data');
+    const prestart = commissioningData
+      ? objectRecord(commissioningData, 'prestart')
+      : undefined;
+    const switchboard = commissioningData
+      ? objectRecord(commissioningData, 'switchboard')
+      : undefined;
+    const verification = commissioningData
+      ? objectRecord(commissioningData, 'verification')
+      : undefined;
+    const commissioning = commissioningData
+      ? objectRecord(commissioningData, 'commissioning')
+      : undefined;
     return {
       id: meterIds.get(remoteMeterId)!,
       installationId,
@@ -617,6 +630,41 @@ export async function importRemoteInstallationAsCopy(
       deviceNumber: optionalText(meter, 'deviceNumber', 'device_number'),
       serialNumber: text(meter, 'serialNumber', 'serial_number'),
       displayName,
+      commissioningData: commissioningData ? {
+        classification: optionalText(commissioningData, 'classification') ?? null,
+        coverage: optionalText(commissioningData, 'coverage') ?? null,
+        prestart: prestart ? {
+          siteInduction: bool(prestart, 'siteInduction'),
+          safeAccess: bool(prestart, 'safeAccess'),
+          correctPpe: bool(prestart, 'correctPpe'),
+          livePointsAware: bool(prestart, 'livePointsAware'),
+          canIsolate: bool(prestart, 'canIsolate'),
+          additionalHazards: bool(prestart, 'additionalHazards'),
+          safeToProceed: bool(prestart, 'safeToProceed'),
+        } : undefined,
+        switchboard: switchboard ? {
+          name: optionalText(switchboard, 'name') ?? null,
+          location: optionalText(switchboard, 'location') ?? null,
+          deviceSerial: optionalText(switchboard, 'deviceSerial') ?? null,
+          firmware: optionalText(switchboard, 'firmware') ?? null,
+          antennaType: optionalText(switchboard, 'antennaType') ?? null,
+          signalStrength: optionalText(switchboard, 'signalStrength') ?? null,
+          notes: optionalText(switchboard, 'notes') ?? null,
+        } : undefined,
+        verification: verification ? {
+          voltageChecked: bool(verification, 'voltageChecked'),
+          polarityChecked: bool(verification, 'polarityChecked'),
+          communicationsOk: bool(verification, 'communicationsOk'),
+          notes: optionalText(verification, 'notes') ?? null,
+        } : undefined,
+        commissioning: commissioning ? {
+          deviceOnline: bool(commissioning, 'deviceOnline'),
+          channelsReporting: bool(commissioning, 'channelsReporting'),
+          labeled: bool(commissioning, 'labeled'),
+          photosTaken: bool(commissioning, 'photosTaken'),
+          notes: optionalText(commissioning, 'notes') ?? null,
+        } : undefined,
+      } : undefined,
       channels: array<Record<string, unknown>>(meter, 'channels').map((channel, index) => {
         const rawPurposeText = text(channel, 'purpose');
         const purposeText = canonicalV2 ? rawPurposeText : rawPurposeText.toUpperCase();

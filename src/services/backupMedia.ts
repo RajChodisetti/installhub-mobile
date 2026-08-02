@@ -432,6 +432,7 @@ function wireMeterDevice(
         target: channel.target ?? null,
         direction: channel.direction ?? null,
       })),
+    commissioningData: meter.commissioningData,
     wwPhotos: meter.wwPhotos
       ? {
           deviceInstalled: remote(

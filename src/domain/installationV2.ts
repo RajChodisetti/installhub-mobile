@@ -330,6 +330,41 @@ export function meterDeviceFromLegacy(
     // the readiness engine asks the installer to declare capabilities.
     channels: channels.map((channel, index) =>
       legacyChannelToCanonical(meter.id, channel, index)),
+    commissioningData: {
+      classification: meter.classification ?? null,
+      coverage: meter.coverage ?? null,
+      prestart: meter.ww_prestart ? {
+        siteInduction: meter.ww_prestart.site_induction,
+        safeAccess: meter.ww_prestart.safe_access,
+        correctPpe: meter.ww_prestart.correct_ppe,
+        livePointsAware: meter.ww_prestart.live_points_aware,
+        canIsolate: meter.ww_prestart.can_isolate,
+        additionalHazards: meter.ww_prestart.additional_hazards,
+        safeToProceed: meter.ww_prestart.safe_to_proceed,
+      } : undefined,
+      switchboard: meter.ww_switchboard ? {
+        name: meter.ww_switchboard.sb_name ?? null,
+        location: meter.ww_switchboard.sb_location ?? null,
+        deviceSerial: meter.ww_switchboard.device_serial ?? null,
+        firmware: meter.ww_switchboard.firmware ?? null,
+        antennaType: meter.ww_switchboard.antenna_type ?? null,
+        signalStrength: meter.ww_switchboard.signal_strength ?? null,
+        notes: meter.ww_switchboard.notes ?? null,
+      } : undefined,
+      verification: meter.ww_verification ? {
+        voltageChecked: meter.ww_verification.voltage_checked,
+        polarityChecked: meter.ww_verification.polarity_checked,
+        communicationsOk: meter.ww_verification.communications_ok,
+        notes: meter.ww_verification.notes ?? null,
+      } : undefined,
+      commissioning: meter.ww_commissioning ? {
+        deviceOnline: meter.ww_commissioning.device_online,
+        channelsReporting: meter.ww_commissioning.channels_reporting,
+        labeled: meter.ww_commissioning.labeled,
+        photosTaken: meter.ww_commissioning.photos_taken,
+        notes: meter.ww_commissioning.notes ?? null,
+      } : undefined,
+    },
     wwPhotos: meter.ww_photos
       ? {
           deviceInstalled: meter.ww_photos.device_installed,
@@ -343,6 +378,7 @@ export function meterDeviceFromLegacy(
 }
 
 function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter {
+  const commissioning = device.commissioningData;
   return {
     ...(existing ?? {
       id: device.id,
@@ -356,6 +392,32 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
     device_number: device.deviceNumber,
     custom_manufacturer_name: device.customManufacturerName,
     custom_model_name: device.customModelName,
+    ...(commissioning ? {
+      classification: commissioning.classification ?? undefined,
+      coverage: commissioning.coverage ?? undefined,
+      ww_prestart: commissioning.prestart ? {
+        site_induction: commissioning.prestart.siteInduction,
+        safe_access: commissioning.prestart.safeAccess,
+        correct_ppe: commissioning.prestart.correctPpe,
+        live_points_aware: commissioning.prestart.livePointsAware,
+        can_isolate: commissioning.prestart.canIsolate,
+        additional_hazards: commissioning.prestart.additionalHazards,
+        safe_to_proceed: commissioning.prestart.safeToProceed,
+      } : undefined,
+      ww_verification: commissioning.verification ? {
+        voltage_checked: commissioning.verification.voltageChecked,
+        polarity_checked: commissioning.verification.polarityChecked,
+        communications_ok: commissioning.verification.communicationsOk,
+        notes: commissioning.verification.notes ?? undefined,
+      } : undefined,
+      ww_commissioning: commissioning.commissioning ? {
+        device_online: commissioning.commissioning.deviceOnline,
+        channels_reporting: commissioning.commissioning.channelsReporting,
+        labeled: commissioning.commissioning.labeled,
+        photos_taken: commissioning.commissioning.photosTaken,
+        notes: commissioning.commissioning.notes ?? undefined,
+      } : undefined,
+    } : {}),
     ww_channels: [...device.channels]
       .sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id))
       .map((channel) => ({
@@ -383,7 +445,15 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
       : undefined,
     ww_switchboard: {
       ...(existing?.ww_switchboard ?? {}),
-      notes: device.notes,
+      ...(commissioning?.switchboard ? {
+        sb_name: commissioning.switchboard.name ?? undefined,
+        sb_location: commissioning.switchboard.location ?? undefined,
+        device_serial: commissioning.switchboard.deviceSerial ?? undefined,
+        firmware: commissioning.switchboard.firmware ?? undefined,
+        antenna_type: commissioning.switchboard.antennaType ?? undefined,
+        signal_strength: commissioning.switchboard.signalStrength ?? undefined,
+        notes: commissioning.switchboard.notes ?? undefined,
+      } : { notes: device.notes }),
     },
   };
 }

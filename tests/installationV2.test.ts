@@ -93,6 +93,86 @@ test('legacy normalization is idempotent and preserves arbitrary custom meter ch
   assert.equal(JSON.stringify(store), once);
 });
 
+test('meter commissioning metadata survives legacy-to-canonical-to-legacy normalization', () => {
+  const store = storeFixture();
+  const meter = store.electricalAssets[0]!.meters[0]!;
+  meter.classification = 'Electricity meter';
+  meter.coverage = 'Main switchboard incoming supply';
+  meter.ww_prestart = {
+    site_induction: true,
+    safe_access: true,
+    correct_ppe: true,
+    live_points_aware: true,
+    can_isolate: true,
+    additional_hazards: false,
+    safe_to_proceed: true,
+  };
+  meter.ww_switchboard = {
+    sb_name: 'Main Switchboard',
+    sb_location: 'Plant room north wall',
+    firmware: 'QA',
+    antenna_type: 'Internal',
+    signal_strength: 'Verified',
+  };
+  meter.ww_verification = {
+    voltage_checked: true,
+    polarity_checked: true,
+    communications_ok: true,
+    notes: 'Three-phase mapping verified',
+  };
+  meter.ww_commissioning = {
+    device_online: true,
+    channels_reporting: true,
+    labeled: true,
+    photos_taken: false,
+    notes: 'Commissioned in QA',
+  };
+
+  normalizeCanonicalStore(store);
+
+  assert.deepEqual(store.meterDevices[0]!.commissioningData, {
+    classification: 'Electricity meter',
+    coverage: 'Main switchboard incoming supply',
+    prestart: {
+      siteInduction: true,
+      safeAccess: true,
+      correctPpe: true,
+      livePointsAware: true,
+      canIsolate: true,
+      additionalHazards: false,
+      safeToProceed: true,
+    },
+    switchboard: {
+      name: 'Main Switchboard',
+      location: 'Plant room north wall',
+      deviceSerial: null,
+      firmware: 'QA',
+      antennaType: 'Internal',
+      signalStrength: 'Verified',
+      notes: null,
+    },
+    verification: {
+      voltageChecked: true,
+      polarityChecked: true,
+      communicationsOk: true,
+      notes: 'Three-phase mapping verified',
+    },
+    commissioning: {
+      deviceOnline: true,
+      channelsReporting: true,
+      labeled: true,
+      photosTaken: false,
+      notes: 'Commissioned in QA',
+    },
+  });
+  const projected = store.electricalAssets[0]!.meters[0]!;
+  assert.equal(projected.classification, 'Electricity meter');
+  assert.equal(projected.ww_prestart?.safe_to_proceed, true);
+  assert.equal(projected.ww_switchboard?.sb_location, 'Plant room north wall');
+  assert.equal(projected.ww_verification?.communications_ok, true);
+  assert.equal(projected.ww_commissioning?.channels_reporting, true);
+});
+
 test('legacy meter load labels map to canonical codes only for sub-circuits', () => {
   const store = storeFixture();
   store.electricalAssets[0]!.meters[0]!.ww_channels = [

@@ -54,6 +54,29 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
       upload_queue: [], thumbnail_queue: [],
     },
   } satisfies AppDataStore);
+  store.meterDevices.push({
+    id: 'meter',
+    installationId: 'installation',
+    installedOnBoardId: 'board',
+    deviceFamily: 'WATTWATCHERS',
+    deviceModel: 'A3RM',
+    serialNumber: 'SERIAL-1',
+    displayName: {
+      value: 'GS-A3RM-001', generatedValue: 'GS-A3RM-001',
+      isOverridden: false, ruleVersion: 1,
+    },
+    channels: [1, 2, 3].map((ordinal) => ({
+      id: `meter:${ordinal}`, ordinal, purpose: 'SPARE' as const,
+    })),
+    commissioningData: {
+      classification: 'Electricity meter',
+      coverage: 'Main incoming supply',
+      prestart: { safeAccess: true, safeToProceed: true },
+      verification: { voltageChecked: true, communicationsOk: true },
+      commissioning: { deviceOnline: true, channelsReporting: true },
+    },
+  });
+  store.electricalAssets[0]!.meter_present = true;
   const backupTree: InstallationBackupTree = {
     treeSchemaVersion: 2,
     baseTreeRevision: 3,
@@ -89,4 +112,11 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     kind: 'BOARD', boardId: 'board',
   });
   assert.deepEqual(wire.siteAssets[0]?.meteringState, { kind: 'UNMETERED' });
+  assert.deepEqual(wire.meterDevices[0]?.commissioningData, {
+    classification: 'Electricity meter',
+    coverage: 'Main incoming supply',
+    prestart: { safeAccess: true, safeToProceed: true },
+    verification: { voltageChecked: true, communicationsOk: true },
+    commissioning: { deviceOnline: true, channelsReporting: true },
+  });
 });
