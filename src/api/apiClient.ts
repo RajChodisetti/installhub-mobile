@@ -596,6 +596,7 @@ export async function logoutFromCloud(): Promise<void> {
 
 export interface PhotoIdentity {
   installationId: string;
+  baseTreeRevision: number;
   entityType: string;
   entityId: string;
   fieldName: string;
@@ -717,7 +718,7 @@ export const apiClient = {
   ),
 
   checkPhoto: (identity: PhotoIdentity & { checksum: string }) =>
-    request<{ exists: boolean; remoteUrl?: string }>(
+    request<{ exists: boolean; remoteUrl?: string; treeRevision?: number }>(
       'POST',
       '/v1/installhub/sync/check-photo',
       identity,
@@ -735,6 +736,7 @@ export const apiClient = {
       uploadUrl: string | null;
       alreadyExists: boolean;
       remoteUrl?: string;
+      treeRevision?: number;
     }>('POST', '/v1/installhub/sync/create-upload-session', input),
 
   uploadPhoto: async (

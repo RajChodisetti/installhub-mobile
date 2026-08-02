@@ -21,7 +21,11 @@ import { enqueueThumbnailDownloads } from './cloudSyncRepository';
 import { runThumbnailDownloadWorker } from '../services/thumbnailCache';
 import { remoteInstallationTreeRevision } from '../services/remoteInstallationRevision';
 import { copyName, nextCopyIndex } from './copyNaming';
-import { boardTypeCode, siteAssetTypeCode } from '../domain/installationV2';
+import {
+  boardTypeCode,
+  installationSiteCodeForNewCopy,
+  siteAssetTypeCode,
+} from '../domain/installationV2';
 import { validRecordVersionNumber } from '../services/reportVersioning';
 import {
   assertRemoteInstallationIdentity,
@@ -398,10 +402,12 @@ export async function importRemoteInstallationAsCopy(
   const photoUris = collectRemotePhotoUris(tree, canonicalV2);
   const now = nowIso();
 
+  const copiedSiteName = copyName(text(source, 'siteName', 'site_name'), copyIndex);
+  const sourceSiteCode = optionalText(source, 'siteCode', 'site_code');
   const installation: Installation = {
     id: installationId,
     client_name: text(source, 'clientName', 'client_name'),
-    site_name: copyName(text(source, 'siteName', 'site_name'), copyIndex),
+    site_name: copiedSiteName,
     site_address: text(source, 'siteAddress', 'site_address'),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     audit_date: text(source, 'auditDate', 'audit_date'),
@@ -410,7 +416,7 @@ export async function importRemoteInstallationAsCopy(
     tree_schema_version: 2,
     tree_revision: 0,
     external_key: `local:${installationId}`,
-    site_code: optionalText(source, 'siteCode', 'site_code'),
+    site_code: installationSiteCodeForNewCopy(sourceSiteCode, copiedSiteName),
     timezone: optionalText(source, 'timezone'),
     legacy_completed_unpinned: text(source, 'status') === 'Completed',
     cloud_backup_enabled: false,

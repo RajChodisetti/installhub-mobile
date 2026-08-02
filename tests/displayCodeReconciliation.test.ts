@@ -21,6 +21,7 @@ function fixture(): AppDataStore {
       id: 'installation', client_name: 'Client', site_name: 'Site', site_address: 'Address',
       inspector_name: 'Field', audit_date: '2026-08-01', status: 'Draft',
       tree_schema_version: 2, tree_revision: 4, cloud_backup_enabled: true,
+      external_key: 'local:installation',
       created_at: timestamp, updated_at: timestamp,
     }],
     gridSupplies: [{ id: 'grid', installationId: 'installation', name: 'Grid', isDefault: true }],
@@ -61,7 +62,11 @@ function remoteTree(assetValue = 'CUSTOM-LOAD'): RemoteInstallationTree {
   return {
     treeSchemaVersion: 2,
     treeRevision: 5,
-    installation: { id: 'installation', treeRevision: 5 },
+    installation: {
+      id: 'installation',
+      externalKey: 'ih_server-canonical-installation',
+      treeRevision: 5,
+    },
     gridSupplies: [{ id: 'grid' }],
     zones: [],
     electricalAssets: [{
@@ -105,6 +110,34 @@ test('exact canonical tree finalizes generated board and meter codes while prese
   assert.equal(store.meterDevices[0]!.displayName.provisional, false);
   assert.equal(store.siteAssets[0]!.display_code, 'CUSTOM-LOAD');
   assert.equal(store.siteAssets[0]!.display_code_meta?.isOverridden, true);
+  assert.equal(store.installations[0]!.external_key, 'ih_server-canonical-installation');
+  assert.equal(store.installations[0]!.server_tree_revision, 5);
+});
+
+test('canonical identity and accepted retry revision converge in one mutation', () => {
+  const store = fixture();
+  store.installations[0]!.external_key = 'ih_source-imported-installation';
+  store.installations[0]!.is_imported_copy = true;
+  store.installations[0]!.import_source_server_id = 'source-installation';
+  store.installations[0]!.server_tree_revision = undefined;
+
+  mergeResolvedDisplayCodes(store, 'installation', remoteTree(), 5);
+
+  assert.equal(store.installations[0]!.external_key, 'ih_server-canonical-installation');
+  assert.equal(store.installations[0]!.server_tree_revision, 5);
+});
+
+test('legacy imported-copy revision-first crash converges only at the exact accepted revision', () => {
+  const store = fixture();
+  store.installations[0]!.external_key = 'ih_source-imported-installation';
+  store.installations[0]!.is_imported_copy = true;
+  store.installations[0]!.import_source_server_id = 'source-installation';
+  store.installations[0]!.server_tree_revision = 5;
+
+  mergeResolvedDisplayCodes(store, 'installation', remoteTree(), 5);
+
+  assert.equal(store.installations[0]!.external_key, 'ih_server-canonical-installation');
+  assert.equal(store.installations[0]!.server_tree_revision, 5);
 });
 
 test('override conflict and revision-only trees fail atomically', () => {
@@ -119,6 +152,58 @@ test('override conflict and revision-only trees fail atomically', () => {
     () => mergeResolvedDisplayCodes(store, 'installation', { ...remoteTree(), meterDevices: undefined }, 5),
     /omitted meter devices/,
   );
+});
+
+test('canonical identity reconciliation rejects provisional or mismatched server identities atomically', () => {
+  for (const installation of [
+    { id: 'installation', externalKey: 'local:installation', treeRevision: 5 },
+    { id: 'installation', externalKey: ' LOCAL:installation ', treeRevision: 5 },
+    { id: 'different-installation', externalKey: 'ih_server-canonical-installation', treeRevision: 5 },
+  ]) {
+    const store = fixture();
+    const before = JSON.stringify(store);
+    assert.throws(
+      () => mergeResolvedDisplayCodes(store, 'installation', {
+        ...remoteTree(),
+        installation,
+      }, 5),
+      /installation identity|external key/,
+    );
+    assert.equal(JSON.stringify(store), before);
+  }
+
+  const store = fixture();
+  store.installations[0]!.external_key = 'ih_original-canonical-installation';
+  const before = JSON.stringify(store);
+  assert.throws(
+    () => mergeResolvedDisplayCodes(store, 'installation', {
+      ...remoteTree(),
+      installation: {
+        id: 'installation',
+        externalKey: 'ih_different-canonical-installation',
+        treeRevision: 5,
+      },
+    }, 5),
+    /replace the installation external key/,
+  );
+  assert.equal(JSON.stringify(store), before);
+
+  const pinnedImportedCopy = fixture();
+  pinnedImportedCopy.installations[0]!.external_key = 'ih_source-imported-installation';
+  pinnedImportedCopy.installations[0]!.is_imported_copy = true;
+  pinnedImportedCopy.installations[0]!.import_source_server_id = 'source-installation';
+  pinnedImportedCopy.installations[0]!.server_tree_revision = 4;
+  const pinnedBefore = JSON.stringify(pinnedImportedCopy);
+  assert.throws(
+    () => mergeResolvedDisplayCodes(
+      pinnedImportedCopy,
+      'installation',
+      remoteTree(),
+      5,
+    ),
+    /replace the installation external key/,
+  );
+  assert.equal(JSON.stringify(pinnedImportedCopy), pinnedBefore);
 });
 
 test('server-confirmed generated codes never rename after later metadata changes', () => {

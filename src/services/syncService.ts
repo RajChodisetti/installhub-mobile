@@ -3,11 +3,17 @@ import { sha256 } from 'js-sha256';
 import { apiClient, ApiError, AuthError, NetworkError } from '../api/apiClient';
 import {
   getInstallationBackupTree,
+  getInstallationSyncMetadata,
   getNextUpload,
+  listPendingCompleteBackupAttempts,
   listInstallationsNeedingBackup,
   listUploadQueue,
-  markInstallationBackedUp,
+  finishCompleteBackupAttempt,
+  discardCompleteBackupAttempt,
+  getPendingCompleteBackupAttempt,
   markInstallationBackupConflict,
+  prepareCompleteBackupAttempt,
+  recordAcceptedCompleteBackupAttempt,
   recordInstallationServerTreeRevision,
   reconcileBackupMediaQueue,
   resetInterruptedUploads,
@@ -15,12 +21,24 @@ import {
 } from '../repositories/cloudSyncRepository';
 import { installationsRepo } from '../repositories';
 import type { CloudUploadQueueItem } from '../types';
+import type { RemoteInstallationTree } from '../api/apiClient';
 import { buildBackupPayload, discoverBackupMedia } from './backupMedia';
+import {
+  CompleteBackupConflictError,
+  confirmCompleteBackupAttempt,
+  type CompleteBackupConfirmationDependencies,
+} from './completeBackupConfirmation';
 import { reconcileResolvedDisplayCodes } from './displayCodeReconciliation';
 import {
   recordBackupPendingAge,
   recordSyncDiagnostic,
 } from './operationalDiagnostics';
+import { confirmedUploadTreeRevision } from './uploadConfirmationRevision';
+import {
+  isDefinitivelyUnconfirmedUploadConfirmationError,
+  recoverUploadConfirmation,
+} from './uploadConfirmationRecovery';
+import { createSingleFlightProgressRunner } from './singleFlightProgress';
 
 export type SyncProgress = {
   phase: 'idle' | 'preparing' | 'pushing' | 'uploading' | 'done' | 'error' | 'offline';
@@ -54,6 +72,16 @@ async function markUploadComplete(
   });
 }
 
+async function applyDuplicateUploadRevision(
+  installationId: string,
+  treeRevision: unknown,
+): Promise<void> {
+  await recordInstallationServerTreeRevision(
+    installationId,
+    confirmedUploadTreeRevision(treeRevision),
+  );
+}
+
 async function processUpload(row: CloudUploadQueueItem): Promise<void> {
   const file = new File(row.local_uri);
   if (!file.exists) {
@@ -67,8 +95,18 @@ async function processUpload(row: CloudUploadQueueItem): Promise<void> {
 
   const bytes = bytesFromBase64(await file.base64());
   const checksum = sha256(bytes);
+  const syncMetadata = await getInstallationSyncMetadata(row.installation_id);
+  const baseTreeRevision = syncMetadata.serverTreeRevision;
+  if (
+    !Number.isSafeInteger(baseTreeRevision)
+    || baseTreeRevision === undefined
+    || baseTreeRevision < 0
+  ) {
+    throw new Error('Canonical server revision is required before evidence upload.');
+  }
   const identity = {
     installationId: row.installation_id,
+    baseTreeRevision,
     entityType: row.entity_type,
     entityId: row.entity_id,
     fieldName: row.field_name,
@@ -84,6 +122,7 @@ async function processUpload(row: CloudUploadQueueItem): Promise<void> {
   try {
     const duplicate = await apiClient.checkPhoto({ ...identity, checksum });
     if (duplicate.exists && duplicate.remoteUrl) {
+      await applyDuplicateUploadRevision(row.installation_id, duplicate.treeRevision);
       await markUploadComplete(row, checksum, duplicate.remoteUrl);
       return;
     }
@@ -95,6 +134,7 @@ async function processUpload(row: CloudUploadQueueItem): Promise<void> {
       fileSizeBytes: file.size ?? bytes.byteLength,
     });
     if (session.alreadyExists && session.remoteUrl) {
+      await applyDuplicateUploadRevision(row.installation_id, session.treeRevision);
       await markUploadComplete(row, checksum, session.remoteUrl);
       return;
     }
@@ -131,7 +171,7 @@ async function fetchAndMergeCanonicalTree(
   installationId: string,
   expectedTreeRevision: number,
   replaceRecordedChanges: boolean,
-): Promise<void> {
+): Promise<RemoteInstallationTree> {
   const response = await apiClient.pull('1970-01-01T00:00:00.000Z', installationId);
   const tree = response.installations.find(
     (item) => String(item.installation.id ?? '') === installationId,
@@ -143,35 +183,60 @@ async function fetchAndMergeCanonicalTree(
     expectedTreeRevision,
     replaceRecordedChanges,
   );
+  return tree;
 }
 
-export async function runCloudBackup(
+const completeBackupConfirmationDependencies: CompleteBackupConfirmationDependencies = {
+  getInstallationBackupTree,
+  push: (payload) => apiClient.push(payload),
+  recordAccepted: recordAcceptedCompleteBackupAttempt,
+  fetchAndMerge: fetchAndMergeCanonicalTree,
+  applyServerState: (installationId, patch) =>
+    installationsRepo.applyServerState(installationId, patch),
+  finish: finishCompleteBackupAttempt,
+};
+
+async function executeCloudBackup(
   onProgress: (progress: SyncProgress) => void = () => {},
 ): Promise<SyncProgress> {
   const syncStartedAt = Date.now();
-  await resetInterruptedUploads();
-  const trees = await listInstallationsNeedingBackup();
   let uploaded = 0;
   let total = 0;
   let activeInstallationId: string | undefined;
 
-  if (!trees.length) {
-    const done: SyncProgress = {
-      phase: 'done',
-      uploaded: 0,
-      total: 0,
-      failedCount: 0,
-    };
-    await recordSyncDiagnostic({
-      outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
-      latencyMs: Date.now() - syncStartedAt,
-    });
-    onProgress(done);
-    return done;
-  }
-
   try {
-    for (const originalTree of trees) {
+    await resetInterruptedUploads();
+    // Recovery is independent of the current backup opt-in and dirty flags:
+    // once a final request may have committed, it must be reconciled first.
+    for (const attempt of await listPendingCompleteBackupAttempts()) {
+      activeInstallationId = attempt.installation_id;
+      onProgress({
+        phase: 'pushing',
+        installationId: activeInstallationId,
+        uploaded,
+        total,
+        failedCount: 0,
+      });
+      await confirmCompleteBackupAttempt(attempt, completeBackupConfirmationDependencies);
+    }
+
+    const trees = await listInstallationsNeedingBackup();
+    if (!trees.length) {
+      const done: SyncProgress = {
+        phase: 'done',
+        uploaded,
+        total,
+        failedCount: 0,
+      };
+      await recordSyncDiagnostic({
+        outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
+        latencyMs: Date.now() - syncStartedAt,
+      });
+      onProgress(done);
+      return done;
+    }
+
+    for (let originalTree of trees) {
       const installationId = originalTree.installation.id;
       activeInstallationId = installationId;
       const pendingSince = Date.parse(originalTree.watermark);
@@ -193,6 +258,29 @@ export async function runCloudBackup(
       let queue = await listUploadQueue(installationId);
       total += queue.filter((item) => item.status !== 'cleared').length;
 
+      // A prior confirm may have committed even if its response was lost or
+      // the app was killed. Replay the bound session before metadata so its
+      // exact CAS revision is recovered instead of immediately conflicting.
+      for (const row of queue) {
+        if (await recoverUploadConfirmation(row, {
+          confirm: (sessionId, checksum) => apiClient.confirmUpload(sessionId, checksum),
+          recordRevision: recordInstallationServerTreeRevision,
+          markComplete: markUploadComplete,
+          resetUnconfirmed: (item) => updateUploadQueueItem(item.id, {
+            status: 'pending',
+            session_id: undefined,
+            last_error: undefined,
+          }),
+          isProvenUnconfirmed: isDefinitivelyUnconfirmedUploadConfirmationError,
+        })) uploaded += 1;
+      }
+      queue = await listUploadQueue(installationId);
+      const refreshedAfterConfirmation = await getInstallationBackupTree(installationId);
+      if (!refreshedAfterConfirmation) {
+        throw new Error('Installation disappeared during upload confirmation recovery.');
+      }
+      originalTree = refreshedAfterConfirmation;
+
       onProgress({
         phase: 'pushing',
         installationId,
@@ -203,10 +291,10 @@ export async function runCloudBackup(
       const metadataResult = await apiClient.push(
         buildBackupPayload(originalTree, queue, 'metadata'),
       );
-      await recordInstallationServerTreeRevision(
-        installationId,
-        metadataResult.treeRevision,
-      );
+      // The confirmation pull commits server identity, generated codes, and
+      // the accepted CAS revision atomically. A revision-only write here can
+      // strand an imported copy if the pull is interrupted.
+      await fetchAndMergeCanonicalTree(installationId, metadataResult.treeRevision, true);
       await installationsRepo.applyServerState(installationId, {
         status: originalTree.installation.status,
         // A reopened Draft may still carry its last immutable version for
@@ -215,7 +303,6 @@ export async function runCloudBackup(
           originalTree.installation.record_version_number,
         backup_conflict: { kind: 'NONE' },
       });
-      await fetchAndMergeCanonicalTree(installationId, metadataResult.treeRevision, true);
 
       let next = await getNextUpload(installationId);
       while (next) {
@@ -245,26 +332,17 @@ export async function runCloudBackup(
         total,
         failedCount: 0,
       });
-      const completeResult = await apiClient.push(
-        buildBackupPayload(latestTree, queue, 'complete'),
-      );
-      await recordInstallationServerTreeRevision(
+      const completeAttempt = await prepareCompleteBackupAttempt(
         installationId,
-        completeResult.treeRevision,
+        buildBackupPayload(latestTree, queue, 'complete'),
+        latestTree.watermark,
+        latestTree.installation.status,
+        latestTree.installation.tree_revision ?? 0,
       );
-      // A push response only proves a revision was accepted. Fetch and merge
-      // the exact canonical tree before finalizing provisional generated codes
-      // or advancing the local backup watermark.
-      await fetchAndMergeCanonicalTree(installationId, completeResult.treeRevision, false);
-      await installationsRepo.applyServerState(installationId, {
-        status: latestTree.installation.status,
-        record_version_number: completeResult.recordVersionNumber ??
-          latestTree.installation.record_version_number,
-        backup_conflict: { kind: 'NONE' },
-      });
-      const reconciledTree = await getInstallationBackupTree(installationId);
-      if (!reconciledTree) throw new Error('Reconciled installation tree is unavailable.');
-      await markInstallationBackedUp(installationId, reconciledTree.watermark);
+      await confirmCompleteBackupAttempt(
+        completeAttempt,
+        completeBackupConfirmationDependencies,
+      );
     }
 
     const done: SyncProgress = {
@@ -284,6 +362,7 @@ export async function runCloudBackup(
     const conflict = Boolean(
       activeInstallationId &&
       ((error instanceof ApiError && error.status === 409) ||
+        error instanceof CompleteBackupConflictError ||
         /display-code conflict|duplicate or empty display codes/i.test(errorMessage))
     );
     if (conflict && activeInstallationId) {
@@ -292,6 +371,13 @@ export async function runCloudBackup(
         activeInstallationId,
         Number.isFinite(remoteRevision) ? remoteRevision : undefined,
       );
+      // A definitive conflict proves this exact final attempt can no longer
+      // become the current server snapshot. Retire only that compare-matched
+      // marker while preserving the conflict and dirty local tree for review.
+      const pendingAttempt = await getPendingCompleteBackupAttempt(activeInstallationId);
+      if (pendingAttempt) {
+        await discardCompleteBackupAttempt(activeInstallationId, pendingAttempt.id);
+      }
     }
     const failedCount = (await listUploadQueue())
       .filter((item) => item.status === 'failed').length;
@@ -317,3 +403,9 @@ export async function runCloudBackup(
     return progress;
   }
 }
+
+// Foreground, app-resume, interval, store-debounce, and OS background callers
+// all share this one process-wide operation and receive the same progress.
+export const runCloudBackup = createSingleFlightProgressRunner<SyncProgress, SyncProgress>(
+  executeCloudBackup,
+);

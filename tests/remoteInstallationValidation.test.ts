@@ -90,6 +90,18 @@ test('canonical v2 import validation accepts a fully referenced direct-Grid tree
   );
 });
 
+test('canonical v2 import preserves a non-empty authoritative historical site code', () => {
+  const historical = canonicalTree();
+  historical.installation.siteCode = 'Legacy Site Code / 2024';
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(historical));
+
+  historical.installation.siteCode = '   ';
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(historical),
+    /installation site code is missing or invalid/,
+  );
+});
+
 test('canonical v2 import accepts server compatibility display strings only with exact metadata', () => {
   const compatibilityTree = canonicalTree();
   for (const entity of [

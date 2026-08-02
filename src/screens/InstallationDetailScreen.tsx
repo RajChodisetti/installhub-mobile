@@ -17,7 +17,10 @@ import {
   apiClient,
   cloudConnectionErrorMessage,
 } from '../api/apiClient';
-import { getInstallationSyncMetadata } from '../repositories/cloudSyncRepository';
+import {
+  getInstallationSyncMetadata,
+  getPendingCompleteBackupAttempt,
+} from '../repositories/cloudSyncRepository';
 import { useSyncStatus } from '../services/SyncStatusContext';
 import { formatDate } from '../utils';
 import { sha256 } from 'js-sha256';
@@ -175,6 +178,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
   async function reopenInstallation() {
     if (!item) return;
+    if (syncing) {
+      Alert.alert('Backup in progress', 'Wait for Cloud Backup to finish before reopening.');
+      return;
+    }
     const reason = reopenReason.trim();
     if (!reason) return;
     if (item.server_tree_revision === undefined) {
@@ -183,6 +190,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     }
     setCompletionBusy(true);
     try {
+      if (await getPendingCompleteBackupAttempt(installationId)) {
+        throw new Error(
+          'Cloud backup confirmation is pending. Retry backup before reopening this installation.',
+        );
+      }
       const response = await apiClient.reopenInstallation(installationId, {
         baseTreeRevision: item.server_tree_revision,
         reason,
@@ -215,27 +227,47 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     setGridModal(true);
   }
 
-  async function disableCloudBackup(removeServerCopy: boolean) {
+  async function disableCloudBackup(
+    removeServerCopy: boolean,
+    clearResolvedConflict = false,
+  ) {
     if (syncing) {
       Alert.alert('Backup in progress', 'Wait for the current Cloud Backup to finish, then try again.');
       return;
     }
     setBackupChanging(true);
+    let disabledLocally = false;
+    let serverCopyRemoved = false;
     try {
+      if (await getPendingCompleteBackupAttempt(installationId)) {
+        throw new Error(
+          'Cloud backup confirmation is pending. Retry backup before changing this setting.',
+        );
+      }
+      const syncMetadata = await getInstallationSyncMetadata(installationId);
+      // Disable locally first. This atomic repository guard prevents a new
+      // final attempt from being prepared before any destructive server call.
+      await installationsRepo.setCloudBackupEnabled(installationId, false);
+      disabledLocally = true;
       if (removeServerCopy) {
         try {
           await apiClient.deleteInstallationCloud(installationId, false);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status !== 404) throw error;
         }
+        serverCopyRemoved = true;
       }
-      const syncMetadata = await getInstallationSyncMetadata(installationId);
       await installationsRepo.update(installationId, {
-        cloud_backup_enabled: false,
-        cloud_backup_retained: !removeServerCopy && Boolean(syncMetadata.syncedWatermark),
+        cloud_backup_retained: !removeServerCopy && Boolean(
+          syncMetadata.syncedWatermark || syncMetadata.serverTreeRevision !== undefined,
+        ),
+        ...(clearResolvedConflict ? { backup_conflict: { kind: 'NONE' as const } } : {}),
       });
       await refresh();
     } catch (error) {
+      if (disabledLocally && !serverCopyRemoved) {
+        await installationsRepo.setCloudBackupEnabled(installationId, true).catch(() => {});
+      }
       Alert.alert('Could not update Cloud Backup', cloudConnectionErrorMessage(error));
     } finally {
       setBackupChanging(false);
@@ -283,6 +315,21 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     );
   }
 
+  function confirmKeepDeviceCopyLocalOnly() {
+    Alert.alert(
+      'Keep this device copy local-only?',
+      'Cloud Backup will turn off. All local installation data and evidence stay on this device, and the archived conflict proof is retained for support review.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Keep Local-Only',
+          style: 'destructive',
+          onPress: () => { void disableCloudBackup(false, true); },
+        },
+      ],
+    );
+  }
+
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -320,6 +367,21 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
               ? ` · server revision ${item.backup_conflict.remoteTreeRevision}`
               : ''}
           </Text>
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+            <Button
+              title="Retry Backup"
+              disabled={syncing || backupChanging}
+              onPress={() => { void triggerSync().then(refresh); }}
+              style={{ flex: 1 }}
+            />
+            <Button
+              title="Keep Local-Only"
+              variant="secondary"
+              disabled={syncing || backupChanging}
+              onPress={confirmKeepDeviceCopyLocalOnly}
+              style={{ flex: 1 }}
+            />
+          </View>
         </Card>
       ) : null}
       {item.legacy_completed_unpinned ? (
@@ -383,14 +445,14 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <Button
           title={item.cloud_backup_enabled ? 'Turn off backup' : 'Back up this installation'}
           variant={item.cloud_backup_enabled ? 'ghost' : 'secondary'}
-          disabled={backupChanging}
+          disabled={backupChanging || syncing}
           onPress={handleBackupPreference}
         />
         {!item.cloud_backup_enabled && item.cloud_backup_retained ? (
           <Button
             title="Remove retained cloud copy"
             variant="danger"
-            disabled={backupChanging}
+            disabled={backupChanging || syncing}
             style={{ marginTop: spacing.sm }}
             onPress={confirmRemoveCloudCopy}
           />

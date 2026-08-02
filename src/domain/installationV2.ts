@@ -172,13 +172,46 @@ export function siteAssetTypeFromCode(value: SiteAssetTypeCode): SiteAssetType {
   return SITE_CODE_TO_LEGACY[value];
 }
 
+export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
+export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+
+export function isValidInstallationSiteCode(value: string): boolean {
+  return value.length >= 1
+    && value.length <= INSTALLATION_SITE_CODE_MAX_LENGTH
+    && INSTALLATION_SITE_CODE_PATTERN.test(value);
+}
+
 export function normalizedSiteCode(siteName: string): string {
-  const words = siteName.toUpperCase().match(/[A-Z0-9]+/g) ?? [];
+  const words = siteName
+    .normalize('NFKD')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
   if (!words.length) return 'SITE';
-  const code = words.length > 1
-    ? words.map((word) => word[0]).join('').slice(0, 6)
-    : words[0]!.slice(0, 6);
-  return code || 'SITE';
+  return words.map((word) => word[0]).join('').toUpperCase().slice(0, 8) || 'SITE';
+}
+
+/** Project a grandfathered site code to the same bounded prefix used by the
+ * API and portal. The authoritative installation value is never overwritten. */
+export function installationDisplayCodePrefix(value: string): string {
+  const prefix = value
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, INSTALLATION_SITE_CODE_MAX_LENGTH)
+    .replace(/-+$/g, '');
+  return prefix || 'SITE';
+}
+
+export function installationSiteCodeForNewCopy(
+  sourceSiteCode: string | undefined,
+  copiedSiteName: string,
+): string {
+  return sourceSiteCode && isValidInstallationSiteCode(sourceSiteCode)
+    ? sourceSiteCode
+    : normalizedSiteCode(copiedSiteName);
 }
 
 export function primaryGridSupplyId(installationId: string): string {
@@ -216,7 +249,7 @@ export function nextDisplayCode(
     [typeCode]: sequence,
   };
   const siteCode = installation.site_code || normalizedSiteCode(installation.site_name);
-  const generatedValue = `${siteCode}-${typeCode}-${String(sequence).padStart(3, '0')}`;
+  const generatedValue = `${installationDisplayCodePrefix(siteCode)}-${typeCode}-${String(sequence).padStart(3, '0')}`;
   return {
     value: generatedValue,
     generatedValue,
@@ -357,7 +390,9 @@ function ensureInstallationMetadata(installation: Installation): void {
   }
   installation.tree_schema_version = INSTALLATION_TREE_SCHEMA_VERSION;
   installation.external_key ||= `local:${installation.id}`;
-  installation.site_code ||= normalizedSiteCode(installation.site_name);
+  if (!installation.site_code?.trim()) {
+    installation.site_code = normalizedSiteCode(installation.site_name);
+  }
   installation.tree_revision = Math.max(0, installation.tree_revision ?? 0);
   if (installation.server_tree_revision === undefined) {
     const exactCanonicalRevision = installation.server_derived?.treeRevision;
@@ -654,6 +689,11 @@ export function replaceBoardMetersFromLegacy(
 export function bumpTreeRevision(store: AppDataStore, installationId: string): number {
   const installation = store.installations.find((item) => item.id === installationId);
   if (!installation) throw new Error('Installation not found');
+  if (store.cloudSync.pending_complete_attempts?.[installationId]) {
+    throw new Error(
+      'Cloud backup confirmation is pending. Retry backup before changing this installation.',
+    );
+  }
   ensureInstallationMetadata(installation);
   installation.tree_revision = (installation.tree_revision ?? 0) + 1;
   installation.updated_at = new Date().toISOString();

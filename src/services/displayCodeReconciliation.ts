@@ -15,6 +15,21 @@ function remoteRevision(tree: RemoteInstallationTree): number | undefined {
   return Number.isSafeInteger(numberValue) ? numberValue : undefined;
 }
 
+function canonicalRemoteExternalKey(
+  tree: RemoteInstallationTree,
+  installationId: string,
+): string {
+  if (tree.installation.id !== installationId) {
+    throw new Error('Canonical server tree returned a different installation identity.');
+  }
+  const value = tree.installation.externalKey ?? tree.installation.external_key;
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized || normalized.toLowerCase().startsWith('local:')) {
+    throw new Error('Canonical server tree returned an invalid external key.');
+  }
+  return normalized;
+}
+
 function canonicalRemoteCode(
   record: Record<string, unknown>,
   field: 'displayCode' | 'displayName',
@@ -77,8 +92,8 @@ function reconcileOne(
 }
 
 /**
- * Merges only authoritative, canonical display-code objects from an exact
- * server revision. A revision-only push response is intentionally insufficient.
+ * Merges the canonical installation identity and display-code objects from an
+ * exact server revision. A revision-only push response is intentionally insufficient.
  */
 export function mergeResolvedDisplayCodes(
   store: AppDataStore,
@@ -93,6 +108,24 @@ export function mergeResolvedDisplayCodes(
   }
   if (!tree.meterDevices) {
     throw new Error('Canonical server tree omitted meter devices.');
+  }
+  const externalKey = canonicalRemoteExternalKey(tree, installationId);
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('Installation not found.');
+  const currentExternalKey = installation.external_key?.trim();
+  const legacyImportedCopyCanConverge = installation.is_imported_copy === true
+    && Boolean(installation.import_source_server_id?.trim())
+    && (
+      installation.server_tree_revision === undefined
+      || installation.server_tree_revision === expectedTreeRevision
+    );
+  if (
+    currentExternalKey
+    && !currentExternalKey.toLowerCase().startsWith('local:')
+    && currentExternalKey !== externalKey
+    && !legacyImportedCopyCanConverge
+  ) {
+    throw new Error('Canonical server tree attempted to replace the installation external key.');
   }
   const boardById = new Map(tree.electricalAssets.map((item) => [String(item.id ?? ''), item]));
   const assetById = new Map(tree.siteAssets.map((item) => [String(item.id ?? ''), item]));
@@ -146,8 +179,11 @@ export function mergeResolvedDisplayCodes(
     trackUnique(code);
   }
 
-  const installation = store.installations.find((item) => item.id === installationId);
-  if (!installation) throw new Error('Installation not found.');
+  installation.external_key = externalKey;
+  // The identity and its accepted CAS base must advance in the same durable
+  // store commit. Persisting only the revision can strand an imported copy
+  // with its source canonical key if the confirmation pull is interrupted.
+  installation.server_tree_revision = expectedTreeRevision;
   for (const { entity, code } of boardUpdates) {
     entity.display_code_meta = code;
     entity.display_code = code.value;

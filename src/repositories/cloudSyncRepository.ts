@@ -7,10 +7,12 @@ import type {
   Installation,
   MeasurementAssignment,
   MeterDevice,
+  PendingCompleteBackupAttempt,
   SiteAsset,
   ThumbnailDownloadQueueItem,
   Zone,
 } from '../types';
+import { sha256 } from 'js-sha256';
 import { getStore, initStore, updateStore } from '../data/seed';
 import { createId, nowIso } from '../utils';
 
@@ -65,6 +67,185 @@ export function serverBaseTreeRevision(installation: Installation): number | und
   return Number.isSafeInteger(revision) && revision !== undefined && revision >= 0
     ? revision
     : undefined;
+}
+
+function completeAttemptMap(
+  store: AppDataStore,
+): Record<string, PendingCompleteBackupAttempt> {
+  return store.cloudSync.pending_complete_attempts ??= {};
+}
+
+function exactCompletePayload(
+  installationId: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  let exact: unknown;
+  try {
+    exact = JSON.parse(JSON.stringify(payload));
+  } catch {
+    throw new Error('Complete backup request could not be persisted exactly.');
+  }
+  if (!exact || typeof exact !== 'object' || Array.isArray(exact)) {
+    throw new Error('Complete backup request is invalid.');
+  }
+  const record = exact as Record<string, unknown>;
+  const installation = record.installation;
+  if (
+    record.treeSchemaVersion !== 2
+    || record.syncStage !== 'complete'
+    || !installation
+    || typeof installation !== 'object'
+    || Array.isArray(installation)
+    || (installation as Record<string, unknown>).id !== installationId
+  ) {
+    throw new Error('Complete backup request identity is invalid.');
+  }
+  return record;
+}
+
+function assertPendingCompleteAttempt(
+  installationId: string,
+  attempt: PendingCompleteBackupAttempt,
+): PendingCompleteBackupAttempt {
+  if (
+    !attempt
+    || attempt.version !== 1
+    || typeof attempt.id !== 'string'
+    || !attempt.id
+    || attempt.installation_id !== installationId
+    || typeof attempt.tree_watermark !== 'string'
+    || !attempt.tree_watermark
+    || !Number.isSafeInteger(attempt.local_tree_revision)
+    || attempt.local_tree_revision < 0
+    || !['Draft', 'Completed'].includes(attempt.installation_status)
+    || typeof attempt.prepared_at !== 'string'
+    || !attempt.prepared_at
+  ) {
+    throw new Error('Pending complete backup record is invalid.');
+  }
+  const exactPayload = exactCompletePayload(installationId, attempt.payload);
+  const payloadJson = JSON.stringify(exactPayload);
+  if (
+    typeof attempt.payload_sha256 !== 'string'
+    || attempt.payload_sha256 !== sha256(payloadJson)
+    || attempt.id !== `complete-backup:${attempt.payload_sha256}`
+  ) {
+    throw new Error('Pending complete backup payload integrity check failed.');
+  }
+  const payloadBase = exactPayload.baseTreeRevision;
+  if (
+    (payloadBase !== undefined
+      && (!Number.isSafeInteger(payloadBase) || Number(payloadBase) < 0))
+    || attempt.base_tree_revision !== (
+      payloadBase === undefined ? undefined : Number(payloadBase)
+    )
+  ) {
+    throw new Error('Pending complete backup base revision is invalid.');
+  }
+  if (
+    attempt.accepted_tree_revision !== undefined
+    && (!Number.isSafeInteger(attempt.accepted_tree_revision)
+      || attempt.accepted_tree_revision < 0)
+  ) {
+    throw new Error('Pending complete backup revision is invalid.');
+  }
+  if (
+    attempt.accepted_record_version_number !== undefined
+    && attempt.accepted_record_version_number !== null
+    && (!Number.isSafeInteger(attempt.accepted_record_version_number)
+      || attempt.accepted_record_version_number < 0)
+  ) {
+    throw new Error('Pending complete backup record version is invalid.');
+  }
+  return attempt;
+}
+
+export function applyPreparedCompleteBackupAttempt(
+  store: AppDataStore,
+  installationId: string,
+  payload: Record<string, unknown>,
+  expectedTreeWatermark: string,
+  installationStatus: Installation['status'],
+  expectedLocalTreeRevision: number,
+  attemptId?: string,
+  preparedAt = nowIso(),
+): PendingCompleteBackupAttempt {
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('Installation not found.');
+  if (!installation.cloud_backup_enabled) {
+    throw new Error('Cloud backup was turned off before the final request was persisted.');
+  }
+  if (!expectedTreeWatermark) throw new Error('Complete backup watermark is required.');
+  if (
+    !Number.isSafeInteger(expectedLocalTreeRevision)
+    || expectedLocalTreeRevision < 0
+    || (installation.tree_revision ?? 0) !== expectedLocalTreeRevision
+    || treeWatermark(store, installationId) !== expectedTreeWatermark
+    || installation.status !== installationStatus
+  ) {
+    throw new Error('Installation changed before the complete backup attempt was persisted.');
+  }
+  const exactPayload = exactCompletePayload(installationId, payload);
+  const payloadJson = JSON.stringify(exactPayload);
+  const payloadSha256 = sha256(payloadJson);
+  const exactAttemptId = `complete-backup:${payloadSha256}`;
+  if (attemptId !== undefined && attemptId !== exactAttemptId) {
+    throw new Error('Complete backup attempt identity does not match its exact payload.');
+  }
+  const attempts = completeAttemptMap(store);
+  const existing = attempts[installationId];
+  if (existing) {
+    assertPendingCompleteAttempt(installationId, existing);
+    if (
+      existing.tree_watermark === expectedTreeWatermark
+      && existing.installation_status === installationStatus
+      && existing.local_tree_revision === expectedLocalTreeRevision
+      && JSON.stringify(existing.payload) === JSON.stringify(exactPayload)
+    ) {
+      return existing;
+    }
+    throw new Error('A different complete backup confirmation is still pending.');
+  }
+  const attempt: PendingCompleteBackupAttempt = {
+    version: 1,
+    id: exactAttemptId,
+    installation_id: installationId,
+    payload: exactPayload,
+    payload_sha256: payloadSha256,
+    ...(exactPayload.baseTreeRevision === undefined
+      ? {}
+      : { base_tree_revision: Number(exactPayload.baseTreeRevision) }),
+    local_tree_revision: expectedLocalTreeRevision,
+    tree_watermark: expectedTreeWatermark,
+    installation_status: installationStatus,
+    prepared_at: preparedAt,
+  };
+  attempts[installationId] = attempt;
+  return attempt;
+}
+
+export function applyAcceptedCompleteBackupAttempt(
+  store: AppDataStore,
+  installationId: string,
+  attemptId: string,
+  treeRevision: number,
+  recordVersionNumber: number | null,
+): void {
+  if (!Number.isSafeInteger(treeRevision) || treeRevision < 0) {
+    throw new Error('Server returned an invalid complete backup revision.');
+  }
+  if (
+    recordVersionNumber !== null
+    && (!Number.isSafeInteger(recordVersionNumber) || recordVersionNumber < 0)
+  ) {
+    throw new Error('Server returned an invalid complete backup record version.');
+  }
+  const attempt = completeAttemptMap(store)[installationId];
+  if (!attempt || assertPendingCompleteAttempt(installationId, attempt).id !== attemptId) {
+    throw new Error('Complete backup attempt changed before acceptance was recorded.');
+  }
+  attempt.accepted_tree_revision = treeRevision;
+  attempt.accepted_record_version_number = recordVersionNumber;
 }
 
 export function buildInstallationBackupTree(
@@ -123,13 +304,70 @@ export async function listInstallationsNeedingBackup(): Promise<InstallationBack
   await initStore();
   const store = getStore();
   const forced = new Set(store.cloudSync.force_dirty_installation_ids);
+  const pendingComplete = new Set(Object.keys(store.cloudSync.pending_complete_attempts ?? {}));
   return store.installations
     .filter((installation) => installation.cloud_backup_enabled)
     .map((installation) => buildInstallationBackupTree(store, installation))
     .filter((tree) => {
       const syncedAt = store.cloudSync.synced_at_by_installation[tree.installation.id];
-      return forced.has(tree.installation.id) || !syncedAt || tree.watermark > syncedAt;
+      return pendingComplete.has(tree.installation.id)
+        || forced.has(tree.installation.id)
+        || !syncedAt
+        || tree.watermark > syncedAt;
     });
+}
+
+export async function getPendingCompleteBackupAttempt(
+  installationId: string,
+): Promise<PendingCompleteBackupAttempt | null> {
+  await initStore();
+  const attempt = getStore().cloudSync.pending_complete_attempts?.[installationId];
+  return attempt ? assertPendingCompleteAttempt(installationId, attempt) : null;
+}
+
+export async function listPendingCompleteBackupAttempts(): Promise<PendingCompleteBackupAttempt[]> {
+  await initStore();
+  return Object.entries(getStore().cloudSync.pending_complete_attempts ?? {})
+    .map(([installationId, attempt]) => assertPendingCompleteAttempt(installationId, attempt))
+    .sort((left, right) => left.prepared_at.localeCompare(right.prepared_at));
+}
+
+export async function prepareCompleteBackupAttempt(
+  installationId: string,
+  payload: Record<string, unknown>,
+  expectedTreeWatermark: string,
+  installationStatus: Installation['status'],
+  expectedLocalTreeRevision: number,
+): Promise<PendingCompleteBackupAttempt> {
+  let result: PendingCompleteBackupAttempt | null = null;
+  await updateStore((store) => {
+    result = applyPreparedCompleteBackupAttempt(
+      store,
+      installationId,
+      payload,
+      expectedTreeWatermark,
+      installationStatus,
+      expectedLocalTreeRevision,
+    );
+  });
+  return result!;
+}
+
+export async function recordAcceptedCompleteBackupAttempt(
+  installationId: string,
+  attemptId: string,
+  treeRevision: number,
+  recordVersionNumber: number | null,
+): Promise<void> {
+  await updateStore((store) => {
+    applyAcceptedCompleteBackupAttempt(
+      store,
+      installationId,
+      attemptId,
+      treeRevision,
+      recordVersionNumber,
+    );
+  });
 }
 
 export async function getInstallationBackupTree(
@@ -174,6 +412,71 @@ export async function markInstallationBackedUp(
     const installation = store.installations.find((item) => item.id === installationId);
     if (installation) installation.backup_conflict = { kind: 'NONE' };
   });
+}
+
+export async function finishCompleteBackupAttempt(
+  installationId: string,
+  attemptId: string,
+): Promise<void> {
+  await updateStore((store) => {
+    const attempt = completeAttemptMap(store)[installationId];
+    if (!attempt || assertPendingCompleteAttempt(installationId, attempt).id !== attemptId) {
+      throw new Error('Complete backup attempt changed before confirmation finished.');
+    }
+    const installation = store.installations.find((item) => item.id === installationId);
+    if (
+      !installation
+      || (installation.tree_revision ?? 0) !== attempt.local_tree_revision
+      || treeWatermark(store, installationId) !== attempt.tree_watermark
+      || installation.status !== attempt.installation_status
+    ) {
+      throw new Error('Installation changed before complete backup confirmation finished.');
+    }
+    const hasProvisionalCode = [
+      ...store.electricalAssets
+        .filter((item) => item.audit_id === installationId)
+        .map((item) => item.display_code_meta),
+      ...store.siteAssets
+        .filter((item) => item.audit_id === installationId)
+        .map((item) => item.display_code_meta),
+      ...store.meterDevices
+        .filter((item) => item.installationId === installationId)
+        .map((item) => item.displayName),
+    ].some((display) => display?.provisional);
+    if (hasProvisionalCode) {
+      throw new Error('Canonical display-code reconciliation is required before backup can finish.');
+    }
+    store.cloudSync.synced_at_by_installation[installationId] = attempt.tree_watermark;
+    store.cloudSync.force_dirty_installation_ids =
+      store.cloudSync.force_dirty_installation_ids.filter((id) => id !== installationId);
+    if (installation) installation.backup_conflict = { kind: 'NONE' };
+    delete completeAttemptMap(store)[installationId];
+  });
+}
+
+export async function discardCompleteBackupAttempt(
+  installationId: string,
+  attemptId: string,
+): Promise<void> {
+  await updateStore((store) => {
+    applyDiscardCompleteBackupAttempt(store, installationId, attemptId);
+  });
+}
+
+export function applyDiscardCompleteBackupAttempt(
+  store: AppDataStore,
+  installationId: string,
+  attemptId: string,
+): boolean {
+  const attempt = completeAttemptMap(store)[installationId];
+  if (attempt?.id !== attemptId) return false;
+  store.cloudSync.conflicted_complete_attempts ??= {};
+  store.cloudSync.conflicted_complete_attempts[installationId] = {
+    ...attempt,
+    conflicted_at: nowIso(),
+  };
+  delete completeAttemptMap(store)[installationId];
+  return true;
 }
 
 export async function markInstallationBackupConflict(
@@ -378,7 +681,6 @@ export async function resetInterruptedUploads(): Promise<void> {
     for (const item of store.cloudSync.upload_queue) {
       if (item.status === 'uploading') {
         item.status = 'pending';
-        item.session_id = undefined;
         item.updated_at = nowIso();
       }
     }
@@ -393,7 +695,6 @@ export async function resetFailedUploadsForRetry(): Promise<void> {
       if (item.status === 'failed') {
         item.status = 'pending';
         item.attempts = 0;
-        item.session_id = undefined;
         item.last_error = undefined;
         item.updated_at = nowIso();
       }

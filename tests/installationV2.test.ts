@@ -10,7 +10,11 @@ import {
   deriveVirtualMeters,
   electricalTreeRows,
   installationReadiness,
+  installationDisplayCodePrefix,
+  installationSiteCodeForNewCopy,
+  isValidInstallationSiteCode,
   normalizeCanonicalStore,
+  normalizedSiteCode,
   primaryGridSupplyId,
   replaceBoardMetersFromLegacy,
   replaceMeterMeasurementAssignments,
@@ -49,6 +53,34 @@ function storeFixture(): AppDataStore {
   };
 }
 
+test('site-code rule matches the canonical eight-initial cross-client fixtures', () => {
+  assert.deepEqual([
+    normalizedSiteCode('Warehouse'),
+    normalizedSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf'),
+    normalizedSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel'),
+    normalizedSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India'),
+  ], ['W', 'ABCDEFG', 'ABCDEFGH', 'ABCDEFGH']);
+  for (const valid of ['W', 'SYD-WH1', '123', 'ABCDEFGHIJKLMNOP']) {
+    assert.equal(isValidInstallationSiteCode(valid), true);
+  }
+  for (const invalid of ['bad', 'BAD SITE', 'BAD!', '-BAD', 'BAD-', 'BAD--SITE', 'ABCDEFGHIJKLMNOPQ']) {
+    assert.equal(isValidInstallationSiteCode(invalid), false);
+  }
+});
+
+test('historical site codes use the shared bounded display-code prefix', () => {
+  assert.equal(installationDisplayCodePrefix('Legacy Site Code / 2024'), 'LEGACY-SITE-CODE');
+  assert.equal(installationDisplayCodePrefix('---'), 'SITE');
+  assert.equal(installationDisplayCodePrefix('123456789012345-678'), '123456789012345');
+});
+
+test('a new imported copy derives a strict code without rewriting the source code', () => {
+  const source = 'Legacy Site Code / 2024';
+  assert.equal(installationSiteCodeForNewCopy(source, 'Golden Site cp2'), 'GSC');
+  assert.equal(source, 'Legacy Site Code / 2024');
+  assert.equal(installationSiteCodeForNewCopy('SYD-WH1', 'Golden Site cp2'), 'SYD-WH1');
+});
+
 test('legacy normalization is idempotent and preserves arbitrary custom meter channel counts', () => {
   const store = normalizeCanonicalStore(storeFixture());
   assert.equal(store.schemaVersion, 3);
@@ -59,6 +91,18 @@ test('legacy normalization is idempotent and preserves arbitrary custom meter ch
   const once = JSON.stringify(store);
   normalizeCanonicalStore(store);
   assert.equal(JSON.stringify(store), once);
+});
+
+test('legacy normalization preserves a non-empty historical site code and fills only a missing one', () => {
+  const historical = storeFixture();
+  historical.installations[0]!.site_code = 'Legacy Site Code / 2024';
+  normalizeCanonicalStore(historical);
+  assert.equal(historical.installations[0]!.site_code, 'Legacy Site Code / 2024');
+
+  const missing = storeFixture();
+  missing.installations[0]!.site_code = '   ';
+  normalizeCanonicalStore(missing);
+  assert.equal(missing.installations[0]!.site_code, 'ES');
 });
 
 test('direct-to-Grid site assets remain resolved while canonical export stays server-owned (MAP-08/VIR-04)', () => {

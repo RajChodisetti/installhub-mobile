@@ -58,6 +58,8 @@ function cloneFixtures(): AppDataStore {
     cloudSync: {
       synced_at_by_installation: {},
       force_dirty_installation_ids: [],
+      pending_complete_attempts: {},
+      conflicted_complete_attempts: {},
       upload_queue: [],
       thumbnail_queue: [],
     },
@@ -105,6 +107,8 @@ export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
     cloudSync: {
       synced_at_by_installation: syncedAtByInstallation,
       force_dirty_installation_ids: value.cloudSync?.force_dirty_installation_ids ?? [],
+      pending_complete_attempts: value.cloudSync?.pending_complete_attempts ?? {},
+      conflicted_complete_attempts: value.cloudSync?.conflicted_complete_attempts ?? {},
       upload_queue: value.cloudSync?.upload_queue ?? [],
       thumbnail_queue: value.cloudSync?.thumbnail_queue ?? [],
     },

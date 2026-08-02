@@ -32,6 +32,7 @@ import {
   createMeasurementAssignment,
   electricalTreeRows,
   installationReadiness,
+  isValidInstallationSiteCode,
   nextDisplayCode,
   normalizeCanonicalStore,
   primaryGridSupplyId,
@@ -195,6 +196,14 @@ async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void>
   await initStore();
   const currentPlan = planLocalDeletion(getStore(), target);
   if (!currentPlan) return;
+  if (
+    target.kind === 'installation'
+    && getStore().cloudSync.pending_complete_attempts?.[currentPlan.installationId]
+  ) {
+    throw new Error(
+      'Confirm or resolve the pending cloud backup before deleting this installation.',
+    );
+  }
   const installation = getStore().installations.find(
     (item) => item.id === currentPlan.installationId,
   );
@@ -234,6 +243,11 @@ export const installationsRepo: InstallationsRepository = {
     return getStore().installations.find((i) => i.id === id) ?? null;
   },
   async create(input) {
+    if (input.site_code !== undefined && !isValidInstallationSiteCode(input.site_code)) {
+      throw new Error(
+        'Site code must be 1-16 uppercase letters/digits, with single hyphens only between groups.',
+      );
+    }
     const id = createId('inst');
     const record: Installation = {
       ...input,
@@ -262,6 +276,15 @@ export const installationsRepo: InstallationsRepository = {
       if (patch.status && patch.status !== s.installations[idx].status) {
         throw new Error('Use the validated Complete or Reopen action to change installation status.');
       }
+      if (
+        Object.prototype.hasOwnProperty.call(patch, 'site_code')
+        && patch.site_code !== s.installations[idx].site_code
+        && (typeof patch.site_code !== 'string' || !isValidInstallationSiteCode(patch.site_code))
+      ) {
+        throw new Error(
+          'Site code must be 1-16 uppercase letters/digits, with single hyphens only between groups.',
+        );
+      }
       const domainKeys: Array<keyof Installation> = [
         'client_name', 'site_name', 'site_address', 'inspector_name', 'audit_date',
         'site_code', 'timezone',
@@ -279,10 +302,26 @@ export const installationsRepo: InstallationsRepository = {
     await removeLocalTreeTarget({ kind: 'installation', id });
   },
   async setCloudBackupEnabled(id, enabled) {
-    return this.update(id, {
-      cloud_backup_enabled: enabled,
-      ...(enabled ? { cloud_backup_retained: false } : {}),
+    await initStore();
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      if (!enabled && store.cloudSync.pending_complete_attempts?.[id]) {
+        throw new Error(
+          'Confirm or resolve the pending cloud backup before turning backup off.',
+        );
+      }
+      updated = {
+        ...store.installations[index],
+        cloud_backup_enabled: enabled,
+        ...(enabled ? { cloud_backup_retained: false } : {}),
+        id,
+        updated_at: nowIso(),
+      };
+      store.installations[index] = updated;
     });
+    return updated!;
   },
   async applyServerState(id, patch) {
     let updated: Installation | null = null;

@@ -318,6 +318,9 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
 
   const installationId = requiredText(installation, 'id', undefined, 'installation ID');
   requiredText(installation, 'externalKey', 'external_key', 'installation external key');
+  // Authoritative server rows may predate the bounded site-code contract.
+  // Stable IDs and display-code metadata remain strict, but a non-empty
+  // historical site code must stay importable without changing identity.
   requiredText(installation, 'siteCode', 'site_code', 'installation site code');
   const timezone = requiredText(installation, 'timezone', undefined, 'installation timezone');
   if (!validIanaTimezone(timezone)) {

@@ -18,7 +18,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     installations: [{
       id: 'installation', client_name: 'Client', site_name: 'Golden Site', site_address: 'Address',
       inspector_name: 'Field', audit_date: '2026-08-01', status: 'Draft',
-      external_key: 'server:installation', site_code: 'GS', timezone: 'Australia/Sydney',
+      external_key: 'server:installation', site_code: 'Legacy Site Code / 2024', timezone: 'Australia/Sydney',
       tree_schema_version: 2, tree_revision: 3,
       cloud_backup_enabled: true, created_at: timestamp, updated_at: timestamp,
     }],
@@ -68,6 +68,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     watermark: timestamp,
   };
   const wire = buildBackupPayload(backupTree, [], 'complete');
+  assert.equal(wire.installation.siteCode, 'Legacy Site Code / 2024');
   const remote = {
     ...wire,
     treeRevision: 3,

@@ -227,9 +227,35 @@ export interface CloudUploadQueueItem {
   updated_at: string;
 }
 
+/**
+ * Exact final backup request retained until its authoritative server tree has
+ * been pulled and merged. This closes every crash window around a successful
+ * complete push without advancing the local CAS base prematurely.
+ */
+export interface PendingCompleteBackupAttempt {
+  version: 1;
+  id: string;
+  installation_id: string;
+  payload: Record<string, unknown>;
+  payload_sha256: string;
+  base_tree_revision?: number;
+  local_tree_revision: number;
+  tree_watermark: string;
+  installation_status: InstallationStatus;
+  prepared_at: string;
+  accepted_tree_revision?: number;
+  accepted_record_version_number?: number | null;
+}
+
+export interface ConflictedCompleteBackupAttempt extends PendingCompleteBackupAttempt {
+  conflicted_at: string;
+}
+
 export interface CloudSyncState {
   synced_at_by_installation: Record<string, string>;
   force_dirty_installation_ids: string[];
+  pending_complete_attempts?: Record<string, PendingCompleteBackupAttempt>;
+  conflicted_complete_attempts?: Record<string, ConflictedCompleteBackupAttempt>;
   upload_queue: CloudUploadQueueItem[];
   thumbnail_queue: ThumbnailDownloadQueueItem[];
 }
