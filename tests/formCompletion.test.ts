@@ -34,6 +34,13 @@ function wwForm(boardId?: string, meterId?: string): FormSubmission {
     installation_id: 'installation', board_id: boardId, meter_id: meterId,
     answers: {
       'auditor.switchboard_name': 'Stale copy',
+      'prestart.site_induction': 'yes',
+      'prestart.safe_access': 'yes',
+      'prestart.correct_ppe': 'no',
+      'prestart.live_points': 'yes',
+      'prestart.can_isolate': 'no',
+      'prestart.additional_hazards': 'no',
+      'prestart.safe_to_proceed': 'yes',
       'device.type': 'A3RM', 'device.id': 'SERIAL', 'device.number': 'D-1',
       'channel.1.load': 'Mains Supply', 'channel.1.rating': '3000A - 9cm',
       'channel.2.load': 'HVAC', 'channel.2.rating': '3000A - 9cm',
@@ -80,6 +87,17 @@ test('WW completion atomically pins canonical board and one stable operational m
   assert.equal(store.meterDevices.length, 1);
   assert.equal(store.meterDevices[0]!.id, 'meter-stable');
   assert.equal(store.meterDevices[0]!.installedOnBoardId, 'board');
+  assert.deepEqual(store.meterDevices[0]!.commissioningData?.prestart, {
+    siteInduction: true,
+    safeAccess: true,
+    correctPpe: false,
+    livePointsAware: true,
+    canIsolate: false,
+    additionalHazards: false,
+    safeToProceed: true,
+  });
+  assert.ok(Object.values(store.meterDevices[0]!.commissioningData?.prestart ?? {})
+    .every((value) => typeof value === 'boolean'));
   assert.equal(store.electricalAssets[0]!.meters.length, 1);
   assert.equal(store.measurementAssignments.length, 0);
   assert.deepEqual(

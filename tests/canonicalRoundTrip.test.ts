@@ -119,4 +119,11 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     verification: { voltageChecked: true, communicationsOk: true },
     commissioning: { deviceOnline: true, channelsReporting: true },
   });
+
+  store.meterDevices[0]!.commissioningData!.prestart!.additionalHazards =
+    'no' as unknown as boolean;
+  assert.throws(
+    () => buildBackupPayload(backupTree, [], 'complete'),
+    /commissioningData\.prestart\.additionalHazards must be a boolean/,
+  );
 });

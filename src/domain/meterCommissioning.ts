@@ -5,6 +5,7 @@ import type {
   MeasurementAssignment,
   Meter,
   MeterDeviceType,
+  WattwatcherPrestart,
   WattwatcherChannel,
 } from '../types';
 import {
@@ -82,6 +83,31 @@ export function answersWithCanonicalBoardContext(
   };
 }
 
+const PRESTART_FORM_FIELDS = [
+  ['site_induction', 'prestart.site_induction'],
+  ['safe_access', 'prestart.safe_access'],
+  ['correct_ppe', 'prestart.correct_ppe'],
+  ['live_points_aware', 'prestart.live_points'],
+  ['can_isolate', 'prestart.can_isolate'],
+  ['additional_hazards', 'prestart.additional_hazards'],
+  ['safe_to_proceed', 'prestart.safe_to_proceed'],
+] as const satisfies ReadonlyArray<readonly [keyof WattwatcherPrestart, string]>;
+
+function prestartFromFormAnswers(
+  answers: Record<string, FormValue>,
+  existing?: WattwatcherPrestart,
+): WattwatcherPrestart | undefined {
+  const prestart: WattwatcherPrestart = {};
+  for (const [field, answerKey] of PRESTART_FORM_FIELDS) {
+    const prior = existing?.[field];
+    if (typeof prior === 'boolean') prestart[field] = prior;
+    const answer = answers[answerKey];
+    if (answer === 'yes') prestart[field] = true;
+    if (answer === 'no') prestart[field] = false;
+  }
+  return Object.keys(prestart).length ? prestart : undefined;
+}
+
 /** Build the single stable operational meter owned by a WW commissioning form. */
 export function meterFromInstallationForm(
   form: FormSubmission,
@@ -101,6 +127,7 @@ export function meterFromInstallationForm(
     throw new Error('Choose A3RM or A6M before completing this commissioning form.');
   }
   const channelCount = deviceType === 'A3RM' ? 3 : 6;
+  const prestart = prestartFromFormAnswers(form.answers, existing?.ww_prestart);
   const deviceIdKey = form.form_type === 'ww-installation'
     ? 'device.id'
     : 'auditor.serial_number';
@@ -141,6 +168,7 @@ export function meterFromInstallationForm(
     device_type: deviceType,
     device_id: String(form.answers[deviceIdKey] ?? ''),
     device_number: String(form.answers['device.number'] ?? ''),
+    ww_prestart: prestart,
     ww_channels: channels,
   };
 }

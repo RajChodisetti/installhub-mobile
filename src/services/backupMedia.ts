@@ -406,6 +406,30 @@ function wireMeterDevice(
   meter: MeterDevice,
   remote: ReturnType<typeof remoteResolver>,
 ) {
+  const commissioningData = meter.commissioningData;
+  const booleanSections = [
+    ['prestart', commissioningData?.prestart, [
+      'siteInduction', 'safeAccess', 'correctPpe', 'livePointsAware',
+      'canIsolate', 'additionalHazards', 'safeToProceed',
+    ]],
+    ['verification', commissioningData?.verification, [
+      'voltageChecked', 'polarityChecked', 'communicationsOk',
+    ]],
+    ['commissioning', commissioningData?.commissioning, [
+      'deviceOnline', 'channelsReporting', 'labeled', 'photosTaken',
+    ]],
+  ] as const;
+  for (const [sectionName, section, fields] of booleanSections) {
+    if (!section) continue;
+    for (const field of fields) {
+      const value = (section as Record<string, unknown>)[field];
+      if (value !== undefined && value !== null && typeof value !== 'boolean') {
+        throw new Error(
+          `Cannot sync meter ${meter.id}: commissioningData.${sectionName}.${field} must be a boolean.`,
+        );
+      }
+    }
+  }
   return {
     id: meter.id,
     installationId: meter.installationId,
@@ -432,7 +456,7 @@ function wireMeterDevice(
         target: channel.target ?? null,
         direction: channel.direction ?? null,
       })),
-    commissioningData: meter.commissioningData,
+    commissioningData,
     wwPhotos: meter.wwPhotos
       ? {
           deviceInstalled: remote(

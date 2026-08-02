@@ -104,3 +104,31 @@ test('WW completion projects read-only canonical board context and one stable me
     'stable-meter:1', 'stable-meter:2', 'stable-meter:3',
   ]);
 });
+
+test('WW completion never copies non-yes/no pre-start strings into the meter', () => {
+  const timestamp = '2026-08-02T00:00:00.000Z';
+  const board: ElectricalAsset = {
+    id: 'board-1', audit_id: 'installation-1', zone_id: 'zone-1',
+    asset_name: 'Main Board', display_code: 'SITE-MSB-001', asset_type: 'MSB',
+    meter_present: false, meters: [], created_at: timestamp, updated_at: timestamp,
+  };
+  const form: FormSubmission = {
+    id: 'form-1', form_type: 'ww-installation', schema_version: 2, status: 'Draft',
+    installation_id: 'installation-1', board_id: board.id,
+    answers: {
+      'device.type': 'A3RM', 'device.id': 'SERIAL-1',
+      'prestart.site_induction': 'yes',
+      'prestart.additional_hazards': 'false',
+      'prestart.safe_to_proceed': 'no',
+    },
+    attachments: [], created_at: timestamp, updated_at: timestamp,
+  };
+
+  const meter = meterFromInstallationForm(form, board, 'meter-1');
+
+  assert.deepEqual(meter.ww_prestart, {
+    site_induction: true,
+    safe_to_proceed: false,
+  });
+  assert.equal(JSON.stringify(meter).includes('"additional_hazards":"false"'), false);
+});
