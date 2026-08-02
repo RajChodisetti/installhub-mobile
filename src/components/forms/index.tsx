@@ -1,53 +1,79 @@
 import React, { useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import type {
-  BoardType,
+  BoardTypeCode,
   ElectricalAsset,
+  ElectricalSource,
+  GridSupply,
   Installation,
   Meter,
   MeterDeviceType,
   SiteAsset,
-  SiteAssetType,
+  SiteAssetTypeCode,
   WattwatcherChannel,
 } from '../../types';
-import { BOARD_TYPES, METER_DEVICE_TYPES, SITE_ASSET_TYPES } from '../../types';
+import { BOARD_TYPE_CODES, METER_DEVICE_TYPES, SITE_ASSET_TYPE_CODES } from '../../types';
+import {
+  BOARD_TYPE_LABELS,
+  SITE_ASSET_TYPE_LABELS,
+  boardTypeCode,
+  boardTypeFromCode,
+  siteAssetTypeCode,
+  siteAssetTypeFromCode,
+} from '../../domain/installationV2';
 import { createId } from '../../utils';
 import { useTheme } from '../../context/AppProviders';
 import { Button, Card, TextArea, TextField, SectionHeader } from '../ui';
 import { BarcodeScanField, withLegacyOption } from '../BarcodeScanField';
+import {
+  channelAfterPurposeChange,
+  channelsAfterDeviceTypeChange,
+} from '../../domain/meterCommissioning';
 import { radii, spacing, typography } from '../../theme';
 
-function SelectChips<T extends string>({
+export function SelectChips<T extends string>({
   label,
   value,
   options,
   onChange,
+  getLabel = (option) => option,
 }: {
   label: string;
   value: T;
   options: T[];
   onChange: (v: T) => void;
+  getLabel?: (v: T) => string;
 }) {
   const { colors } = useTheme();
   return (
     <View style={{ marginBottom: spacing.md }}>
       <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: 8 }]}>{label}</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        {options.map((opt) => {
+      <View
+        accessibilityRole="radiogroup"
+        accessibilityLabel={label}
+        style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}
+      >
+        {options.map((opt, index) => {
           const active = opt === value;
           return (
             <Pressable
               key={opt}
               onPress={() => onChange(opt)}
+              accessibilityRole="radio"
+              accessibilityLabel={`${label}: ${getLabel(opt)}`}
+              accessibilityHint={`${index + 1} of ${options.length}${active ? ', selected' : ''}`}
+              accessibilityState={{ checked: active }}
               style={{
                 paddingHorizontal: 10,
-                paddingVertical: 8,
+                minHeight: 44,
+                justifyContent: 'center',
+                paddingVertical: 10,
                 borderRadius: radii.full,
                 backgroundColor: active ? colors.primary : colors.muted,
               }}
             >
               <Text style={{ color: active ? colors.primaryForeground : colors.foreground, fontSize: 12, fontWeight: '600' }}>
-                {opt}
+                {getLabel(opt)}
               </Text>
             </Pressable>
           );
@@ -79,7 +105,13 @@ function BoolRow({
       }}
     >
       <Text style={{ flex: 1, color: colors.foreground, paddingRight: 12 }}>{label}</Text>
-      <Switch value={!!value} onValueChange={onChange} />
+      <Switch
+        value={!!value}
+        onValueChange={onChange}
+        accessibilityRole="switch"
+        accessibilityLabel={label}
+        accessibilityState={{ checked: Boolean(value) }}
+      />
     </View>
   );
 }
@@ -96,6 +128,7 @@ export function InstallationForm({
     site_address: string;
     inspector_name: string;
     audit_date: string;
+    timezone?: string;
   }) => Promise<void> | void;
   submitLabel?: string;
 }) {
@@ -104,6 +137,9 @@ export function InstallationForm({
   const [site_address, setAddress] = useState(initial?.site_address ?? '');
   const [inspector_name, setInspector] = useState(initial?.inspector_name ?? '');
   const [audit_date, setDate] = useState(initial?.audit_date ?? new Date().toISOString().slice(0, 10));
+  const [timezone, setTimezone] = useState(
+    initial?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
   const [busy, setBusy] = useState(false);
 
   return (
@@ -113,13 +149,19 @@ export function InstallationForm({
       <TextArea label="Site address" value={site_address} onChangeText={setAddress} />
       <TextField label="Inspector" value={inspector_name} onChangeText={setInspector} />
       <TextField label="Audit date (YYYY-MM-DD)" value={audit_date} onChangeText={setDate} />
+      <TextField
+        label="Installation timezone"
+        accessibilityHint="Use an IANA timezone such as Australia/Sydney"
+        value={timezone}
+        onChangeText={setTimezone}
+      />
       <Button
         title={busy ? 'Saving…' : submitLabel}
         disabled={busy || !client_name || !site_name}
         onPress={async () => {
           setBusy(true);
           try {
-            await onSubmit({ client_name, site_name, site_address, inspector_name, audit_date });
+            await onSubmit({ client_name, site_name, site_address, inspector_name, audit_date, timezone: timezone.trim() });
           } finally {
             setBusy(false);
           }
@@ -131,34 +173,90 @@ export function InstallationForm({
 
 export function ElectricalAssetForm({
   initial,
+  sourceBoards = [],
+  gridSupplies = [],
   onSubmit,
 }: {
   initial?: Partial<ElectricalAsset>;
+  sourceBoards?: ElectricalAsset[];
+  gridSupplies?: GridSupply[];
   onSubmit: (values: Omit<ElectricalAsset, 'id' | 'created_at' | 'updated_at' | 'meters' | 'extra_photos'> & {
     meters?: Meter[];
   }) => Promise<void> | void;
 }) {
+  const { colors } = useTheme();
   const [asset_name, setName] = useState(initial?.asset_name ?? '');
   const [display_code, setCode] = useState(initial?.display_code ?? '');
-  const [asset_type, setType] = useState<BoardType>(initial?.asset_type ?? 'DB');
+  const [customCode, setCustomCode] = useState(Boolean(initial?.display_code_meta?.isOverridden));
+  const [type_code, setTypeCode] = useState<BoardTypeCode>(
+    initial?.type_code ?? boardTypeCode(initial?.asset_type ?? 'DB'),
+  );
+  const [custom_type_name, setCustomTypeName] = useState(initial?.custom_type_name ?? '');
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
   const [phase, setPhase] = useState(initial?.phase ?? '3P+N');
   const [amperage_rating, setAmps] = useState(initial?.amperage_rating ?? '');
   const [site_nmi, setNmi] = useState(initial?.site_nmi ?? '');
-  const [electrical_parent_tbc, setTbc] = useState(!!initial?.electrical_parent_tbc);
+  const initialSource = initial?.electrical_source ?? (
+    initial?.electrical_parent_tbc
+      ? { kind: 'TBC' as const }
+      : initial?.electrical_parent_id
+        ? { kind: 'BOARD' as const, boardId: initial.electrical_parent_id }
+        : { kind: 'TBC' as const }
+  );
+  const [sourceKey, setSourceKey] = useState(
+    initialSource.kind === 'GRID'
+      ? `GRID:${initialSource.gridSupplyId}`
+      : initialSource.kind === 'BOARD'
+        ? `BOARD:${initialSource.boardId}`
+        : 'TBC',
+  );
   const [comments, setComments] = useState(initial?.comments ?? '');
   const [busy, setBusy] = useState(false);
 
   return (
     <View>
       <TextField label="Board name" value={asset_name} onChangeText={setName} />
-      <TextField label="Display code" value={display_code} onChangeText={setCode} />
-      <SelectChips label="Board type" value={asset_type} options={BOARD_TYPES} onChange={setType} />
+      <SelectChips
+        label="Board type"
+        value={type_code}
+        options={BOARD_TYPE_CODES}
+        getLabel={(value) => BOARD_TYPE_LABELS[value]}
+        onChange={setTypeCode}
+      />
+      {type_code === 'OTHER' ? (
+        <TextField label="Custom board type" value={custom_type_name} onChangeText={setCustomTypeName} />
+      ) : null}
+      <BoolRow label="Use custom display code" value={customCode} onChange={setCustomCode} />
+      {customCode ? (
+        <TextField label="Custom display code" value={display_code} onChangeText={setCode} />
+      ) : (
+        <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+          A provisional site/type/sequence code will be generated automatically.
+        </Text>
+      )}
+      <SelectChips
+        label="Electrical source"
+        value={sourceKey}
+        options={[
+          ...gridSupplies.map((grid) => `GRID:${grid.id}`),
+          ...sourceBoards.filter((board) => board.id !== initial?.id).map((board) => `BOARD:${board.id}`),
+          'TBC',
+        ]}
+        getLabel={(value) => {
+          if (value === 'TBC') return 'To be confirmed';
+          if (value.startsWith('GRID:')) {
+            const grid = gridSupplies.find((item) => `GRID:${item.id}` === value);
+            return grid ? `${grid.name}${grid.isDefault ? ' · default' : ''}` : 'Grid supply';
+          }
+          const board = sourceBoards.find((item) => `BOARD:${item.id}` === value);
+          return board ? `${board.display_code} · ${board.asset_name}` : 'Board';
+        }}
+        onChange={setSourceKey}
+      />
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
       <TextField label="Phase" value={phase} onChangeText={setPhase} />
       <TextField label="Amperage" value={amperage_rating} onChangeText={setAmps} />
       <TextField label="Site NMI" value={site_nmi} onChangeText={setNmi} />
-      <BoolRow label="Electrical parent TBC" value={electrical_parent_tbc} onChange={setTbc} />
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
       <Button
         title={busy ? 'Saving…' : 'Save board'}
@@ -166,18 +264,36 @@ export function ElectricalAssetForm({
         onPress={async () => {
           setBusy(true);
           try {
+            const electrical_source: ElectricalSource = sourceKey === 'TBC'
+              ? { kind: 'TBC' }
+              : sourceKey.startsWith('GRID:')
+                ? { kind: 'GRID', gridSupplyId: sourceKey.slice(5) }
+                : { kind: 'BOARD', boardId: sourceKey.slice(6) };
             await onSubmit({
               audit_id: initial?.audit_id ?? '',
               zone_id: initial?.zone_id ?? '',
               asset_name,
-              display_code: display_code || asset_name,
-              asset_type,
+              display_code: customCode ? display_code : initial?.display_code_meta?.value ?? '',
+              display_code_meta: customCode
+                ? {
+                    value: display_code.trim(),
+                    generatedValue: initial?.display_code_meta?.generatedValue ?? display_code.trim(),
+                    isOverridden: true,
+                    ruleVersion: 1,
+                    overrideReason: 'Installer custom code',
+                    provisional: initial?.display_code_meta?.provisional ?? true,
+                  }
+                : initial?.display_code_meta,
+              asset_type: boardTypeFromCode(type_code),
+              type_code,
+              custom_type_name: type_code === 'OTHER' ? custom_type_name.trim() : undefined,
+              electrical_source,
               location_description,
               phase,
               amperage_rating,
               site_nmi,
-              electrical_parent_id: electrical_parent_tbc ? null : initial?.electrical_parent_id ?? null,
-              electrical_parent_tbc,
+              electrical_parent_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
+              electrical_parent_tbc: electrical_source.kind === 'TBC',
               photo: initial?.photo ?? '',
               meter_present: (initial?.meters?.length ?? 0) > 0,
               sub_circuits_description: initial?.sub_circuits_description ?? '',
@@ -195,30 +311,80 @@ export function ElectricalAssetForm({
 
 export function SiteAssetForm({
   initial,
+  sourceBoards = [],
+  gridSupplies = [],
   onSubmit,
 }: {
   initial?: Partial<SiteAsset>;
+  sourceBoards?: ElectricalAsset[];
+  gridSupplies?: GridSupply[];
   onSubmit: (values: Omit<SiteAsset, 'id' | 'created_at' | 'updated_at' | 'extra_photos' | 'meter_channels'> & {
     meter_channels?: SiteAsset['meter_channels'];
   }) => Promise<void> | void;
 }) {
+  const { colors } = useTheme();
   const [asset_name, setName] = useState(initial?.asset_name ?? '');
-  const [asset_type, setType] = useState<SiteAssetType>(initial?.asset_type ?? 'Other');
+  const [type_code, setTypeCode] = useState<SiteAssetTypeCode>(
+    initial?.type_code ?? siteAssetTypeCode(initial?.asset_type ?? 'Other'),
+  );
+  const [custom_type_name, setCustomTypeName] = useState(initial?.custom_type_name ?? '');
   const [display_code, setCode] = useState(initial?.display_code ?? '');
+  const [customCode, setCustomCode] = useState(Boolean(initial?.display_code_meta?.isOverridden));
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
-  const [electrical_board_tbc, setBoardTbc] = useState(!!initial?.electrical_board_tbc);
-  const [meter_present, setMeterPresent] = useState(!!initial?.meter_present);
+  const initialSource = initial?.electrical_source ?? (
+    initial?.electrical_board_tbc || !initial?.electrical_board_id
+      ? { kind: 'TBC' as const }
+      : { kind: 'BOARD' as const, boardId: initial.electrical_board_id }
+  );
+  const [sourceKey, setSourceKey] = useState(
+    initialSource.kind === 'GRID'
+      ? `GRID:${initialSource.gridSupplyId}`
+      : initialSource.kind === 'BOARD'
+        ? `BOARD:${initialSource.boardId}`
+        : 'TBC',
+  );
+  const meteringState = initial?.metering_state ?? { kind: 'TBC' as const };
   const [comments, setComments] = useState(initial?.comments ?? '');
   const [busy, setBusy] = useState(false);
 
   return (
     <View>
       <TextField label="Asset name" value={asset_name} onChangeText={setName} />
-      <SelectChips label="Asset type" value={asset_type} options={SITE_ASSET_TYPES} onChange={setType} />
-      <TextField label="Display code" value={display_code} onChangeText={setCode} />
+      <SelectChips
+        label="Asset type"
+        value={type_code}
+        options={SITE_ASSET_TYPE_CODES}
+        getLabel={(value) => SITE_ASSET_TYPE_LABELS[value]}
+        onChange={setTypeCode}
+      />
+      {type_code === 'OTHER' ? (
+        <TextField label="Custom asset type" value={custom_type_name} onChangeText={setCustomTypeName} />
+      ) : null}
+      <BoolRow label="Use custom display code" value={customCode} onChange={setCustomCode} />
+      {customCode ? <TextField label="Custom display code" value={display_code} onChangeText={setCode} /> : null}
+      <SelectChips
+        label="Electrical source"
+        value={sourceKey}
+        options={[
+          ...gridSupplies.map((grid) => `GRID:${grid.id}`),
+          ...sourceBoards.map((board) => `BOARD:${board.id}`),
+          'TBC',
+        ]}
+        getLabel={(value) => {
+          if (value === 'TBC') return 'To be confirmed';
+          if (value.startsWith('GRID:')) {
+            const grid = gridSupplies.find((item) => `GRID:${item.id}` === value);
+            return grid ? `${grid.name}${grid.isDefault ? ' · default' : ''}` : 'Grid supply';
+          }
+          const board = sourceBoards.find((item) => `BOARD:${item.id}` === value);
+          return board ? `${board.display_code} · ${board.asset_name}` : 'Board';
+        }}
+        onChange={setSourceKey}
+      />
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
-      <BoolRow label="Electrical board TBC" value={electrical_board_tbc} onChange={setBoardTbc} />
-      <BoolRow label="Meter present" value={meter_present} onChange={setMeterPresent} />
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+        Metering: {meteringState.kind}. Confirm unmetered/TBC transitions and exact meter-channel mapping in Reconciliation.
+      </Text>
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
       <Button
         title={busy ? 'Saving…' : 'Save asset'}
@@ -226,17 +392,32 @@ export function SiteAssetForm({
         onPress={async () => {
           setBusy(true);
           try {
+            const electrical_source: ElectricalSource = sourceKey === 'TBC'
+              ? { kind: 'TBC' }
+              : sourceKey.startsWith('GRID:')
+                ? { kind: 'GRID', gridSupplyId: sourceKey.slice(5) }
+                : { kind: 'BOARD', boardId: sourceKey.slice(6) };
             await onSubmit({
               audit_id: initial?.audit_id ?? '',
               zone_id: initial?.zone_id ?? '',
               asset_name,
-              asset_type,
-              display_code,
+              asset_type: siteAssetTypeFromCode(type_code),
+              type_code,
+              custom_type_name: type_code === 'OTHER' ? custom_type_name.trim() : undefined,
+              display_code: customCode ? display_code : initial?.display_code_meta?.value ?? '',
+              display_code_meta: customCode
+                ? {
+                    value: display_code.trim(), generatedValue: initial?.display_code_meta?.generatedValue ?? display_code.trim(),
+                    isOverridden: true, ruleVersion: 1, overrideReason: 'Installer custom code', provisional: initial?.display_code_meta?.provisional ?? true,
+                  }
+                : initial?.display_code_meta,
               location_description,
               location_photo: initial?.location_photo ?? '',
-              electrical_board_id: electrical_board_tbc ? null : initial?.electrical_board_id ?? null,
-              electrical_board_tbc,
-              meter_present,
+              electrical_source,
+              electrical_board_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
+              electrical_board_tbc: electrical_source.kind === 'TBC',
+              metering_state: meteringState,
+              meter_present: meteringState.kind === 'METERED',
               meter_switchboard_id: initial?.meter_switchboard_id ?? null,
               meter_switchboard_tbc: initial?.meter_switchboard_tbc ?? false,
               meter_channels: initial?.meter_channels ?? [],
@@ -276,21 +457,33 @@ export function WattwatcherForm({
   onChange: (next: Partial<Meter>) => void;
 }) {
   const { colors } = useTheme();
-  const channelCount = deviceType === 'A6M' ? 6 : 3;
+  const selectedType = data.device_type ?? deviceType;
+  const channelCount = selectedType === 'A6M'
+    ? 6
+    : selectedType === 'A3RM'
+      ? 3
+      : data.ww_channels?.length ?? 0;
   const channels: WattwatcherChannel[] = [
     ...(data.ww_channels ?? []),
     ...Array.from({ length: channelCount }, () => ({})),
   ].slice(0, channelCount);
-  const isA6M = deviceType === 'A6M';
-  const isA3RM = deviceType === 'A3RM';
+  const isA6M = selectedType === 'A6M';
+  const isA3RM = selectedType === 'A3RM';
+  const isOther = selectedType === 'Other';
 
   const setSection = <K extends keyof Meter>(section: K, key: string, val: unknown) => {
     const prev = (data[section] as Record<string, unknown>) || {};
     onChange({ ...data, [section]: { ...prev, [key]: val } });
   };
 
-  const setChannel = (idx: number, key: string, val: string) => {
+  const setChannel = (idx: number, key: string, val: unknown) => {
     const next = channels.map((c, i) => (i === idx ? { ...c, [key]: val } : c));
+    onChange({ ...data, ww_channels: next });
+  };
+
+  const setChannelPurpose = (idx: number, purpose: string) => {
+    const next = channels.map((channel, index) =>
+      index === idx ? channelAfterPurposeChange(channel, purpose) : channel);
     onChange({ ...data, ww_channels: next });
   };
 
@@ -302,7 +495,7 @@ export function WattwatcherForm({
   return (
     <View style={{ gap: spacing.md }}>
       <Card>
-        <SectionHeader title={`${deviceType} identity`} />
+        <SectionHeader title={`${selectedType} identity`} />
         <TextField
           label="Device name"
           value={data.device_name ?? ''}
@@ -324,8 +517,29 @@ export function WattwatcherForm({
           label="Device type"
           value={(data.device_type as MeterDeviceType) || deviceType}
           options={METER_DEVICE_TYPES}
-          onChange={(v) => onChange({ ...data, device_type: v })}
+          onChange={(value) => {
+            const nextChannels = channelsAfterDeviceTypeChange(
+              selectedType,
+              value,
+              data.ww_channels ?? [],
+            );
+            onChange({ ...data, device_type: value, ww_channels: nextChannels });
+          }}
         />
+        {isOther ? (
+          <>
+            <TextField
+              label="Manufacturer"
+              value={data.custom_manufacturer_name ?? ''}
+              onChangeText={(value) => onChange({ ...data, custom_manufacturer_name: value })}
+            />
+            <TextField
+              label="Custom model"
+              value={data.custom_model_name ?? ''}
+              onChangeText={(value) => onChange({ ...data, custom_model_name: value })}
+            />
+          </>
+        ) : null}
       </Card>
 
       <Card>
@@ -355,15 +569,42 @@ export function WattwatcherForm({
         <TextArea label="Notes" value={sb.notes ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'notes', v)} />
       </Card>
 
+      <Text
+        accessibilityRole="summary"
+        accessibilityLiveRegion="polite"
+        style={{ color: colors.mutedForeground }}
+      >
+        {isOther
+          ? `Custom meter: declare at least 1 channel and non-empty capabilities for every channel. ${channels.length} declared.`
+          : `${selectedType} requires exactly ${channelCount} channels. ${channels.length} declared.`}
+      </Text>
       {channels.map((ch, idx) => (
         <Card key={`ch-${idx}`}>
-          <SectionHeader title={`Channel ${idx + 1}`} />
+          <SectionHeader title={`Channel ${ch.ordinal ?? idx + 1}`} />
           <SelectChips
             label="Purpose"
             value={(ch.purpose as (typeof CHANNEL_PURPOSES)[number]) || 'SPARE'}
             options={[...CHANNEL_PURPOSES]}
-            onChange={(v) => setChannel(idx, 'purpose', v)}
+            onChange={(v) => setChannelPurpose(idx, v)}
           />
+          <TextField
+            label="Phase label (optional)"
+            value={ch.phase_label ?? ''}
+            onChangeText={(value) => setChannel(idx, 'phase_label', value)}
+            placeholder="e.g. L1"
+          />
+          {isOther ? (
+            <TextField
+              label="Capabilities (comma-separated)"
+              value={Array.isArray(ch.capabilities?.labels)
+                ? ch.capabilities.labels.filter((item): item is string => typeof item === 'string').join(', ')
+                : ''}
+              onChangeText={(value) => {
+                const labels = value.split(',').map((item) => item.trim()).filter(Boolean);
+                setChannel(idx, 'capabilities', labels.length ? { labels } : undefined);
+              }}
+            />
+          ) : null}
           {ch.purpose !== 'SPARE' ? (
             <>
               <SelectChips
@@ -388,6 +629,13 @@ export function WattwatcherForm({
                   onChange={(v) => setChannel(idx, 'rogowski_size', v)}
                 />
               ) : null}
+              {isOther ? (
+                <TextField
+                  label="Sensor rating"
+                  value={ch.rogowski_size ?? ''}
+                  onChangeText={(value) => setChannel(idx, 'rogowski_size', value)}
+                />
+              ) : null}
               <TextField
                 label="Description"
                 value={ch.description ?? ''}
@@ -397,6 +645,33 @@ export function WattwatcherForm({
           ) : null}
         </Card>
       ))}
+
+      {isOther ? (
+        <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+          <Button
+            title="Add channel"
+            variant="secondary"
+            onPress={() => onChange({
+              ...data,
+              ww_channels: [
+                ...(data.ww_channels ?? []),
+                { ordinal: (data.ww_channels?.length ?? 0) + 1 },
+              ],
+            })}
+            style={{ flexGrow: 1 }}
+          />
+          <Button
+            title="Remove last channel"
+            variant="ghost"
+            disabled={!channelCount}
+            onPress={() => onChange({
+              ...data,
+              ww_channels: (data.ww_channels ?? []).slice(0, -1),
+            })}
+            style={{ flexGrow: 1 }}
+          />
+        </View>
+      ) : null}
 
       <Card>
         <SectionHeader title="Verification" />
@@ -430,7 +705,10 @@ export function createEmptyMeter(deviceType: MeterDeviceType = 'A3RM'): Meter {
     device_number: '',
     ww_prestart: {},
     ww_switchboard: {},
-    ww_channels: Array.from({ length: deviceType === 'A6M' ? 6 : 3 }, () => ({})),
+    ww_channels: Array.from(
+      { length: deviceType === 'A6M' ? 6 : deviceType === 'A3RM' ? 3 : 0 },
+      (_, index) => ({ ordinal: index + 1 }),
+    ),
     ww_verification: {},
     ww_commissioning: {},
     ww_photos: { extra: [] },
@@ -442,11 +720,13 @@ export function FormModal({
   title,
   onClose,
   children,
+  scroll = true,
 }: {
   visible: boolean;
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  scroll?: boolean;
 }) {
   const { colors } = useTheme();
   return (
@@ -463,11 +743,20 @@ export function FormModal({
           }}
         >
           <Text style={[typography.heading, { color: colors.foreground }]}>{title}</Text>
-          <Pressable onPress={onClose}>
+          <Pressable
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel={`Close ${title}`}
+            style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}
+          >
             <Text style={{ color: colors.primary, fontWeight: '700' }}>Close</Text>
           </Pressable>
         </View>
-        <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>{children}</ScrollView>
+        {scroll ? (
+          <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>{children}</ScrollView>
+        ) : (
+          <View style={{ flex: 1 }}>{children}</View>
+        )}
       </View>
     </Modal>
   );

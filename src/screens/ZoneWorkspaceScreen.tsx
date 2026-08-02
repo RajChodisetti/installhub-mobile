@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useZoneWorkspace } from '../hooks';
-import { electricalAssetsRepo, siteAssetsRepo, zonesRepo } from '../repositories';
+import { useInstallation, useZoneWorkspace } from '../hooks';
+import { electricalAssetsRepo, getLocalDeletionPreview, siteAssetsRepo, zonesRepo } from '../repositories';
 import { ElectricalAssetCard, SiteAssetCard } from '../components/domain';
 import {
   Button,
@@ -25,6 +25,12 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
   const { zoneId, installationId } = route.params;
   const { colors } = useTheme();
   const { zone, boards, siteAssets, loading, refresh } = useZoneWorkspace(zoneId);
+  const {
+    item: installation,
+    boards: installationBoards,
+    gridSupplies,
+  } = useInstallation(installationId);
+  const readOnly = installation?.status === 'Completed';
   const [boardModal, setBoardModal] = useState(false);
   const [assetModal, setAssetModal] = useState(false);
   const [editZone, setEditZone] = useState(false);
@@ -57,6 +63,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         <Button
           title="Edit zone"
           variant="secondary"
+          disabled={readOnly}
           onPress={() => {
             setZoneName(zone.zone_name);
             setZoneDesc(zone.zone_description);
@@ -82,18 +89,18 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
       <SectionHeader
         title={`Photos (${zone.photos.length})`}
         actionLabel="+ Library"
-        onAction={() => void addPhoto('library')}
+        onAction={readOnly ? undefined : () => void addPhoto('library')}
       />
       <Text style={{ color: colors.mutedForeground, fontSize: 12, marginBottom: 8 }}>
-        Long-press a thumbnail to remove
+        Use the named Remove control below a photo to delete it.
       </Text>
       {zone.photos.length === 0 ? (
         <EmptyState title="No photos yet" subtitle="Attach switchboard or site context photos." />
       ) : (
         <PhotoThumbnailGrid
           uris={zone.photos}
-          onAdd={() => void addPhoto('library')}
-          onRemove={(uri) => {
+          onAdd={readOnly ? undefined : () => void addPhoto('library')}
+          onRemove={readOnly ? undefined : (uri) => {
             Alert.alert('Remove photo?', undefined, [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -113,11 +120,12 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
       <Button
         title="Take photo"
         variant="ghost"
+        disabled={readOnly}
         style={{ marginTop: spacing.sm, marginBottom: spacing.md }}
         onPress={() => void addPhoto('camera')}
       />
 
-      <SectionHeader title="Electrical boards" actionLabel="+ Add" onAction={() => setBoardModal(true)} />
+      <SectionHeader title="Electrical boards" actionLabel={readOnly ? undefined : '+ Add'} onAction={readOnly ? undefined : () => setBoardModal(true)} />
       {boards.length === 0 ? (
         <EmptyState title="No boards" subtitle="Add MSB/DB boards for this zone." />
       ) : (
@@ -132,7 +140,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         ))
       )}
 
-      <SectionHeader title="Site assets" actionLabel="+ Add" onAction={() => setAssetModal(true)} />
+      <SectionHeader title="Site assets" actionLabel={readOnly ? undefined : '+ Add'} onAction={readOnly ? undefined : () => setAssetModal(true)} />
       {siteAssets.length === 0 ? (
         <EmptyState title="No site assets" subtitle="Add HVAC, lighting, EV, etc." />
       ) : (
@@ -150,6 +158,8 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
       <FormModal visible={boardModal} title="Add board" onClose={() => setBoardModal(false)}>
         <ElectricalAssetForm
           initial={{ audit_id: installationId, zone_id: zoneId }}
+          sourceBoards={installationBoards}
+          gridSupplies={gridSupplies}
           onSubmit={async (values) => {
             const created = await electricalAssetsRepo.create({
               ...values,
@@ -169,6 +179,8 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
       <FormModal visible={assetModal} title="Add site asset" onClose={() => setAssetModal(false)}>
         <SiteAssetForm
           initial={{ audit_id: installationId, zone_id: zoneId }}
+          sourceBoards={installationBoards}
+          gridSupplies={gridSupplies}
           onSubmit={async (values) => {
             const created = await siteAssetsRepo.create({
               ...values,
@@ -203,10 +215,15 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         <Button
           title="Delete zone"
           variant="danger"
-          onPress={() => {
+          disabled={readOnly}
+          onPress={() => { void (async () => {
+            const preview = await getLocalDeletionPreview({ kind: 'zone', id: zoneId });
+            const impact = preview
+              ? `\n\nDeletes ${preview.deletes.boards} board(s), ${preview.deletes.siteAssets} asset(s), ${preview.deletes.meters} meter(s), ${preview.deletes.assignments} assignment(s), and ${preview.deletes.forms} form(s).`
+              : '';
             Alert.alert(
               'Delete zone?',
-              'Boards, site assets, linked forms, and form evidence in this zone will be removed from this device. References from other zones will be marked TBC.',
+              `Boards, site assets, linked forms, and form evidence in this zone will be removed from this device. References from other zones will be marked TBC.${impact}`,
               [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -219,7 +236,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
               },
               ],
             );
-          }}
+          })(); }}
         />
       </FormModal>
     </ScrollView>

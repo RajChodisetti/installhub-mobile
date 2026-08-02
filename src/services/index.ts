@@ -4,6 +4,7 @@ export * from './formMedia';
 export * from './formReport';
 export * from './formReportTarget';
 export * from './reportJobs';
+export * from './reportVersioning';
 export * from './installationReport';
 export * from './installationPackTarget';
 export * from './remoteInstallationRevision';

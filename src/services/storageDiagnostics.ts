@@ -1,6 +1,7 @@
 import type { AppDataStore } from '../types';
+import { STORE_GENERATION_PREFIX, STORE_MANIFEST_KEY, STORE_RECOVERY_KEY } from '../data/storePersistence';
 
-export const INSTALLHUB_STORE_KEY = 'installhub.mobile.store.v2';
+export const INSTALLHUB_STORE_KEY = STORE_MANIFEST_KEY;
 
 const GENERATED_REPORT_DIRECTORY = 'form-reports';
 const IMPORTED_THUMBNAIL_DIRECTORY = 'installhub-imported-thumbnails';
@@ -227,7 +228,11 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics> {
     import('../data/seed'),
   ]);
   const store = await storeModule.initStore();
-  const rawStore = await AsyncStorage.getItem(INSTALLHUB_STORE_KEY);
+  const storageKeys = (await AsyncStorage.getAllKeys()).filter((key) =>
+    key === STORE_MANIFEST_KEY || key === STORE_RECOVERY_KEY ||
+    key.startsWith(`${STORE_GENERATION_PREFIX}.`) || key === 'installhub.mobile.store.v2' ||
+    key === 'installhub.mobile.store.v1');
+  const storageRows = storageKeys.length ? await AsyncStorage.multiGet(storageKeys) : [];
   const warnings: string[] = [];
   const [
     originalEvidenceBytes,
@@ -238,7 +243,10 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics> {
     safeDirectorySize('cache', GENERATED_REPORT_DIRECTORY, warnings),
     safeDirectorySize('cache', IMPORTED_THUMBNAIL_DIRECTORY, warnings),
   ]);
-  const asyncStorageBytes = utf8ByteLength(rawStore ?? JSON.stringify(store));
+  const asyncStorageBytes = storageRows.length
+    ? storageRows.reduce((total, [key, value]) =>
+        total + utf8ByteLength(key) + utf8ByteLength(value ?? ''), 0)
+    : utf8ByteLength(JSON.stringify(store));
   await inspectOrphanEvidence(
     new Set(store.formSubmissions.map((form) => form.id)),
     warnings,

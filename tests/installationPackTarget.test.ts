@@ -15,6 +15,7 @@ import {
 const importedAt = '2026-07-23T12:00:00.000Z';
 
 const pristineImportedTree: InstallationBackupTree = {
+  treeSchemaVersion: 2,
   installation: {
     id: 'local-copy',
     client_name: 'Example Client',
@@ -26,6 +27,8 @@ const pristineImportedTree: InstallationBackupTree = {
     cloud_backup_enabled: false,
     is_imported_copy: true,
     import_source_server_id: 'source-installation',
+    import_source_record_version_number: 7,
+    record_version_number: 3,
     import_provenance_watermark: importedAt,
     copy_index: 1,
     thumbnail_status: 'ready',
@@ -34,6 +37,7 @@ const pristineImportedTree: InstallationBackupTree = {
     created_at: importedAt,
     updated_at: importedAt,
   },
+  gridSupplies: [],
   zones: [{
     id: 'local-zone',
     audit_id: 'local-copy',
@@ -45,6 +49,8 @@ const pristineImportedTree: InstallationBackupTree = {
   }],
   electricalAssets: [],
   siteAssets: [],
+  meterDevices: [],
+  measurementAssignments: [],
   formSubmissions: [{
     id: 'local-form',
     import_source_server_id: 'source-form',
@@ -81,6 +87,7 @@ test('installation pack reuses source IDs only for intact import provenance', ()
       formSubmissionIds: ['source-form'],
       usesOriginalImportedRecord: true,
       reason: 'original-import-provenance',
+      recordVersionNumber: 7,
     },
   );
 });
@@ -284,8 +291,9 @@ test('remembered installation jobs are separated by target and exact tree revisi
       'local-copy',
       'source-installation',
       originalRevision,
+      7,
     ),
-    installationReportJobKey('local-copy', 'local-copy', changedRevision),
+    installationReportJobKey('local-copy', 'local-copy', changedRevision, 3),
   );
   assert.notEqual(
     formReportJobKey(
@@ -293,13 +301,19 @@ test('remembered installation jobs are separated by target and exact tree revisi
       'source-installation',
       'source-form',
       originalRevision,
+      7,
     ),
     formReportJobKey(
       'local-form',
       'local-copy',
       'local-form',
       changedRevision,
+      3,
     ),
+  );
+  assert.notEqual(
+    installationReportJobKey('local-copy', 'source-installation', originalRevision, 7),
+    installationReportJobKey('local-copy', 'source-installation', originalRevision, 8),
   );
   assert.equal(
     installationReportJobKey('local-copy'),

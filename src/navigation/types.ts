@@ -1,3 +1,5 @@
+import type { UserSourceApp, UserSourceState } from '../types';
+
 export type RootStackParamList = {
   Login: undefined;
   MainTabs: undefined;
@@ -23,7 +25,12 @@ export type RootStackParamList = {
   FormEditor: { formId: string };
   RemoteInstallations: undefined;
   UserManagement: undefined;
-  UserEditor: { userId?: string };
+  UserEditor: {
+    userId?: string;
+    sourceManaged?: boolean;
+    sourceApp?: UserSourceApp | null;
+    sourceState?: UserSourceState;
+  };
   ChangePassword: undefined;
   Diagnostics: undefined;
   InstallationAccess: { installationId: string };

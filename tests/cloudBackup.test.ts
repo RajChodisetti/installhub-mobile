@@ -8,6 +8,7 @@ import {
 import type { CloudUploadQueueItem } from '../src/types';
 
 const tree: InstallationBackupTree = {
+  treeSchemaVersion: 2,
   installation: {
     id: 'installation-1',
     client_name: 'Example Client',
@@ -20,6 +21,7 @@ const tree: InstallationBackupTree = {
     created_at: '2026-07-20T00:00:00.000Z',
     updated_at: '2026-07-22T00:00:00.000Z',
   },
+  gridSupplies: [],
   zones: [{
     id: 'zone-1',
     audit_id: 'installation-1',
@@ -50,6 +52,8 @@ const tree: InstallationBackupTree = {
     updated_at: '2026-07-22T00:00:00.000Z',
   }],
   siteAssets: [],
+  meterDevices: [],
+  measurementAssignments: [],
   formSubmissions: [{
     id: 'form-1',
     form_type: 'a3rm-installation',
@@ -117,6 +121,76 @@ test('cloud payload labels metadata and complete pushes without changing legacy 
   assert.equal(buildBackupPayload(tree, queue, 'metadata').syncStage, 'metadata');
   assert.equal(buildBackupPayload(tree, queue, 'complete').syncStage, 'complete');
   assert.equal('syncStage' in buildBackupPayload(tree, queue), false);
+});
+
+test('staged sync keeps unresolved local Completed forms Draft until evidence is remote', () => {
+  const metadata = buildBackupPayload(tree, [], 'metadata');
+  assert.equal(metadata.formSubmissions[0]?.status, 'Draft');
+  assert.equal(metadata.formSubmissions[0]?.completedAt, null);
+  assert.equal(metadata.formSubmissions[0]?.attachments.length, 0);
+  assert.equal(tree.formSubmissions[0]?.status, 'Completed');
+
+  const clearedQueue: CloudUploadQueueItem[] = discoverBackupMedia(tree).map((item, index) => ({
+    ...item,
+    id: `staged-${index}`,
+    status: 'cleared',
+    attempts: 1,
+    remote_url: `https://api.example.test/v1/files/staged-${index}.jpg`,
+    updated_at: '2026-07-22T01:00:00.000Z',
+  }));
+  const confirmedMetadata = buildBackupPayload(tree, clearedQueue, 'metadata');
+  const complete = buildBackupPayload(tree, clearedQueue, 'complete');
+  assert.equal(confirmedMetadata.formSubmissions[0]?.status, 'Draft');
+  assert.equal(confirmedMetadata.formSubmissions[0]?.completedAt, null);
+  assert.equal(complete.formSubmissions[0]?.status, 'Completed');
+  assert.equal(complete.formSubmissions[0]?.attachments.length, 1);
+});
+
+test('metadata stages a zero-attachment local Completed form as Draft', () => {
+  const completedAt = '2026-07-22T02:00:00.000Z';
+  const zeroAttachmentTree: InstallationBackupTree = {
+    ...tree,
+    formSubmissions: [{
+      ...tree.formSubmissions[0]!,
+      attachments: [],
+      completed_at: completedAt,
+    }],
+  };
+
+  const metadata = buildBackupPayload(zeroAttachmentTree, [], 'metadata');
+  const legacySafeDefault = buildBackupPayload(zeroAttachmentTree, []);
+  const complete = buildBackupPayload(zeroAttachmentTree, [], 'complete');
+
+  assert.equal(metadata.formSubmissions[0]?.status, 'Draft');
+  assert.equal(metadata.formSubmissions[0]?.completedAt, null);
+  assert.equal(legacySafeDefault.formSubmissions[0]?.status, 'Draft');
+  assert.equal(complete.formSubmissions[0]?.status, 'Completed');
+  assert.equal(complete.formSubmissions[0]?.completedAt, completedAt);
+  assert.equal(zeroAttachmentTree.formSubmissions[0]?.status, 'Completed');
+});
+
+test('metadata stages an already-remote local Completed form as Draft', () => {
+  const remoteAttachmentTree: InstallationBackupTree = {
+    ...tree,
+    formSubmissions: [{
+      ...tree.formSubmissions[0]!,
+      completed_at: '2026-07-22T03:00:00.000Z',
+      attachments: [{
+        ...tree.formSubmissions[0]!.attachments[0]!,
+        uri: 'https://api.example.test/v1/files/already-remote.jpg',
+      }],
+    }],
+  };
+
+  const metadata = buildBackupPayload(remoteAttachmentTree, [], 'metadata');
+  const complete = buildBackupPayload(remoteAttachmentTree, [], 'complete');
+
+  assert.equal(metadata.formSubmissions[0]?.status, 'Draft');
+  assert.equal(metadata.formSubmissions[0]?.attachments.length, 1);
+  assert.equal(metadata.formSubmissions[0]?.completedAt, null);
+  assert.equal(complete.formSubmissions[0]?.status, 'Completed');
+  assert.equal(complete.formSubmissions[0]?.attachments.length, 1);
+  assert.equal(remoteAttachmentTree.formSubmissions[0]?.status, 'Completed');
 });
 
 test('queue reconciliation removes evidence deleted after a failed upload', () => {
@@ -197,4 +271,67 @@ test('queue reconciliation replaces failed evidence with one exact pending ident
     updated_at: '2026-07-23T00:00:00.000Z',
   }]);
   assert.equal(reconciled.some((item) => item.local_uri === 'file:///form.jpg'), false);
+});
+
+test('legacy meter evidence is promoted once to stable meter identity and survives reorder/retry', () => {
+  const canonicalTree: InstallationBackupTree = {
+    ...tree,
+    meterDevices: [{
+      id: 'meter-1',
+      installationId: 'installation-1',
+      installedOnBoardId: 'board-1',
+      deviceFamily: 'WATTWATCHERS',
+      deviceModel: 'A3RM',
+      serialNumber: 'device-1',
+      displayName: {
+        value: 'SITE-A3RM-001', generatedValue: 'SITE-A3RM-001',
+        isOverridden: false, ruleVersion: 1, provisional: true,
+      },
+      channels: [],
+      wwPhotos: { labeling: 'file:///label.jpg' },
+    }],
+  };
+  const references = discoverBackupMedia(canonicalTree);
+  const stable = references.find((item) => item.entity_type === 'meter_device');
+  assert.equal(stable?.entity_id, 'meter-1');
+  assert.equal(stable?.field_name, 'wwPhotos.labeling');
+
+  const legacy: CloudUploadQueueItem = {
+    id: 'legacy-upload',
+    installation_id: 'installation-1',
+    entity_type: 'electrical_asset',
+    entity_id: 'board-1',
+    field_name: 'meters[0].wwPhotos.labeling',
+    local_uri: 'file:///label.jpg',
+    mime_type: 'image/jpeg',
+    status: 'cleared',
+    attempts: 2,
+    remote_url: 'https://api.example.test/evidence/label.jpg',
+    updated_at: '2026-07-22T00:00:00.000Z',
+  };
+  const promoted = reconciledBackupMediaQueue([legacy], 'installation-1', references);
+  const promotedMeter = promoted.find((item) => item.id === 'legacy-upload');
+  assert.equal(promotedMeter?.entity_type, 'meter_device');
+  assert.equal(promotedMeter?.field_name, 'wwPhotos.labeling');
+  assert.equal(promotedMeter?.status, 'cleared');
+
+  const reorderedTree: InstallationBackupTree = {
+    ...canonicalTree,
+    electricalAssets: [{
+      ...canonicalTree.electricalAssets[0]!,
+      meters: [
+        { id: 'meter-new', device_name: 'New', device_type: 'Other', device_id: 'new' },
+        canonicalTree.electricalAssets[0]!.meters[0]!,
+      ],
+    }],
+  };
+  const afterReorder = reconciledBackupMediaQueue(
+    promoted,
+    'installation-1',
+    discoverBackupMedia(reorderedTree),
+  );
+  const retained = afterReorder.find((item) => item.entity_type === 'meter_device');
+  assert.equal(retained?.id, 'legacy-upload');
+  assert.equal(retained?.status, 'cleared');
+  assert.equal(retained?.remote_url, legacy.remote_url);
 });

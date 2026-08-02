@@ -1,8 +1,10 @@
-import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
-import { Card, LoadingState, SectionHeader } from '../components/ui';
+import { canonicalInstallationRepo } from '../repositories';
+import type { AllAssetMeteringRow } from '../domain/installationV2';
+import { Badge, Card, EmptyState, LoadingState, SearchBar } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -12,7 +14,19 @@ type Props = NativeStackScreenProps<RootStackParamList, 'MeteringTable'>;
 export function MeteringTableScreen({ route }: Props) {
   const { installationId } = route.params;
   const { colors } = useTheme();
-  const { item, boards, siteAssets, loading } = useInstallation(installationId);
+  const { item, boards, meterDevices, loading } = useInstallation(installationId);
+  const [rows, setRows] = useState<AllAssetMeteringRow[]>([]);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (!item) return;
+    void canonicalInstallationRepo.allAssetMetering(installationId).then(setRows);
+  }, [installationId, item?.tree_revision]);
+
+  const query = search.trim().toLocaleLowerCase();
+  const visible = useMemo(() => rows.filter((row) =>
+    !query || `${row.displayCode} ${row.name} ${row.typeLabel} ${row.supplyLabel} ${row.state} ${row.channelLabels.join(' ')}`
+      .toLocaleLowerCase().includes(query)), [query, rows]);
 
   if (loading || !item) {
     return (
@@ -22,46 +36,54 @@ export function MeteringTableScreen({ route }: Props) {
     );
   }
 
-  const rows = [
-    ...boards.flatMap((b) =>
-      b.meters.map((m) => ({
-        key: m.id,
-        board: b.display_code,
-        name: m.device_name || m.device_id,
-        type: m.device_type,
-        coverage: m.coverage || m.classification || '—',
-        kind: 'Board meter' as const,
-      })),
-    ),
-    ...siteAssets
-      .filter((a) => a.meter_present)
-      .map((a) => ({
-        key: a.id,
-        board: a.display_code || a.asset_name,
-        name: a.asset_name,
-        type: a.asset_type,
-        coverage: (a.meter_channels || []).map((c) => `Ch ${c.channel}`).join(', ') || '—',
-        kind: 'Site asset' as const,
-      })),
-  ];
-
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
-      <Text style={[typography.title, { color: colors.foreground }]}>Metering assets</Text>
-      <Text style={{ color: colors.mutedForeground, marginTop: 4, marginBottom: spacing.lg }}>
-        {item.site_name}
-      </Text>
-      <SectionHeader title={`${rows.length} rows`} />
-      {rows.map((r) => (
-        <Card key={r.key} style={{ marginBottom: 8 }}>
-          <Text style={[typography.subheading, { color: colors.foreground }]}>{r.name}</Text>
+    <FlatList
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentContainerStyle={styles.pad}
+      data={visible}
+      keyExtractor={(row) => row.id}
+      ListHeaderComponent={(
+        <View>
+          <Text style={[typography.title, { color: colors.foreground }]}>All-asset metering</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-            {r.kind} · {r.board} · {r.type}
+            {item.site_name} · {rows.length} assets · {meterDevices.length} physical meters
           </Text>
-          <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>Coverage: {r.coverage}</Text>
+          <SearchBar value={search} onChangeText={setSearch} placeholder="Search assets, supply, meter, or channel…" />
+          <Text style={[typography.subheading, { color: colors.foreground, marginBottom: spacing.sm }]}>Meter registry</Text>
+          {meterDevices.map((meter) => {
+            const board = boards.find((candidate) => candidate.id === meter.installedOnBoardId);
+            return (
+              <Card key={meter.id} style={{ marginBottom: 8 }}>
+                <Text style={[typography.subheading, { color: colors.foreground }]}>{meter.displayName.value}</Text>
+                <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                  {meter.deviceModel} · {meter.serialNumber || 'no serial'} · installed on {board?.display_code ?? 'missing board'}
+                </Text>
+                <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{meter.channels.length} declared channels</Text>
+              </Card>
+            );
+          })}
+          <Text style={[typography.subheading, { color: colors.foreground, marginTop: spacing.md, marginBottom: spacing.sm }]}>Asset coverage</Text>
+        </View>
+      )}
+      renderItem={({ item: row }) => (
+        <Card style={{ marginBottom: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={[typography.subheading, { color: colors.foreground }]}>{row.displayCode} · {row.name}</Text>
+              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{row.typeLabel} · Fed from {row.supplyLabel}</Text>
+            </View>
+            <Badge
+              label={row.virtualPreview ? `${row.state} · preview` : row.state}
+              tone={row.state === 'DIRECT' ? 'success' : row.state === 'TBC' ? 'tbc' : 'default'}
+            />
+          </View>
+          <Text style={{ color: colors.mutedForeground, marginTop: 6 }}>
+            {row.channelLabels.length ? row.channelLabels.join(', ') : 'No direct measurement assignment'}
+          </Text>
         </Card>
-      ))}
-    </ScrollView>
+      )}
+      ListEmptyComponent={<EmptyState title="No matching assets" />}
+    />
   );
 }
 

@@ -18,11 +18,17 @@ import { Button, Card, LoadingState, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import type { RootStackParamList } from '../navigation/types';
 import { radii, spacing, typography } from '../theme';
+import {
+  isOrphanedSourceUser,
+  isSourceManagedUser,
+  sourceAppDisplayName,
+  sourceUserDisplayEmail,
+} from '../utils/sourceManagedUsers';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationAccess'>;
 
 function userLabel(user: Pick<ManagedCloudUser, 'email' | 'fullName'>): string {
-  return user.fullName?.trim() || user.email;
+  return user.fullName?.trim() || sourceUserDisplayEmail(user.email);
 }
 
 export function InstallationAccessScreen({ route }: Props) {
@@ -74,6 +80,9 @@ export function InstallationAccessScreen({ route }: Props) {
   if (loading && !access) return <LoadingState />;
 
   const currentAssignment = access?.assignedInspector;
+  const currentAssignmentUser = users.find(
+    (user) => user.id === currentAssignment?.id,
+  ) ?? currentAssignment;
   const unchanged = selectedUserId === (access?.assignedInspectorUserId ?? null);
 
   const save = async () => {
@@ -108,7 +117,8 @@ export function InstallationAccessScreen({ route }: Props) {
       <Pressable
         key={id ?? 'unassigned'}
         accessibilityRole="radio"
-        accessibilityState={{ selected, disabled: saving }}
+        accessibilityLabel={`${title}. ${subtitle}`}
+        accessibilityState={{ checked: selected, disabled: saving }}
         disabled={saving}
         onPress={() => setSelectedUserId(id)}
         style={({ pressed }) => [
@@ -183,26 +193,40 @@ export function InstallationAccessScreen({ route }: Props) {
               ]}
             >
               {currentAssignment
-                ? `${currentAssignment.email} · ${currentAssignment.role}${
+                ? `${sourceUserDisplayEmail(currentAssignment.email)} · ${currentAssignment.role}${
                     currentAssignment.isActive ? '' : ' · inactive'
+                  }${
+                    isOrphanedSourceUser(currentAssignmentUser)
+                      ? ' · source unavailable'
+                      : isSourceManagedUser(currentAssignmentUser)
+                        ? ` · ${sourceAppDisplayName(currentAssignmentUser?.sourceApp)} managed`
+                      : ''
                   }`
                 : 'Only the owner and administrators currently have access.'}
             </Text>
           </Card>
 
           <SectionHeader title="Assign to" />
-          {option(
-            null,
-            'Unassigned',
-            'Remove the assigned-user access while keeping owner and administrator access.',
-          )}
-          {activeUsers.map((user) =>
-            option(
-              user.id,
-              userLabel(user),
-              `${user.email} · ${user.role}`,
-            ),
-          )}
+          <View accessibilityRole="radiogroup" accessibilityLabel="Assigned inspector">
+            {option(
+              null,
+              'Unassigned',
+              'Remove the assigned-user access while keeping owner and administrator access.',
+            )}
+            {activeUsers.map((user) =>
+              option(
+                user.id,
+                userLabel(user),
+                `${sourceUserDisplayEmail(user.email)} · ${user.role}${
+                  isOrphanedSourceUser(user)
+                    ? ' · source unavailable'
+                    : isSourceManagedUser(user)
+                      ? ` · ${sourceAppDisplayName(user.sourceApp)} managed`
+                    : ''
+                }`,
+              ),
+            )}
+          </View>
 
           <Button
             title={saving ? 'Saving…' : 'Save access'}

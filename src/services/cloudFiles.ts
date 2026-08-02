@@ -1,11 +1,12 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import {
-  getStoredCloudJwt,
-  refreshStoredCloudJwt,
+  runWithCloudAccessToken,
   type CloudStoredFile,
 } from '../api/apiClient';
 import { SYNC_API_URL } from '../constants/syncConfig';
+import { trustedDownloadRequest } from './downloadSecurity';
+import { authenticatedFileDownload } from './authenticatedFileDownload';
 
 function safeFilename(value: string, contentType: string): string {
   let filename = value
@@ -14,7 +15,7 @@ function safeFilename(value: string, contentType: string): string {
     ?.replace(/[^a-z0-9 ._()-]+/gi, '-')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 150) || 'installhub-file';
+    .slice(0, 150) || 'field-app-complete-file';
   if (!filename.includes('.')) {
     if (contentType === 'application/pdf') filename += '.pdf';
     else if (contentType === 'image/png') filename += '.png';
@@ -23,22 +24,15 @@ function safeFilename(value: string, contentType: string): string {
   return filename;
 }
 
-function absoluteDownloadUrl(downloadUrl: string): string {
-  if (/^https?:\/\//i.test(downloadUrl)) return downloadUrl;
-  return `${SYNC_API_URL}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
-}
-
 async function download(
-  file: CloudStoredFile,
+  url: string,
   destination: File,
-  token: string | null,
 ): Promise<File> {
   return File.downloadFileAsync(
-    absoluteDownloadUrl(file.downloadUrl),
+    url,
     destination,
     {
       idempotent: true,
-      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
     },
   );
 }
@@ -51,14 +45,16 @@ export async function downloadCloudFile(file: CloudStoredFile): Promise<string> 
     file.contentType,
   );
   const destination = new File(directory, `${Date.now()}-${filename}`);
-  const token = await getStoredCloudJwt();
-  try {
-    return (await download(file, destination, token)).uri;
-  } catch (firstError) {
-    const refreshed = await refreshStoredCloudJwt();
-    if (!refreshed) throw firstError;
-    return (await download(file, destination, refreshed)).uri;
-  }
+  const request = trustedDownloadRequest(file.downloadUrl, SYNC_API_URL);
+  const downloaded = request.authorization === 'api-bearer'
+    ? await runWithCloudAccessToken((token) => authenticatedFileDownload({
+        url: request.url,
+        destination,
+        token,
+        expectedContentType: file.contentType,
+      }))
+    : await download(request.url, destination);
+  return downloaded.uri;
 }
 
 export async function shareCloudFile(file: CloudStoredFile): Promise<void> {
@@ -69,6 +65,8 @@ export async function shareCloudFile(file: CloudStoredFile): Promise<void> {
   await Sharing.shareAsync(uri, {
     mimeType: file.contentType,
     ...(file.contentType === 'application/pdf' ? { UTI: 'com.adobe.pdf' } : {}),
-    dialogTitle: `Share ${file.originalFilename || file.fieldName || 'InstallHub file'}`,
+    dialogTitle: `Share ${
+      file.originalFilename || file.fieldName || 'Field App Complete file'
+    }`,
   });
 }

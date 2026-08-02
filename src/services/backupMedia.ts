@@ -2,7 +2,10 @@ import type {
   CloudUploadQueueItem,
   ElectricalAsset,
   FormSubmission,
+  GridSupply,
+  MeasurementAssignment,
   Meter,
+  MeterDevice,
   SiteAsset,
   Zone,
 } from '../types';
@@ -44,7 +47,39 @@ function mediaReference(
   };
 }
 
-function meterMedia(
+function meterDeviceMedia(
+  installationId: string,
+  meter: MeterDevice,
+  board?: ElectricalAsset,
+): BackupMediaReference[] {
+  const meterIndex = board?.meters.findIndex((item) => item.id === meter.id) ?? -1;
+  const legacyAlias = (fieldName: string) => meterIndex >= 0 && board
+    ? [{
+        entity_type: 'electrical_asset' as const,
+        entity_id: board.id,
+        field_name: `meters[${meterIndex}].wwPhotos.${fieldName}`,
+      }]
+    : undefined;
+  const reference = (fieldName: string, uri: string | null | undefined) => {
+    const item = mediaReference(
+      installationId,
+      'meter_device',
+      meter.id,
+      `wwPhotos.${fieldName}`,
+      uri,
+    );
+    if (item) item.legacy_aliases = legacyAlias(fieldName);
+    return item;
+  };
+  return [
+    reference('deviceInstalled', meter.wwPhotos?.deviceInstalled),
+    reference('switchboardOverview', meter.wwPhotos?.switchboardOverview),
+    reference('labeling', meter.wwPhotos?.labeling),
+    ...(meter.wwPhotos?.extra ?? []).map((uri, index) => reference(`extra[${index}]`, uri)),
+  ].filter((item): item is BackupMediaReference => Boolean(item));
+}
+
+function legacyMeterMedia(
   installationId: string,
   board: ElectricalAsset,
   meter: Meter,
@@ -52,35 +87,11 @@ function meterMedia(
 ): BackupMediaReference[] {
   const prefix = `meters[${meterIndex}].wwPhotos`;
   return [
-    mediaReference(
-      installationId,
-      'electrical_asset',
-      board.id,
-      `${prefix}.deviceInstalled`,
-      meter.ww_photos?.device_installed,
-    ),
-    mediaReference(
-      installationId,
-      'electrical_asset',
-      board.id,
-      `${prefix}.switchboardOverview`,
-      meter.ww_photos?.switchboard_overview,
-    ),
-    mediaReference(
-      installationId,
-      'electrical_asset',
-      board.id,
-      `${prefix}.labeling`,
-      meter.ww_photos?.labeling,
-    ),
+    mediaReference(installationId, 'electrical_asset', board.id, `${prefix}.deviceInstalled`, meter.ww_photos?.device_installed),
+    mediaReference(installationId, 'electrical_asset', board.id, `${prefix}.switchboardOverview`, meter.ww_photos?.switchboard_overview),
+    mediaReference(installationId, 'electrical_asset', board.id, `${prefix}.labeling`, meter.ww_photos?.labeling),
     ...(meter.ww_photos?.extra ?? []).map((uri, index) =>
-      mediaReference(
-        installationId,
-        'electrical_asset',
-        board.id,
-        `${prefix}.extra[${index}]`,
-        uri,
-      )),
+      mediaReference(installationId, 'electrical_asset', board.id, `${prefix}.extra[${index}]`, uri)),
   ].filter((item): item is BackupMediaReference => Boolean(item));
 }
 
@@ -111,8 +122,14 @@ export function discoverBackupMedia(tree: InstallationBackupTree): BackupMediaRe
       );
     });
     board.meters.forEach((meter, index) => {
-      references.push(...meterMedia(installationId, board, meter, index));
+      if (!tree.meterDevices.some((item) => item.id === meter.id)) {
+        references.push(...legacyMeterMedia(installationId, board, meter, index));
+      }
     });
+  }
+  for (const meter of tree.meterDevices) {
+    const board = tree.electricalAssets.find((item) => item.id === meter.installedOnBoardId);
+    references.push(...meterDeviceMedia(installationId, meter, board));
   }
   for (const asset of tree.siteAssets) {
     references.push(
@@ -189,7 +206,10 @@ function wireMeter(
   meterIndex: number,
   remote: ReturnType<typeof remoteResolver>,
 ) {
-  const prefix = `meters[${meterIndex}].wwPhotos`;
+  const legacyPrefix = `meters[${meterIndex}].wwPhotos`;
+  const meterPhoto = (fieldName: string, uri: string | null | undefined) =>
+    remote('meter_device', meter.id, `wwPhotos.${fieldName}`, uri)
+    ?? remote('electrical_asset', board.id, `${legacyPrefix}.${fieldName}`, uri);
   const prestart = meter.ww_prestart;
   const switchboard = meter.ww_switchboard;
   const verification = meter.ww_verification;
@@ -226,6 +246,8 @@ function wireMeter(
       : {},
     wwChannels: (meter.ww_channels ?? []).map((channel) => ({
       purpose: channel.purpose,
+      phaseLabel: channel.phase_label,
+      capabilities: channel.capabilities ?? {},
       loadType: channel.load_type,
       rogowskiSize: channel.rogowski_size,
       description: channel.description,
@@ -250,27 +272,11 @@ function wireMeter(
       : {},
     wwPhotos: meter.ww_photos
       ? {
-          deviceInstalled: remote(
-            'electrical_asset',
-            board.id,
-            `${prefix}.deviceInstalled`,
-            meter.ww_photos.device_installed,
-          ),
-          switchboardOverview: remote(
-            'electrical_asset',
-            board.id,
-            `${prefix}.switchboardOverview`,
-            meter.ww_photos.switchboard_overview,
-          ),
-          labeling: remote(
-            'electrical_asset',
-            board.id,
-            `${prefix}.labeling`,
-            meter.ww_photos.labeling,
-          ),
+          deviceInstalled: meterPhoto('deviceInstalled', meter.ww_photos.device_installed),
+          switchboardOverview: meterPhoto('switchboardOverview', meter.ww_photos.switchboard_overview),
+          labeling: meterPhoto('labeling', meter.ww_photos.labeling),
           extra: (meter.ww_photos.extra ?? [])
-            .map((uri, index) =>
-              remote('electrical_asset', board.id, `${prefix}.extra[${index}]`, uri))
+            .map((uri, index) => meterPhoto(`extra[${index}]`, uri))
             .filter((uri): uri is string => Boolean(uri)),
         }
       : {},
@@ -305,7 +311,22 @@ function wireElectricalAsset(
     installationId,
     zoneId: board.zone_id,
     assetName: board.asset_name,
-    displayCode: board.display_code,
+    displayCode: board.display_code_meta ?? {
+      value: board.display_code,
+      generatedValue: board.display_code,
+      isOverridden: false,
+      ruleVersion: 1,
+      provisional: true,
+    },
+    typeCode: board.type_code,
+    customTypeName: board.custom_type_name ?? null,
+    electricalSource: board.electrical_source ?? (
+      board.electrical_parent_tbc
+        ? { kind: 'TBC' }
+        : board.electrical_parent_id
+          ? { kind: 'BOARD', boardId: board.electrical_parent_id }
+          : { kind: 'TBC' }
+    ),
     assetType: board.asset_type,
     electricalParentId: board.electrical_parent_id ?? null,
     electricalParentTbc: Boolean(board.electrical_parent_tbc),
@@ -342,7 +363,21 @@ function wireSiteAsset(
     electricalBoardTbc: Boolean(asset.electrical_board_tbc),
     locationDescription: asset.location_description ?? null,
     locationPhoto: remote('site_asset', asset.id, 'locationPhoto', asset.location_photo),
-    displayCode: asset.display_code ?? null,
+    displayCode: asset.display_code_meta ?? {
+      value: asset.display_code ?? '',
+      generatedValue: asset.display_code ?? '',
+      isOverridden: false,
+      ruleVersion: 1,
+      provisional: true,
+    },
+    typeCode: asset.type_code,
+    customTypeName: asset.custom_type_name ?? null,
+    electricalSource: asset.electrical_source ?? (
+      asset.electrical_board_tbc || !asset.electrical_board_id
+        ? { kind: 'TBC' }
+        : { kind: 'BOARD', boardId: asset.electrical_board_id }
+    ),
+    meteringState: asset.metering_state ?? (asset.meter_present ? { kind: 'TBC' } : { kind: 'UNMETERED' }),
     meterPresent: asset.meter_present,
     meterSwitchboardId: asset.meter_switchboard_id ?? null,
     meterSwitchboardTbc: Boolean(asset.meter_switchboard_tbc),
@@ -356,44 +391,126 @@ function wireSiteAsset(
   };
 }
 
+function wireGridSupply(grid: GridSupply) {
+  return {
+    id: grid.id,
+    installationId: grid.installationId,
+    name: grid.name,
+    isDefault: grid.isDefault,
+    nmi: grid.nmi ?? null,
+    externalKey: grid.externalKey ?? null,
+  };
+}
+
+function wireMeterDevice(
+  meter: MeterDevice,
+  remote: ReturnType<typeof remoteResolver>,
+) {
+  return {
+    id: meter.id,
+    installationId: meter.installationId,
+    installedOnBoardId: meter.installedOnBoardId,
+    deviceFamily: meter.deviceFamily,
+    deviceModel: meter.deviceModel,
+    customManufacturerName: meter.customManufacturerName ?? null,
+    customModelName: meter.customModelName ?? null,
+    deviceNumber: meter.deviceNumber ?? null,
+    serialNumber: meter.serialNumber,
+    displayName: meter.displayName,
+    channels: [...meter.channels]
+      .sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id))
+      .map((channel) => ({
+        id: channel.id,
+        ordinal: channel.ordinal,
+        purpose: channel.purpose,
+        phaseLabel: channel.phaseLabel ?? null,
+        capabilities: channel.capabilities ?? {},
+        loadTypeCode: channel.loadTypeCode ?? null,
+        customLoadTypeName: channel.customLoadTypeName ?? null,
+        sensorRating: channel.sensorRating ?? null,
+        description: channel.description ?? null,
+        target: channel.target ?? null,
+        direction: channel.direction ?? null,
+      })),
+    wwPhotos: meter.wwPhotos
+      ? {
+          deviceInstalled: remote(
+            'meter_device', meter.id, 'wwPhotos.deviceInstalled', meter.wwPhotos.deviceInstalled,
+          ),
+          switchboardOverview: remote(
+            'meter_device', meter.id, 'wwPhotos.switchboardOverview', meter.wwPhotos.switchboardOverview,
+          ),
+          labeling: remote(
+            'meter_device', meter.id, 'wwPhotos.labeling', meter.wwPhotos.labeling,
+          ),
+          extra: (meter.wwPhotos.extra ?? [])
+            .map((uri, index) => remote('meter_device', meter.id, `wwPhotos.extra[${index}]`, uri))
+            .filter((uri): uri is string => Boolean(uri)),
+        }
+      : {},
+    notes: meter.notes ?? null,
+  };
+}
+
+function wireMeasurementAssignment(assignment: MeasurementAssignment) {
+  return {
+    id: assignment.id,
+    installationId: assignment.installationId,
+    meterId: assignment.meterId,
+    channelIds: [...assignment.channelIds],
+    phaseMode: assignment.phaseMode,
+    target: assignment.target,
+    direction: assignment.direction,
+    status: assignment.status,
+  };
+}
+
 function wireForm(
   installationId: string,
   form: FormSubmission,
   remote: ReturnType<typeof remoteResolver>,
+  syncStage?: BackupSyncStage,
 ) {
+  const attachments = form.attachments
+    .map((attachment, index) => {
+      const uri = remote(
+        'form_submission',
+        form.id,
+        `attachments[${index}].uri`,
+        attachment.uri,
+      );
+      return uri
+        ? {
+            id: attachment.id,
+            slot: attachment.slot,
+            uri,
+            mimeType: attachment.mime_type,
+            caption: attachment.caption ?? null,
+            capturedAt: attachment.captured_at,
+          }
+        : null;
+    })
+    .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment));
+  // Metadata is always a non-commissioning representation, even when a form
+  // has no evidence or every evidence URI is already remote. Fail closed for
+  // legacy callers too: only the explicit post-confirmation complete pass may
+  // transmit the immutable Completed transition. The local form is untouched.
+  const stagedAsDraft = form.status === 'Completed' && syncStage !== 'complete';
   return {
     id: form.id,
     installationId,
     formType: form.form_type,
     schemaVersion: form.schema_version,
-    status: form.status,
+    status: stagedAsDraft ? 'Draft' as const : form.status,
     zoneId: form.zone_id ?? null,
     boardId: form.board_id ?? null,
     meterId: form.meter_id ?? null,
     siteAssetId: form.site_asset_id ?? null,
     answers: form.answers,
-    attachments: form.attachments
-      .map((attachment, index) => {
-        const uri = remote(
-          'form_submission',
-          form.id,
-          `attachments[${index}].uri`,
-          attachment.uri,
-        );
-        return uri
-          ? {
-              id: attachment.id,
-              slot: attachment.slot,
-              uri,
-              mimeType: attachment.mime_type,
-              caption: attachment.caption ?? null,
-              capturedAt: attachment.captured_at,
-            }
-          : null;
-      })
-      .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment)),
-    completedAt: form.completed_at ?? null,
+    attachments,
+    completedAt: stagedAsDraft ? null : form.completed_at ?? null,
     supersedesId: form.supersedes_id ?? null,
+    historicalMeterRemoved: Boolean(form.historical_meter_removed),
     createdAt: form.created_at,
     updatedAt: form.updated_at,
   };
@@ -407,6 +524,10 @@ export function buildBackupPayload(
   const installationId = tree.installation.id;
   const remote = remoteResolver(queue);
   return {
+    treeSchemaVersion: tree.treeSchemaVersion,
+    ...(tree.baseTreeRevision !== undefined
+      ? { baseTreeRevision: tree.baseTreeRevision }
+      : {}),
     ...(syncStage ? { syncStage } : {}),
     installation: {
       id: installationId,
@@ -416,15 +537,25 @@ export function buildBackupPayload(
       inspectorName: tree.installation.inspector_name,
       auditDate: tree.installation.audit_date,
       status: tree.installation.status,
+      externalKey: tree.installation.external_key,
+      siteCode: tree.installation.site_code,
+      timezone: tree.installation.timezone,
+      treeSchemaVersion: tree.installation.tree_schema_version ?? 2,
+      recordVersionNumber: tree.installation.record_version_number ?? null,
+      completedAt: tree.installation.completed_at ?? null,
+      completedFromRevision: tree.installation.completed_from_revision ?? null,
       createdAt: tree.installation.created_at,
       updatedAt: tree.installation.updated_at,
     },
+    gridSupplies: tree.gridSupplies.map(wireGridSupply),
     zones: tree.zones.map((zone) => wireZone(installationId, zone, remote)),
     electricalAssets: tree.electricalAssets.map((board) =>
       wireElectricalAsset(installationId, board, remote)),
     siteAssets: tree.siteAssets.map((asset) =>
       wireSiteAsset(installationId, asset, remote)),
+    meterDevices: tree.meterDevices.map((meter) => wireMeterDevice(meter, remote)),
+    measurementAssignments: tree.measurementAssignments.map(wireMeasurementAssignment),
     formSubmissions: tree.formSubmissions.map((form) =>
-      wireForm(installationId, form, remote)),
+      wireForm(installationId, form, remote, syncStage)),
   };
 }

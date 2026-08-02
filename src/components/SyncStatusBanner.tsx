@@ -13,7 +13,7 @@ export function SyncStatusBanner() {
     ? progress.lastError || 'Cloud Backup paused.'
     : progress.phase === 'uploading'
       ? `Backing up evidence ${progress.uploaded}/${progress.total}`
-      : 'Backing up InstallHub data…';
+      : 'Backing up Field App Complete data…';
 
   return (
     <View
@@ -22,7 +22,15 @@ export function SyncStatusBanner() {
         { backgroundColor: failed ? colors.destructive : colors.reportNavy },
       ]}
     >
-      <Text numberOfLines={2} style={styles.text}>{message}</Text>
+      <Text
+        numberOfLines={2}
+        accessibilityRole={failed ? 'alert' : 'summary'}
+        accessibilityLiveRegion={failed ? 'assertive' : 'polite'}
+        accessibilityLabel={`Cloud Backup status: ${message}`}
+        style={styles.text}
+      >
+        {message}
+      </Text>
       {failed ? (
         <Pressable accessibilityRole="button" onPress={() => void retrySync()}>
           <Text style={styles.action}>Retry</Text>

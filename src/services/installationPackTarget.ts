@@ -1,5 +1,10 @@
 import { sha256 } from 'js-sha256';
 import type { InstallationBackupTree } from '../repositories/cloudSyncRepository';
+import {
+  selectReportVersion,
+  validRecordVersionNumber,
+  type ReportVersionSelection,
+} from './reportVersioning';
 
 export interface InstallationSyncMetadata {
   forceDirty: boolean;
@@ -17,7 +22,7 @@ export type InstallationPackServerTarget = {
     | 'missing-import-provenance'
     | 'remote-source-divergence'
     | 'local-divergence';
-};
+} & ReportVersionSelection;
 
 function timestampProvenanceIsIntact(tree: InstallationBackupTree): boolean {
   const importedAt = tree.installation.created_at;
@@ -51,6 +56,7 @@ export function hasIntactImportedSourceProvenance(
     tree.installation.is_imported_copy !== true ||
     tree.installation.cloud_backup_enabled ||
     !tree.installation.import_source_server_id ||
+    validRecordVersionNumber(tree.installation.import_source_record_version_number) === undefined ||
     tree.installation.import_provenance_watermark !==
       tree.installation.created_at
   ) {
@@ -92,12 +98,19 @@ export function resolveInstallationPackServerTarget(
       InstallationPackServerTarget['reason'],
       'original-import-provenance'
     >,
-  ): InstallationPackServerTarget => ({
-    installationId: tree.installation.id,
-    formSubmissionIds: completedLocalFormIds(tree),
-    usesOriginalImportedRecord: false,
-    reason,
-  });
+  ): InstallationPackServerTarget => {
+    const version = selectReportVersion(
+      tree.installation.record_version_number,
+      tree.installation.status === 'Completed',
+    );
+    return {
+      installationId: tree.installation.id,
+      formSubmissionIds: completedLocalFormIds(tree),
+      usesOriginalImportedRecord: false,
+      reason,
+      ...version,
+    };
+  };
 
   if (!tree.installation.is_imported_copy) {
     return localTarget('local-installation');
@@ -123,6 +136,9 @@ export function resolveInstallationPackServerTarget(
       .map((form) => form.import_source_server_id!),
     usesOriginalImportedRecord: true,
     reason: 'original-import-provenance',
+    recordVersionNumber: validRecordVersionNumber(
+      tree.installation.import_source_record_version_number,
+    )!,
   };
 }
 

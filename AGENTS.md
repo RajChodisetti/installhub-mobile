@@ -1,4 +1,4 @@
-# InstallHub Mobile Agent Guide
+# Field App Complete Agent Guide
 
 This is the canonical operating guide for AI coding agents working in this repository. Read
 [`docs/AI_ONBOARDING.md`](docs/AI_ONBOARDING.md) before making a non-trivial change; it contains the
@@ -6,7 +6,7 @@ full architecture, route, data-model, dependency, and workflow reference.
 
 ## Product in one paragraph
 
-InstallHub Mobile is an iOS-first Expo/React Native field app for documenting electrical
+Field App Complete is an iOS-first Expo/React Native field app for documenting electrical
 installations. An installation contains zones; zones contain electrical boards and site assets;
 boards can contain Wattwatcher A3RM/A6M meters and channel commissioning data. Installations also
 own versioned submissions for six field-form families, with durable local evidence and PDF export.
@@ -27,10 +27,12 @@ npm run ios
 - Use a React Native-supported Node release: `^20.19.4`, `^22.13.0`, or `>=24.3.0`. Avoid Node
   23; React Native 0.86 and Metro reject it in their engine ranges.
 - Login uses the Sustainability Wise API with the isolated `installhub` auth namespace. JWT and
-  rotating refresh tokens are stored with Expo SecureStore.
-- `EXPO_PUBLIC_SYNC_API_URL` overrides the API URL. A one-off controlled migration
-  requires both `EXPO_PUBLIC_ENABLE_LEGACY_BOOTSTRAP=true` and
-  `EXPO_PUBLIC_REGISTRATION_SECRET`; normal release builds must contain neither.
+  rotating refresh tokens are stored with Expo SecureStore. A rejected login must
+  never create or update a local user; successful login replaces the cached
+  profile with the exact API user ID and never stores the password.
+- All builds default to `https://api.sustainabilitywise.com.au`.
+  `EXPO_PUBLIC_SYNC_API_URL` is only an explicit local/test override. The mobile
+  login flow does not bootstrap or register rejected credentials.
 - Native `ios/` and `android/` directories are generated and intentionally ignored. Make native
   configuration changes in `app.json` or Expo config/plugins unless the project deliberately moves
   to a checked-in prebuild workflow.
@@ -124,8 +126,10 @@ Installation (id)
 3. Update form state and submit mapping in `src/components/forms/index.tsx`.
 4. Update repository defaults/normalization if needed.
 5. Update all consumers, reports, and cards.
-6. Consider storage migration. The current store key is `installhub.mobile.store.v2`; `seed.ts`
-   migrates v1 once, but later schema changes still need an explicit migration.
+6. Consider storage migration. The current store uses the
+   `installhub.mobile.store.v3.manifest` pointer plus immutable chunked generations;
+   `seed.ts` migrates legacy v1/v2 documents through an encrypted recovery copy.
+   Later schema changes still need an explicit, crash-safe migration.
 
 ### Add a screen
 

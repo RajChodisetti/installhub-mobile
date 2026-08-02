@@ -50,6 +50,7 @@ import {
   isRetryableFormPdfError,
   rememberReportJob,
   rememberedReportJob,
+  reportJobMatchesSelection,
   resolveFormReportServerTarget,
   shareFormPdf,
   waitForReportJob,
@@ -72,11 +73,13 @@ type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
 
 function ChoiceRow({
+  label,
   options,
   value,
   onChange,
   disabled,
 }: {
+  label: string;
   options: { label: string; value: string }[];
   value: string;
   onChange: (value: string) => void;
@@ -84,15 +87,16 @@ function ChoiceRow({
 }) {
   const { colors } = useTheme();
   return (
-    <View style={styles.choices}>
-      {options.map((option) => {
+    <View accessibilityRole="radiogroup" accessibilityLabel={label} style={styles.choices}>
+      {options.map((option, index) => {
         const selected = option.value === value;
         return (
           <Pressable
             key={option.value}
             disabled={disabled}
-            accessibilityRole="button"
-            accessibilityState={{ selected, disabled }}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected, disabled }}
+            accessibilityHint={`${index + 1} of ${options.length}${selected ? ', selected' : ''}`}
             onPress={() => onChange(option.value)}
             style={({ pressed }) => [
               styles.choice,
@@ -279,6 +283,24 @@ export function FormEditorScreen({ navigation, route }: Props) {
     }
   };
 
+  const confirmRemovePhoto = (item: FormAttachment) => {
+    Alert.alert('Remove photo?', undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => {
+          if (!form.supersedes_id || item.captured_at >= form.created_at) {
+            deleteFormPhoto(item);
+          }
+          setAttachments((current) =>
+            current.filter((candidate) => candidate.id !== item.id),
+          );
+        },
+      },
+    ]);
+  };
+
   const renderField = (field: FormFieldDefinition) => {
     if (!isFieldVisible(field, answers)) return null;
     const label = `${field.label}${field.required ? ' *' : ''}`;
@@ -289,6 +311,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
         <View key={field.key} style={styles.fieldBlock}>
           <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
           <ChoiceRow
+            label={field.label}
             value={value}
             disabled={readOnly}
             onChange={(next) => change(field.key, next)}
@@ -308,6 +331,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
         <View key={field.key} style={styles.fieldBlock}>
           <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
           <ChoiceRow
+            label={field.label}
             value={value}
             disabled={readOnly}
             onChange={(next) => change(field.key, next)}
@@ -334,32 +358,23 @@ export function FormEditorScreen({ navigation, route }: Props) {
                 <View key={item.id} style={styles.photoItem}>
                   <Pressable
                     disabled={readOnly}
-                    accessibilityRole={readOnly ? 'image' : 'button'}
+                    accessibilityRole="image"
                     accessibilityLabel={`${field.label} photo ${index + 1}`}
-                    accessibilityHint={readOnly ? undefined : 'Long-press to remove this photo'}
-                    onLongPress={() => {
-                      Alert.alert('Remove photo?', undefined, [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Remove',
-                          style: 'destructive',
-                          onPress: () => {
-                            if (!form.supersedes_id || item.captured_at >= form.created_at) {
-                              deleteFormPhoto(item);
-                            }
-                            setAttachments((current) =>
-                              current.filter((candidate) => candidate.id !== item.id),
-                            );
-                          },
-                        },
-                      ]);
-                    }}
+                    onLongPress={() => confirmRemovePhoto(item)}
                   >
                     <Image
                       source={{ uri: cachedThumbnailUri(item.uri) ?? item.uri }}
                       style={styles.photo}
                     />
                   </Pressable>
+                  {!readOnly ? (
+                    <Button
+                      title={`Remove photo ${index + 1}`}
+                      variant="danger"
+                      style={{ marginTop: spacing.xs }}
+                      onPress={() => confirmRemovePhoto(item)}
+                    />
+                  ) : null}
                   {readOnly ? (
                     item.caption?.trim() ? (
                       <View style={styles.savedCaption}>
@@ -413,11 +428,6 @@ export function FormEditorScreen({ navigation, route }: Props) {
                 style={{ flex: 1 }}
               />
             </View>
-          ) : null}
-          {!readOnly && items.length ? (
-            <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 6 }}>
-              Long-press a photo to remove it.
-            </Text>
           ) : null}
         </View>
       );
@@ -586,15 +596,23 @@ export function FormEditorScreen({ navigation, route }: Props) {
         target.installationId,
         target.formId,
         installationPackRevision(tree, syncMetadata),
+        target.recordVersionNumber,
       );
       await clearRememberedReportJob(legacyJobKey);
-      let jobId = await rememberedReportJob(jobKey);
+      const remembered = await rememberedReportJob(jobKey);
+      let jobId = remembered?.jobId ?? null;
+      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
       if (jobId) {
         try {
           const existing = await apiClient.getExportJobStatus(jobId);
-          if (existing.status === 'failed') {
+          if (
+            existing.status === 'failed' ||
+            !reportJobMatchesSelection(existing, target, expectedPayloadHash)
+          ) {
             await clearRememberedReportJob(jobKey);
             jobId = null;
+          } else {
+            expectedPayloadHash = existing.recordVersionPayloadHash;
           }
         } catch {
           await clearRememberedReportJob(jobKey);
@@ -606,9 +624,14 @@ export function FormEditorScreen({ navigation, route }: Props) {
         const started = await apiClient.startFormPdfJob(
           target.installationId,
           target.formId,
+          target,
         );
+        if (!reportJobMatchesSelection(started, target)) {
+          throw new Error('The report job did not preserve the requested record version.');
+        }
         jobId = started.jobId;
-        await rememberReportJob(jobKey, jobId);
+        expectedPayloadHash = started.recordVersionPayloadHash;
+        await rememberReportJob(jobKey, jobId, started);
       }
 
       const ready = await waitForReportJob(jobId, (status) => {
@@ -618,6 +641,9 @@ export function FormEditorScreen({ navigation, route }: Props) {
             : '';
         setPdfStatus(`${status.phase || 'Generating PDF…'}${progress}`);
       });
+      if (!reportJobMatchesSelection(ready, target, expectedPayloadHash)) {
+        throw new Error('The completed report job no longer matches the requested version.');
+      }
       setPdfStatus('Downloading PDF securely…');
       const uri = await downloadReportJob(
         jobId,

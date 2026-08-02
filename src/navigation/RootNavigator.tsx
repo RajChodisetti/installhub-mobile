@@ -2,9 +2,9 @@ import React from 'react';
 import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text } from 'react-native';
+import { Alert, Text, View } from 'react-native';
 import { useAuth, useTheme } from '../context/AppProviders';
-import { LoadingState } from '../components/ui';
+import { Button, Card, LoadingState } from '../components/ui';
 import type { MainTabParamList, RootStackParamList } from './types';
 import { LoginScreen } from '../screens/LoginScreen';
 import { DashboardScreen } from '../screens/DashboardScreen';
@@ -66,11 +66,66 @@ function MainTabs() {
 }
 
 export function RootNavigator() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading,
+    storageIssue,
+    retryStorage,
+    restoreStorage,
+  } = useAuth();
   const { colors, resolvedMode } = useTheme();
 
   if (isLoading) {
     return <LoadingState />;
+  }
+
+  if (storageIssue) {
+    return (
+      <View
+        accessibilityRole="alert"
+        style={{ flex: 1, justifyContent: 'center', padding: 24, backgroundColor: colors.background }}
+      >
+        <Card>
+          <Text style={{ color: colors.foreground, fontSize: 22, fontWeight: '800' }}>
+            Local data needs attention
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 10, lineHeight: 21 }}>
+            {storageIssue.message}
+          </Text>
+          <Text style={{ color: colors.foreground, marginTop: 12, fontWeight: '700' }}>
+            Your saved installation data was preserved. It was not replaced with demo data.
+          </Text>
+          {storageIssue.canRestore ? (
+            <Button
+              title="Restore encrypted recovery copy"
+              accessibilityHint="Validates and restores the encrypted pre-migration copy stored on this device"
+              style={{ marginTop: 18 }}
+              onPress={() => { void restoreStorage(); }}
+            />
+          ) : null}
+          <Button
+            title="Retry local storage"
+            variant="secondary"
+            accessibilityHint="Retries loading the existing local data without replacing it"
+            style={{ marginTop: 10 }}
+            onPress={() => { void retryStorage(); }}
+          />
+          <Button
+            title="Preserve local data"
+            variant="ghost"
+            accessibilityHint="Makes no changes and explains how to keep the existing data for support"
+            style={{ marginTop: 10 }}
+            onPress={() => Alert.alert(
+              'Local data preserved',
+              'No local records or recovery data were changed. You can close the app and contact support before retrying.',
+            )}
+          />
+          <Text style={{ color: colors.mutedForeground, marginTop: 12, fontSize: 12 }}>
+            Reference: {storageIssue.code}
+          </Text>
+        </Card>
+      </View>
+    );
   }
 
   const navTheme = {

@@ -116,8 +116,8 @@ export function CloudStorageScreen({ route }: Props) {
         Cloud files & history
       </Text>
       <Text style={[styles.intro, { color: colors.mutedForeground }]}>
-        {installationName || 'InstallHub installation'} · Server originals are
-        read-only. Sharing downloads a temporary local copy.
+        {installationName || 'Field App Complete installation'} · Server
+        originals are read-only. Sharing downloads a temporary local copy.
       </Text>
 
       {error ? (

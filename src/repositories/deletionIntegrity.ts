@@ -18,6 +18,7 @@ export interface LocalDeletionPlan {
   zoneIds: string[];
   electricalAssetIds: string[];
   meterIds: string[];
+  measurementAssignmentIds: string[];
   siteAssetIds: string[];
   formIds: string[];
 }
@@ -119,9 +120,32 @@ export function planLocalDeletion(
   }
 
   const meterIds = new Set(
-    store.electricalAssets
-      .filter((item) => electricalAssetIds.has(item.id))
-      .flatMap((item) => item.meters.map((meter) => meter.id)),
+    [
+      ...store.electricalAssets
+        .filter((item) => electricalAssetIds.has(item.id))
+        .flatMap((item) => item.meters.map((meter) => meter.id)),
+      ...store.meterDevices
+        .filter((item) =>
+          item.installationId === installationId &&
+          electricalAssetIds.has(item.installedOnBoardId))
+        .map((item) => item.id),
+    ],
+  );
+  const measurementAssignmentIds = new Set(
+    store.measurementAssignments
+      .filter((assignment) => {
+        if (assignment.installationId !== installationId) return false;
+        if (target.kind === 'installation') return true;
+        if (meterIds.has(assignment.meterId)) return true;
+        if (assignment.target.kind === 'BOARD') {
+          return electricalAssetIds.has(assignment.target.boardId);
+        }
+        if (assignment.target.kind === 'SITE_ASSET') {
+          return siteAssetIds.has(assignment.target.siteAssetId);
+        }
+        return false;
+      })
+      .map((item) => item.id),
   );
   const directFormIds = new Set(
     store.formSubmissions
@@ -151,6 +175,7 @@ export function planLocalDeletion(
     zoneIds: unique(zoneIds),
     electricalAssetIds: unique(electricalAssetIds),
     meterIds: unique(meterIds),
+    measurementAssignmentIds: unique(measurementAssignmentIds),
     siteAssetIds: unique(siteAssetIds),
     formIds: unique(formIds),
   };
@@ -253,6 +278,8 @@ export function applyLocalDeletionPlan(
   const installationIds = new Set(plan.installationIds);
   const zoneIds = new Set(plan.zoneIds);
   const electricalAssetIds = new Set(plan.electricalAssetIds);
+  const meterIds = new Set(plan.meterIds);
+  const measurementAssignmentIds = new Set(plan.measurementAssignmentIds);
   const siteAssetIds = new Set(plan.siteAssetIds);
   const formIds = new Set(plan.formIds);
   const deletedForms = store.formSubmissions.filter((item) => formIds.has(item.id));
@@ -270,6 +297,17 @@ export function applyLocalDeletionPlan(
   store.formSubmissions = store.formSubmissions.filter(
     (item) => !formIds.has(item.id),
   );
+  store.gridSupplies = store.gridSupplies.filter(
+    (item) => !installationIds.has(item.installationId),
+  );
+  store.meterDevices = store.meterDevices.filter(
+    (item) => !meterIds.has(item.id) && !installationIds.has(item.installationId),
+  );
+  store.measurementAssignments = store.measurementAssignments.filter(
+    (item) =>
+      !measurementAssignmentIds.has(item.id) &&
+      !installationIds.has(item.installationId),
+  );
 
   for (const board of store.electricalAssets) {
     if (
@@ -279,6 +317,7 @@ export function applyLocalDeletionPlan(
     ) {
       board.electrical_parent_id = null;
       board.electrical_parent_tbc = true;
+      board.electrical_source = { kind: 'TBC' };
       board.updated_at = updatedAt;
     }
   }
@@ -291,6 +330,7 @@ export function applyLocalDeletionPlan(
     ) {
       asset.electrical_board_id = null;
       asset.electrical_board_tbc = true;
+      asset.electrical_source = { kind: 'TBC' };
       changed = true;
     }
     if (
@@ -300,7 +340,19 @@ export function applyLocalDeletionPlan(
       asset.meter_switchboard_id = null;
       asset.meter_switchboard_tbc = true;
       asset.meter_channels = [];
+      asset.metering_state = { kind: 'TBC' };
       changed = true;
+    }
+    if (asset.metering_state?.kind === 'METERED') {
+      const remainingIds = asset.metering_state.measurementAssignmentIds.filter(
+        (id) => !measurementAssignmentIds.has(id),
+      );
+      if (remainingIds.length !== asset.metering_state.measurementAssignmentIds.length) {
+        asset.metering_state = remainingIds.length
+          ? { kind: 'METERED', measurementAssignmentIds: remainingIds }
+          : { kind: 'TBC' };
+        changed = true;
+      }
     }
     if (changed) asset.updated_at = updatedAt;
   }
@@ -362,5 +414,59 @@ export function applyLocalDeletionPlan(
       removedThumbnails,
       store.cloudSync.thumbnail_queue,
     ),
+  };
+}
+
+export interface LocalDeletionPreview {
+  plan: LocalDeletionPlan;
+  deletes: {
+    zones: number;
+    boards: number;
+    siteAssets: number;
+    meters: number;
+    assignments: number;
+    forms: number;
+  };
+  convertsToTbc: {
+    boards: number;
+    siteAssets: number;
+  };
+}
+
+/** Human-confirmable impact summary; callers must show it before applying. */
+export function previewLocalDeletion(
+  store: AppDataStore,
+  target: LocalDeletionTarget,
+): LocalDeletionPreview | null {
+  const plan = planLocalDeletion(store, target);
+  if (!plan) return null;
+  const boardIds = new Set(plan.electricalAssetIds);
+  const assignmentIds = new Set(plan.measurementAssignmentIds);
+  return {
+    plan,
+    deletes: {
+      zones: plan.zoneIds.length,
+      boards: plan.electricalAssetIds.length,
+      siteAssets: plan.siteAssetIds.length,
+      meters: plan.meterIds.length,
+      assignments: plan.measurementAssignmentIds.length,
+      forms: plan.formIds.length,
+    },
+    convertsToTbc: {
+      boards: store.electricalAssets.filter(
+        (item) =>
+          item.audit_id === plan.installationId &&
+          item.electrical_source?.kind === 'BOARD' &&
+          boardIds.has(item.electrical_source.boardId) &&
+          !boardIds.has(item.id),
+      ).length,
+      siteAssets: store.siteAssets.filter((item) => {
+        if (item.audit_id !== plan.installationId || plan.siteAssetIds.includes(item.id)) return false;
+        const losesSupply = item.electrical_source?.kind === 'BOARD' && boardIds.has(item.electrical_source.boardId);
+        const losesMetering = item.metering_state?.kind === 'METERED' &&
+          item.metering_state.measurementAssignmentIds.some((id) => assignmentIds.has(id));
+        return losesSupply || losesMetering;
+      }).length,
+    },
   };
 }

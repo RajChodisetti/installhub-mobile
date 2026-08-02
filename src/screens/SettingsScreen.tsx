@@ -11,7 +11,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import appConfig from '../../app.json';
 import { useAuth, useTheme } from '../context/AppProviders';
-import { Button, Card, SectionHeader } from '../components/ui';
+import { Badge, Button, Card, SectionHeader } from '../components/ui';
 import { getCloudBackupStats, resetDemoData } from '../repositories';
 import { spacing, typography, type ThemeMode } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -25,6 +25,11 @@ import {
 } from '../services/storageDiagnostics';
 import { apiClient } from '../api/apiClient';
 import { SYNC_API_URL } from '../constants/syncConfig';
+import {
+  passwordChangeSessionNotice,
+  sourceAppDisplayName,
+  sourceUserDisplayEmail,
+} from '../utils/sourceManagedUsers';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'> | any;
 
@@ -42,6 +47,13 @@ export function SettingsScreen({ navigation }: Props) {
   const [backupStats, setBackupStats] = useState(emptyBackupStats);
   const [storage, setStorage] = useState<StorageDiagnostics>();
   const [clearing, setClearing] = useState<'reports' | 'previews'>();
+  const sourceManaged = user?.source_managed === true;
+  const sourceUnavailable = user?.source_state === 'orphaned';
+  const sourceAppName = sourceAppDisplayName(user?.source_app);
+  const sessionNotice = passwordChangeSessionNotice(
+    user?.source_app,
+    sourceManaged,
+  );
 
   const refreshLocalStats = useCallback(async () => {
     const [nextBackupStats, nextStorage] = await Promise.all([
@@ -140,17 +152,47 @@ export function SettingsScreen({ navigation }: Props) {
           {user?.full_name}
         </Text>
         <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-          {user?.email}
+          {sourceUserDisplayEmail(user?.email)}
         </Text>
         <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
           Role: {user?.role === 'admin' ? 'Administrator' : 'Inspector'}
         </Text>
-        <Button
-          title="Change password"
-          variant="secondary"
-          style={{ marginTop: spacing.md }}
-          onPress={() => navigation.navigate('ChangePassword')}
-        />
+        {sourceManaged ? (
+          <>
+            <View style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}>
+              <Badge
+                label={
+                  sourceUnavailable
+                    ? 'Source unavailable · read only'
+                    : `${sourceAppName} managed`
+                }
+              />
+            </View>
+            <Text
+              style={[
+                styles.note,
+                { color: colors.mutedForeground, marginTop: spacing.sm },
+              ]}
+            >
+              {sourceUnavailable
+                ? `The ${sourceAppName} source account is unavailable. This retained Field App Complete record is read-only and no future source synchronization is expected.`
+                : `Your Field App Complete account uses the same credential as ${sourceAppName}. ${sessionNotice}`}
+            </Text>
+          </>
+        ) : null}
+        {!sourceUnavailable ? (
+          <Button
+            title="Change password"
+            variant="secondary"
+            style={{ marginTop: spacing.md }}
+            accessibilityHint={
+              sourceManaged
+                ? `Updates the shared ${sourceAppName} credential.`
+                : 'Opens the password change form.'
+            }
+            onPress={() => navigation.navigate('ChangePassword')}
+          />
+        ) : null}
       </Card>
 
       <Card style={{ marginTop: spacing.md }}>
@@ -194,7 +236,7 @@ export function SettingsScreen({ navigation }: Props) {
             void apiClient.health()
               .then(() => Alert.alert(
                 'Connected',
-                'InstallHub reached the Sustainability Wise API.',
+                'Field App Complete reached the Sustainability Wise API.',
               ))
               .catch((error) => Alert.alert(
                 'Connection failed',
@@ -308,7 +350,7 @@ export function SettingsScreen({ navigation }: Props) {
       <Card style={{ marginTop: spacing.md }}>
         <SectionHeader title="About" />
         <Text style={{ color: colors.foreground, fontWeight: '600' }}>
-          InstallHub {appConfig.expo.version}
+          Field App Complete {appConfig.expo.version}
         </Text>
         <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs }}>
           {Platform.OS === 'ios' ? 'iOS' : Platform.OS} · Offline-first field forms

@@ -2,16 +2,24 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Directory, File, Paths } from 'expo-file-system';
 import {
   apiClient,
-  getStoredCloudJwt,
-  refreshStoredCloudJwt,
+  runWithCloudAccessToken,
   type ExportJobStatus,
 } from '../api/apiClient';
 import { SYNC_API_URL } from '../constants/syncConfig';
+import type { ReportJobPin } from './reportVersioning';
+import { authenticatedFileDownload } from './authenticatedFileDownload';
 
 const ACTIVE_REPORT_JOBS_KEY = 'installhub.active-report-jobs.v1';
 const POLL_INTERVAL_MS = 3_000;
 
-type ActiveReportJobs = Record<string, string>;
+export type RememberedReportJob = {
+  jobId: string;
+  recordVersionNumber?: number | null;
+  recordVersionPayloadHash?: string | null;
+  reportSource?: string | null;
+};
+
+type ActiveReportJobs = Record<string, RememberedReportJob>;
 
 function safeFilename(value: string): string {
   const normalized = value
@@ -21,7 +29,7 @@ function safeFilename(value: string): string {
     .slice(0, 140);
   return normalized.toLowerCase().endsWith('.pdf')
     ? normalized
-    : `${normalized || 'installhub-report'}.pdf`;
+    : `${normalized || 'field-app-complete-report'}.pdf`;
 }
 
 async function readActiveJobs(): Promise<ActiveReportJobs> {
@@ -31,8 +39,26 @@ async function readActiveJobs(): Promise<ActiveReportJobs> {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>)
-        .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      Object.entries(parsed as Record<string, unknown>).flatMap(([key, value]) => {
+        // v1 stored only job IDs. Keep them readable, but callers will verify
+        // the echoed version/hash before resuming.
+        if (typeof value === 'string') return [[key, { jobId: value }]];
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const row = value as Record<string, unknown>;
+        if (typeof row.jobId !== 'string' || !row.jobId) return [];
+        return [[key, {
+          jobId: row.jobId,
+          ...(typeof row.recordVersionNumber === 'number' || row.recordVersionNumber === null
+            ? { recordVersionNumber: row.recordVersionNumber }
+            : {}),
+          ...(typeof row.recordVersionPayloadHash === 'string' || row.recordVersionPayloadHash === null
+            ? { recordVersionPayloadHash: row.recordVersionPayloadHash }
+            : {}),
+          ...(typeof row.reportSource === 'string' || row.reportSource === null
+            ? { reportSource: row.reportSource }
+            : {}),
+        } satisfies RememberedReportJob]];
+      }),
     );
   } catch {
     return {};
@@ -42,13 +68,14 @@ async function readActiveJobs(): Promise<ActiveReportJobs> {
 export async function rememberReportJob(
   entityKey: string,
   jobId: string,
+  pin: ReportJobPin = {},
 ): Promise<void> {
   const jobs = await readActiveJobs();
-  jobs[entityKey] = jobId;
+  jobs[entityKey] = { jobId, ...pin };
   await AsyncStorage.setItem(ACTIVE_REPORT_JOBS_KEY, JSON.stringify(jobs));
 }
 
-export async function rememberedReportJob(entityKey: string): Promise<string | null> {
+export async function rememberedReportJob(entityKey: string): Promise<RememberedReportJob | null> {
   return (await readActiveJobs())[entityKey] ?? null;
 }
 
@@ -94,17 +121,6 @@ export async function waitForReportJob(
   throw new Error('PDF generation was cancelled.');
 }
 
-async function authenticatedDownload(
-  url: string,
-  destination: File,
-  token: string,
-): Promise<File> {
-  return File.downloadFileAsync(url, destination, {
-    headers: { Authorization: `Bearer ${token}` },
-    idempotent: true,
-  });
-}
-
 export async function downloadReportJob(
   jobId: string,
   filename: string,
@@ -117,16 +133,15 @@ export async function downloadReportJob(
   );
   const url =
     `${SYNC_API_URL}/v1/export/jobs/${encodeURIComponent(jobId)}/download`;
-  const token = await getStoredCloudJwt();
-  if (!token) throw new Error('Cloud Backup is not connected.');
-
-  try {
-    return (await authenticatedDownload(url, destination, token)).uri;
-  } catch (firstError) {
-    const refreshed = await refreshStoredCloudJwt();
-    if (!refreshed) throw firstError;
-    return (await authenticatedDownload(url, destination, refreshed)).uri;
-  }
+  const downloaded = await runWithCloudAccessToken(
+    (token) => authenticatedFileDownload({
+      url,
+      destination,
+      token,
+      expectedContentType: 'application/pdf',
+    }),
+  );
+  return downloaded.uri;
 }
 
 export {

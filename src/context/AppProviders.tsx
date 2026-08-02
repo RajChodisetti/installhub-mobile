@@ -3,31 +3,38 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useColorScheme } from 'react-native';
 import { ColorTokens, ThemeMode, colors } from '../theme';
 import { User } from '../types';
-import { initStore } from '../data/seed';
+import {
+  initStore,
+  recoverStoreFromEncryptedCopy,
+  retryStoreStartup,
+} from '../data/seed';
+import { StoreStartupError } from '../data/storePersistence';
 import { userRepo } from '../repositories';
 import {
   loginToCloud,
   logoutFromCloud,
   restoreCloudSession,
-  type CloudUser,
 } from '../api/apiClient';
+import {
+  localUserFromCloud,
+  loginAndCacheCloudUser,
+  type CloudLoginSource,
+} from '../services/authSession';
 
 const THEME_KEY = 'installhub.theme';
-
-function localUserFromCloud(user: CloudUser): User {
-  return {
-    id: user.id,
-    email: user.email,
-    full_name: user.fullName || user.email,
-    role: user.role === 'admin' ? 'admin' : 'user',
-  };
-}
 
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  storageIssue: StoreStartupError | null;
+  retryStorage: () => Promise<void>;
+  restoreStorage: () => Promise<void>;
+  login: (
+    identifier: string,
+    password: string,
+    sourceApp?: CloudLoginSource,
+  ) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -47,32 +54,75 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>('light');
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [storageIssue, setStorageIssue] = useState<StoreStartupError | null>(null);
+
+  const loadPreferencesAndSession = useCallback(async () => {
+    const savedTheme = await AsyncStorage.getItem(THEME_KEY).catch(() => null);
+    if (savedTheme === 'dark' || savedTheme === 'light' || savedTheme === 'system') {
+      setModeState(savedTheme);
+    }
+    // Cloud session availability is independent of local-store integrity. A
+    // remote/offline restore failure never replaces or relabels a store error.
+    const cloudUser = await restoreCloudSession().catch(() => null);
+    if (cloudUser) {
+      const next = localUserFromCloud(cloudUser);
+      await userRepo.setCurrent(next);
+      setUser(next);
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
       try {
         await initStore();
-        const [savedTheme, cloudUser] = await Promise.all([
-          AsyncStorage.getItem(THEME_KEY),
-          restoreCloudSession(),
-        ]);
-        if (
-          savedTheme === 'dark' ||
-          savedTheme === 'light' ||
-          savedTheme === 'system'
-        ) setModeState(savedTheme);
-        if (cloudUser) {
-          const next = localUserFromCloud(cloudUser);
-          await userRepo.updateProfile(next);
-          setUser(next);
-        }
+      } catch (error) {
+        setStorageIssue(error instanceof StoreStartupError
+          ? error
+          : new StoreStartupError(
+              'PERSISTENCE_FAILED',
+              error instanceof Error ? error.message : String(error),
+              false,
+            ));
+        setIsLoading(false);
+        return;
+      }
+      try {
+        await loadPreferencesAndSession();
       } catch {
-        // A server error must not prevent the local app shell from starting.
+        // Local capture remains available if a remote session cannot restore.
       } finally {
         setIsLoading(false);
       }
     })();
-  }, []);
+  }, [loadPreferencesAndSession]);
+
+  const finishStorageAction = useCallback(async (action: () => Promise<unknown>) => {
+    setIsLoading(true);
+    try {
+      await action();
+      setStorageIssue(null);
+      await loadPreferencesAndSession();
+    } catch (error) {
+      setStorageIssue(error instanceof StoreStartupError
+        ? error
+        : new StoreStartupError(
+            'MIGRATION_FAILED',
+            error instanceof Error ? error.message : String(error),
+            Boolean(storageIssue?.canRestore),
+          ));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadPreferencesAndSession, storageIssue?.canRestore]);
+
+  const retryStorage = useCallback(
+    () => finishStorageAction(retryStoreStartup),
+    [finishStorageAction],
+  );
+  const restoreStorage = useCallback(
+    () => finishStorageAction(recoverStoreFromEncryptedCopy),
+    [finishStorageAction],
+  );
 
   const setMode = useCallback(async (next: ThemeMode) => {
     setModeState(next);
@@ -83,17 +133,19 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     void setMode(mode === 'light' ? 'dark' : 'light');
   }, [mode, setMode]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const current = await userRepo.getCurrent();
-    const cloudUser = await loginToCloud({
-      email,
-      password,
-      localUserId: current.id,
-      fullName: current.full_name,
-      role: current.role === 'admin' ? 'admin' : 'inspector',
-    });
-    const next = localUserFromCloud(cloudUser);
-    await userRepo.updateProfile(next);
+  const login = useCallback(async (
+    identifier: string,
+    password: string,
+    sourceApp?: CloudLoginSource,
+  ) => {
+    const next = await loginAndCacheCloudUser(
+      { identifier, password, sourceApp },
+      {
+        authenticate: loginToCloud,
+        persistLocalUser: userRepo.setCurrent,
+        discardCloudSession: logoutFromCloud,
+      },
+    );
     setUser(next);
   }, []);
 
@@ -107,10 +159,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       user,
       isAuthenticated: !!user,
       isLoading,
+      storageIssue,
+      retryStorage,
+      restoreStorage,
       login,
       logout,
     }),
-    [user, isLoading, login, logout],
+    [user, isLoading, storageIssue, retryStorage, restoreStorage, login, logout],
   );
 
   const themeValue = useMemo(

@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ElectricalAsset, FormSubmission, Installation, SiteAsset, Zone } from '../types';
+import type {
+  ElectricalAsset,
+  FormSubmission,
+  GridSupply,
+  Installation,
+  InstallationReadiness,
+  MeasurementAssignment,
+  MeterDevice,
+  SiteAsset,
+  Zone,
+} from '../types';
 import {
+  canonicalInstallationRepo,
   electricalAssetsRepo,
   formsRepo,
   installationsRepo,
@@ -61,22 +72,34 @@ export function useInstallation(id?: string) {
   const [zones, setZones] = useState<Zone[]>([]);
   const [boards, setBoards] = useState<ElectricalAsset[]>([]);
   const [siteAssets, setSiteAssets] = useState<SiteAsset[]>([]);
+  const [gridSupplies, setGridSupplies] = useState<GridSupply[]>([]);
+  const [meterDevices, setMeterDevices] = useState<MeterDevice[]>([]);
+  const [measurementAssignments, setMeasurementAssignments] = useState<MeasurementAssignment[]>([]);
+  const [readiness, setReadiness] = useState<InstallationReadiness | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     try {
-      const [inst, z, b, a] = await Promise.all([
+      const [inst, z, b, a, grids, meters, assignments, ready] = await Promise.all([
         installationsRepo.getById(id),
         zonesRepo.listByInstallation(id),
         electricalAssetsRepo.listByInstallation(id),
         siteAssetsRepo.listByInstallation(id),
+        canonicalInstallationRepo.gridSupplies(id),
+        canonicalInstallationRepo.meterDevices(id),
+        canonicalInstallationRepo.measurementAssignments(id),
+        canonicalInstallationRepo.readiness(id),
       ]);
       setItem(inst);
       setZones(z);
       setBoards(b);
       setSiteAssets(a);
+      setGridSupplies(grids);
+      setMeterDevices(meters);
+      setMeasurementAssignments(assignments);
+      setReadiness(ready);
     } finally {
       setLoading(false);
     }
@@ -89,7 +112,18 @@ export function useInstallation(id?: string) {
     });
   }, [refresh]);
 
-  return { item, zones, boards, siteAssets, loading, refresh };
+  return {
+    item,
+    zones,
+    boards,
+    siteAssets,
+    gridSupplies,
+    meterDevices,
+    measurementAssignments,
+    readiness,
+    loading,
+    refresh,
+  };
 }
 
 export function useZoneWorkspace(zoneId?: string) {

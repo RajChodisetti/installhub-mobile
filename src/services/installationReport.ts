@@ -97,10 +97,10 @@ export function buildInstallationSummaryHtml(input: {
   </style>
 </head>
 <body>
-  <div class="page-header"><div><strong>SUSTAINABILITY WISE</strong></div><div class="right">InstallHub &middot; Installation Pack</div></div>
-  <div class="page-footer">InstallHub installation pack &middot; Page <span class="page-number"></span></div>
+  <div class="page-header"><div><strong>SUSTAINABILITY WISE</strong></div><div class="right">Field App Complete &middot; Installation Pack</div></div>
+  <div class="page-footer">Field App Complete installation pack &middot; Page <span class="page-number"></span></div>
   <header class="cover">
-    <div class="eyebrow">Field installation record &middot; InstallHub</div>
+    <div class="eyebrow">Field installation record &middot; Field App Complete</div>
     <h1>Installation Pack</h1>
     <img class="logo" src="${input.brandLogoDataUri}" alt="Sustainability Wise" />
     <div class="meta">
@@ -205,7 +205,7 @@ export async function createInstallationPackPdf(
     .slice(0, 70) || 'site';
   const output = new File(
     directory,
-    `InstallHub-${safeSite}-${Date.now()}.pdf`,
+    `Field-App-Complete-${safeSite}-${Date.now()}.pdf`,
   );
   output.write(bytes);
   if (!output.exists || (output.size ?? 0) < MIN_VALID_PDF_BYTES) {

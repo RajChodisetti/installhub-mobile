@@ -20,6 +20,8 @@ import {
   type StorageDiagnostics,
 } from '../services/storageDiagnostics';
 import { spacing, typography } from '../theme';
+import { readOperationalDiagnostics } from '../services/operationalDiagnostics';
+import type { OperationalDiagnosticEvent } from '../services/operationalDiagnosticsPolicy';
 
 type HealthState =
   | { status: 'checking'; detail: string }
@@ -55,6 +57,7 @@ export function DiagnosticsScreen() {
     retrySync,
   } = useSyncStatus();
   const [diagnostics, setDiagnostics] = useState<StorageDiagnostics>();
+  const [operationalEvents, setOperationalEvents] = useState<OperationalDiagnosticEvent[]>([]);
   const [refreshing, setRefreshing] = useState(true);
   const [cacheAction, setCacheAction] = useState<'reports' | 'thumbnails'>();
   const [health, setHealth] = useState<HealthState>({
@@ -82,7 +85,12 @@ export function DiagnosticsScreen() {
     setRefreshing(true);
     void refreshHealth();
     try {
-      setDiagnostics(await getStorageDiagnostics());
+      const [nextDiagnostics, nextOperationalEvents] = await Promise.all([
+        getStorageDiagnostics(),
+        readOperationalDiagnostics(),
+      ]);
+      setDiagnostics(nextDiagnostics);
+      setOperationalEvents(nextOperationalEvents);
     } catch (error) {
       Alert.alert(
         'Could not inspect local storage',
@@ -101,7 +109,10 @@ export function DiagnosticsScreen() {
     try {
       const result = retry ? await retrySync() : await triggerSync();
       if (result.phase === 'done') {
-        Alert.alert('Backup complete', 'InstallHub Cloud Backup is up to date.');
+        Alert.alert(
+          'Backup complete',
+          'Field App Complete Cloud Backup is up to date.',
+        );
       } else if (result.phase === 'offline') {
         Alert.alert('Still offline', result.lastError || 'The API could not be reached.');
       } else if (result.phase === 'error') {
@@ -294,6 +305,28 @@ export function DiagnosticsScreen() {
             {row('Meters', diagnostics.entities.meters)}
             {row('Forms', diagnostics.entities.formSubmissions)}
             {row('Form attachments', diagnostics.entities.attachments)}
+          </Card>
+
+          <Card style={{ marginTop: spacing.md }}>
+            <Text style={[typography.heading, { color: colors.foreground }]}>Operational diagnostics</Text>
+            <Text style={[styles.protectedText, { color: colors.mutedForeground }]}>
+              Stored only on this device. These records exclude answers, evidence paths, tokens, customer data, and recovery secrets.
+            </Text>
+            {operationalEvents.length
+              ? operationalEvents.slice(-12).reverse().map((event, index) => {
+                  const detail = event.kind === 'MIGRATION'
+                    ? `${event.outcome} · ${event.recoveryCode}`
+                    : event.kind === 'BACKUP_PENDING'
+                      ? `Pending age ${Math.round(event.ageMs / 1000)}s`
+                      : event.kind === 'SYNC'
+                        ? `${event.outcome} · schema ${event.schemaVersion} · ${event.latencyMs}ms${event.conflict ? ' · conflict' : ''}`
+                        : event.code;
+                  return row(
+                    `${event.kind} · ${new Date(event.recordedAt).toLocaleString()} · ${index + 1}`,
+                    detail,
+                  );
+                })
+              : row('Events', 'None yet')}
           </Card>
 
           <Card style={{ marginTop: spacing.md }}>

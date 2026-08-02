@@ -369,6 +369,8 @@ test('report HTML escapes field values and retains the form title', () => {
   const html = buildFormReportHtml(submission);
   assert.match(html, /Honeywell Q400 Water Meter Installation Form/);
   assert.match(html, /Prepared by Sustainability Wise/);
+  assert.match(html, /Field App Complete/);
+  assert.doesNotMatch(html, /InstallHub/);
   assert.match(html, /SUSTAINABILITY/);
   assert.match(html, /#142F70/);
   assert.doesNotMatch(html, /<script>/);

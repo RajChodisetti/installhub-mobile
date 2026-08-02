@@ -100,6 +100,7 @@ function storeFixture(): AppDataStore {
       created_at: timestamp,
       updated_at: timestamp,
     }],
+    gridSupplies: [],
     zones: [
       {
         id: 'zone-delete',
@@ -153,6 +154,8 @@ function storeFixture(): AppDataStore {
         updated_at: timestamp,
       },
     ],
+    meterDevices: [],
+    measurementAssignments: [],
     siteAssets: [
       {
         id: 'site-delete',

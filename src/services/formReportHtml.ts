@@ -226,9 +226,9 @@ export function buildFormReportHtml(
     <div class="page-header-brand">SUSTAINABILITY WISE</div>
     <div class="page-header-title">${escapeHtml(definition.shortTitle)} &middot; ${coverValue(submission, 'site.date_time')}</div>
   </div>
-  <div class="page-footer">InstallHub field record &middot; Page <span class="page-number"></span></div>
+  <div class="page-footer">Field App Complete field record &middot; Page <span class="page-number"></span></div>
   <header class="cover">
-    <div class="cover-eyebrow">Field installation record &middot; InstallHub</div>
+    <div class="cover-eyebrow">Field installation record &middot; Field App Complete</div>
     <h1 class="cover-title">${escapeHtml(definition.title)}</h1>
     <div class="cover-brand">
       <div class="cover-brand-label">Prepared by</div>
@@ -247,7 +247,7 @@ export function buildFormReportHtml(
     <div class="cover-status ${submission.status === 'Completed' ? 'cover-status-completed' : 'cover-status-draft'}">${escapeHtml(submission.status)}</div>
   </header>
   ${sections}
-  <div class="document-footer">Prepared by Sustainability Wise &middot; InstallHub field record &middot; Schema v${submission.schema_version}${submission.supersedes_id ? ` &middot; Amendment of ${escapeHtml(submission.supersedes_id)}` : ''}</div>
+  <div class="document-footer">Prepared by Sustainability Wise &middot; Field App Complete field record &middot; Schema v${submission.schema_version}${submission.supersedes_id ? ` &middot; Amendment of ${escapeHtml(submission.supersedes_id)}` : ''}</div>
 </body>
 </html>`;
 }

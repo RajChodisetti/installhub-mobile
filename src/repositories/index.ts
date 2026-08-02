@@ -2,7 +2,12 @@ import type {
   ElectricalAsset,
   FormSubmission,
   FormType,
+  GridSupply,
+  InstallationReadiness,
   Installation,
+  MeasurementAssignment,
+  MeterDevice,
+  MeteringState,
   Meter,
   SiteAsset,
   User,
@@ -14,12 +19,35 @@ import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
 import {
   applyLocalDeletionPlan,
   planLocalDeletion,
+  previewLocalDeletion,
   type LocalDeletionTarget,
 } from './deletionIntegrity';
+import {
+  allAssetMeteringRows,
+  boardIsOnAssetSupplyPath,
+  boardTypeCode,
+  bumpTreeRevision,
+  electricalTreeRows,
+  installationReadiness,
+  nextDisplayCode,
+  normalizeCanonicalStore,
+  primaryGridSupplyId,
+  projectCanonicalCompatibility,
+  replaceBoardMetersFromLegacy,
+  setAssetMeteringState,
+  siteAssetTypeCode,
+  type AllAssetMeteringRow,
+  type ElectricalTreeRow,
+} from '../domain/installationV2';
 
 export * from './cloudSyncRepository';
 export * from './deletionIntegrity';
 export * from './remoteInstallationsRepository';
+
+export async function getLocalDeletionPreview(target: LocalDeletionTarget) {
+  await initStore();
+  return previewLocalDeletion(getStore(), target);
+}
 
 export interface InstallationsRepository {
   list(): Promise<Installation[]>;
@@ -42,6 +70,10 @@ export interface InstallationsRepository {
   update(id: string, patch: Partial<Installation>): Promise<Installation>;
   remove(id: string): Promise<void>;
   setCloudBackupEnabled(id: string, enabled: boolean): Promise<Installation>;
+  applyServerState(id: string, patch: Pick<Installation,
+    'status' | 'tree_revision' | 'server_tree_revision' | 'record_version_number' | 'completed_at' | 'completed_from_revision' |
+    'reopened_at' | 'reopen_reason' | 'backup_conflict' | 'pending_completion' |
+    'legacy_completed_unpinned'>): Promise<Installation>;
 }
 
 export interface ZonesRepository {
@@ -76,11 +108,35 @@ export interface SiteAssetsRepository {
   }): Promise<SiteAsset>;
   update(id: string, patch: Partial<SiteAsset>): Promise<SiteAsset>;
   remove(id: string): Promise<void>;
+  setMetering(id: string, state: MeteringState, assignments?: MeasurementAssignment[]): Promise<SiteAsset>;
+}
+
+export interface CanonicalInstallationRepository {
+  readiness(installationId: string): Promise<InstallationReadiness>;
+  electricalTree(installationId: string): Promise<ElectricalTreeRow[]>;
+  allAssetMetering(installationId: string): Promise<AllAssetMeteringRow[]>;
+  meterDevices(installationId: string): Promise<MeterDevice[]>;
+  measurementAssignments(installationId: string): Promise<MeasurementAssignment[]>;
+  gridSupplies(installationId: string): Promise<GridSupply[]>;
+  eligibleMetersForAsset(assetId: string): Promise<MeterDevice[]>;
+}
+
+export interface GridSupplyRemovalPreview {
+  boards: number;
+  siteAssets: number;
+  assignments: number;
+}
+
+export interface GridSuppliesRepository {
+  create(input: Omit<GridSupply, 'id'>): Promise<GridSupply>;
+  update(id: string, patch: Partial<Omit<GridSupply, 'id' | 'installationId'>>): Promise<GridSupply>;
+  previewRemove(id: string): Promise<GridSupplyRemovalPreview>;
+  remove(id: string, convertDependentsToTbc: boolean): Promise<void>;
 }
 
 export interface UserRepository {
   getCurrent(): Promise<User>;
-  updateProfile(patch: Partial<User>): Promise<User>;
+  setCurrent(user: User): Promise<User>;
 }
 
 export interface FormsRepository {
@@ -109,6 +165,12 @@ async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void>
   await initStore();
   const currentPlan = planLocalDeletion(getStore(), target);
   if (!currentPlan) return;
+  const installation = getStore().installations.find(
+    (item) => item.id === currentPlan.installationId,
+  );
+  if (installation?.status === 'Completed' && target.kind !== 'installation') {
+    throw new Error('Reopen this completed installation before deleting or reassigning its records.');
+  }
   if (
     target.kind === 'form_draft' &&
     currentPlan.formIds.some((id) => id !== target.id)
@@ -123,6 +185,7 @@ async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void>
     const plan = planLocalDeletion(store, target);
     if (!plan) return;
     effects = applyLocalDeletionPlan(store, plan, nowIso());
+    if (!plan.installationIds.length) bumpTreeRevision(store, plan.installationId);
   });
   if (!effects) return;
   const { cleanupDeletedTreeStorage } = await import(
@@ -141,11 +204,18 @@ export const installationsRepo: InstallationsRepository = {
     return getStore().installations.find((i) => i.id === id) ?? null;
   },
   async create(input) {
+    const id = createId('inst');
     const record: Installation = {
       ...input,
-      id: createId('inst'),
+      id,
       status: input.status ?? 'Draft',
       cloud_backup_enabled: input.cloud_backup_enabled ?? false,
+      tree_schema_version: 2,
+      external_key: input.external_key ?? `local:${id}`,
+      site_code: input.site_code,
+      timezone: input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+      tree_revision: 0,
+      backup_conflict: { kind: 'NONE' },
       created_at: nowIso(),
       updated_at: nowIso(),
     };
@@ -159,8 +229,19 @@ export const installationsRepo: InstallationsRepository = {
     await updateStore((s) => {
       const idx = s.installations.findIndex((i) => i.id === id);
       if (idx < 0) throw new Error('Installation not found');
+      if (patch.status && patch.status !== s.installations[idx].status) {
+        throw new Error('Use the validated Complete or Reopen action to change installation status.');
+      }
+      const domainKeys: Array<keyof Installation> = [
+        'client_name', 'site_name', 'site_address', 'inspector_name', 'audit_date',
+        'site_code', 'timezone',
+      ];
+      if (s.installations[idx].status === 'Completed' && domainKeys.some((key) => key in patch)) {
+        throw new Error('Reopen this completed installation before editing it.');
+      }
       updated = { ...s.installations[idx], ...patch, id, updated_at: nowIso() };
       s.installations[idx] = updated;
+      if (domainKeys.some((key) => key in patch)) bumpTreeRevision(s, id);
     });
     return updated!;
   },
@@ -172,6 +253,16 @@ export const installationsRepo: InstallationsRepository = {
       cloud_backup_enabled: enabled,
       ...(enabled ? { cloud_backup_retained: false } : {}),
     });
+  },
+  async applyServerState(id, patch) {
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      updated = { ...store.installations[index], ...patch, id };
+      store.installations[index] = updated;
+    });
+    return updated!;
   },
 };
 
@@ -193,7 +284,10 @@ export const zonesRepo: ZonesRepository = {
       updated_at: nowIso(),
     };
     await updateStore((s) => {
+      const installation = s.installations.find((item) => item.id === input.audit_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       s.zones.push(record);
+      bumpTreeRevision(s, input.audit_id);
     });
     return record;
   },
@@ -202,8 +296,11 @@ export const zonesRepo: ZonesRepository = {
     await updateStore((s) => {
       const idx = s.zones.findIndex((z) => z.id === id);
       if (idx < 0) throw new Error('Zone not found');
+      const installation = s.installations.find((item) => item.id === s.zones[idx].audit_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       updated = { ...s.zones[idx], ...patch, id, updated_at: nowIso() };
       s.zones[idx] = updated;
+      bumpTreeRevision(s, updated.audit_id);
     });
     return updated!;
   },
@@ -226,28 +323,75 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     return getStore().electricalAssets.find((e) => e.id === id) ?? null;
   },
   async create(input) {
-    const record: ElectricalAsset = {
-      ...input,
-      meters: input.meters ?? [],
-      extra_photos: input.extra_photos ?? [],
-      meter_present: input.meter_present ?? (input.meters?.length ?? 0) > 0,
-      id: createId('board'),
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    };
+    let record: ElectricalAsset | null = null;
     await updateStore((s) => {
+      const installation = s.installations.find((item) => item.id === input.audit_id);
+      if (!installation) throw new Error('Installation not found');
+      if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      const typeCode = input.type_code ?? boardTypeCode(input.asset_type);
+      const generated = nextDisplayCode(installation, typeCode);
+      const requested = input.display_code?.trim();
+      const displayCode = input.display_code_meta ?? {
+        ...generated,
+        value: requested || generated.value,
+        isOverridden: Boolean(requested && requested !== generated.value),
+      };
+      record = {
+        ...input,
+        type_code: typeCode,
+        display_code_meta: displayCode,
+        display_code: displayCode.value,
+        electrical_source: input.electrical_source ?? (
+          input.electrical_parent_tbc
+            ? { kind: 'TBC' }
+            : input.electrical_parent_id
+              ? { kind: 'BOARD', boardId: input.electrical_parent_id }
+              : typeCode === 'MSB'
+                ? { kind: 'GRID', gridSupplyId: primaryGridSupplyId(input.audit_id) }
+                : { kind: 'TBC' }
+        ),
+        meters: input.meters ?? [],
+        extra_photos: input.extra_photos ?? [],
+        meter_present: input.meter_present ?? (input.meters?.length ?? 0) > 0,
+        id: createId('board'),
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
       s.electricalAssets.push(record);
+      if (record.meters.length) replaceBoardMetersFromLegacy(s, record, [...record.meters]);
+      bumpTreeRevision(s, input.audit_id);
     });
-    return record;
+    return record!;
   },
   async update(id, patch) {
     let updated: ElectricalAsset | null = null;
     await updateStore((s) => {
       const idx = s.electricalAssets.findIndex((e) => e.id === id);
       if (idx < 0) throw new Error('Electrical asset not found');
+      const installation = s.installations.find((item) => item.id === s.electricalAssets[idx].audit_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      const previous = s.electricalAssets[idx];
+      const typeCode = patch.type_code ?? (patch.asset_type ? boardTypeCode(patch.asset_type) : previous.type_code);
+      const displayCodeMeta = patch.display_code_meta ?? (patch.display_code !== undefined
+        ? {
+            ...(previous.display_code_meta ?? { generatedValue: previous.display_code, ruleVersion: 1 as const, provisional: true }),
+            value: patch.display_code.trim(),
+            isOverridden: patch.display_code.trim() !== (previous.display_code_meta?.generatedValue ?? previous.display_code),
+          }
+        : previous.display_code_meta);
+      const electricalSource = patch.electrical_source ?? (
+        patch.electrical_parent_tbc
+          ? { kind: 'TBC' as const }
+          : patch.electrical_parent_id
+            ? { kind: 'BOARD' as const, boardId: patch.electrical_parent_id }
+            : previous.electrical_source
+      );
       updated = {
-        ...s.electricalAssets[idx],
+        ...previous,
         ...patch,
+        type_code: typeCode,
+        display_code_meta: displayCodeMeta,
+        electrical_source: electricalSource,
         id,
         updated_at: nowIso(),
       };
@@ -255,6 +399,9 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
         updated.meter_present = patch.meters.length > 0;
       }
       s.electricalAssets[idx] = updated;
+      if (patch.meters) replaceBoardMetersFromLegacy(s, updated, patch.meters);
+      projectCanonicalCompatibility(s, updated.audit_id);
+      bumpTreeRevision(s, updated.audit_id);
     });
     return updated!;
   },
@@ -277,32 +424,256 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     return getStore().siteAssets.find((a) => a.id === id) ?? null;
   },
   async create(input) {
-    const record: SiteAsset = {
-      ...input,
-      extra_photos: input.extra_photos ?? [],
-      meter_channels: input.meter_channels ?? [],
-      meter_present: input.meter_present ?? false,
-      id: createId('site'),
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    };
+    let record: SiteAsset | null = null;
     await updateStore((s) => {
+      const installation = s.installations.find((item) => item.id === input.audit_id);
+      if (!installation) throw new Error('Installation not found');
+      if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      const typeCode = input.type_code ?? siteAssetTypeCode(input.asset_type);
+      const generated = nextDisplayCode(installation, typeCode);
+      const requested = input.display_code?.trim();
+      const displayCode = input.display_code_meta ?? {
+        ...generated,
+        value: requested || generated.value,
+        isOverridden: Boolean(requested && requested !== generated.value),
+      };
+      record = {
+        ...input,
+        type_code: typeCode,
+        display_code_meta: displayCode,
+        display_code: displayCode.value,
+        electrical_source: input.electrical_source ?? (
+          input.electrical_board_tbc || !input.electrical_board_id
+            ? { kind: 'TBC' }
+            : { kind: 'BOARD', boardId: input.electrical_board_id }
+        ),
+        metering_state: input.metering_state ?? { kind: 'TBC' },
+        extra_photos: input.extra_photos ?? [],
+        meter_channels: input.meter_channels ?? [],
+        meter_present: input.meter_present ?? false,
+        id: createId('site'),
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
       s.siteAssets.push(record);
+      bumpTreeRevision(s, input.audit_id);
     });
-    return record;
+    return record!;
   },
   async update(id, patch) {
     let updated: SiteAsset | null = null;
     await updateStore((s) => {
       const idx = s.siteAssets.findIndex((a) => a.id === id);
       if (idx < 0) throw new Error('Site asset not found');
-      updated = { ...s.siteAssets[idx], ...patch, id, updated_at: nowIso() };
+      const previous = s.siteAssets[idx];
+      const installation = s.installations.find((item) => item.id === previous.audit_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      if (
+        patch.metering_state &&
+        JSON.stringify(patch.metering_state) !== JSON.stringify(previous.metering_state)
+      ) {
+        throw new Error('Use the atomic metering reconciliation action to change metering state.');
+      }
+      if (patch.meter_present !== undefined && patch.meter_present !== previous.meter_present) {
+        throw new Error('Use the atomic metering reconciliation action to change meter coverage.');
+      }
+      const typeCode = patch.type_code ?? (patch.asset_type ? siteAssetTypeCode(patch.asset_type) : previous.type_code);
+      const displayCodeMeta = patch.display_code_meta ?? (patch.display_code !== undefined
+        ? {
+            ...(previous.display_code_meta ?? { generatedValue: previous.display_code ?? '', ruleVersion: 1 as const, provisional: true }),
+            value: patch.display_code.trim(),
+            isOverridden: patch.display_code.trim() !== (previous.display_code_meta?.generatedValue ?? previous.display_code),
+          }
+        : previous.display_code_meta);
+      const electricalSource = patch.electrical_source ?? (
+        patch.electrical_board_tbc
+          ? { kind: 'TBC' as const }
+          : patch.electrical_board_id
+            ? { kind: 'BOARD' as const, boardId: patch.electrical_board_id }
+            : previous.electrical_source
+      );
+      updated = {
+        ...previous,
+        ...patch,
+        type_code: typeCode,
+        display_code_meta: displayCodeMeta,
+        electrical_source: electricalSource,
+        id,
+        updated_at: nowIso(),
+      };
       s.siteAssets[idx] = updated;
+      projectCanonicalCompatibility(s, updated.audit_id);
+      bumpTreeRevision(s, updated.audit_id);
     });
     return updated!;
   },
   async remove(id) {
     await removeLocalTreeTarget({ kind: 'site_asset', id });
+  },
+  async setMetering(id, state, assignments = []) {
+    let updated: SiteAsset | null = null;
+    await updateStore((store) => {
+      const asset = store.siteAssets.find((item) => item.id === id);
+      if (!asset) throw new Error('Site asset not found');
+      const installation = store.installations.find((item) => item.id === asset.audit_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      setAssetMeteringState(store, id, state, assignments);
+      asset.updated_at = nowIso();
+      bumpTreeRevision(store, asset.audit_id);
+      updated = asset;
+    });
+    return updated!;
+  },
+};
+
+export const canonicalInstallationRepo: CanonicalInstallationRepository = {
+  async readiness(installationId) {
+    await initStore();
+    return installationReadiness(getStore(), installationId);
+  },
+  async electricalTree(installationId) {
+    await initStore();
+    return electricalTreeRows(getStore(), installationId);
+  },
+  async allAssetMetering(installationId) {
+    await initStore();
+    return allAssetMeteringRows(getStore(), installationId);
+  },
+  async meterDevices(installationId) {
+    await initStore();
+    return getStore().meterDevices.filter((item) => item.installationId === installationId);
+  },
+  async measurementAssignments(installationId) {
+    await initStore();
+    return getStore().measurementAssignments.filter((item) => item.installationId === installationId);
+  },
+  async gridSupplies(installationId) {
+    await initStore();
+    return getStore().gridSupplies.filter((item) => item.installationId === installationId);
+  },
+  async eligibleMetersForAsset(assetId) {
+    await initStore();
+    const store = getStore();
+    const asset = store.siteAssets.find((item) => item.id === assetId);
+    if (!asset) return [];
+    return store.meterDevices.filter(
+      (meter) =>
+        meter.installationId === asset.audit_id &&
+        boardIsOnAssetSupplyPath(store, asset, meter.installedOnBoardId),
+    );
+  },
+};
+
+export const gridSuppliesRepo: GridSuppliesRepository = {
+  async create(input) {
+    if (!input.name.trim()) throw new Error('Grid supply name is required.');
+    let created: GridSupply | null = null;
+    await updateStore((store) => {
+      const installation = store.installations.find((item) => item.id === input.installationId);
+      if (!installation) throw new Error('Installation not found');
+      if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing Grid supplies.');
+      const existing = store.gridSupplies.filter((item) => item.installationId === input.installationId);
+      const makeDefault = input.isDefault || !existing.length;
+      if (makeDefault) existing.forEach((item) => { item.isDefault = false; });
+      created = {
+        ...input,
+        id: createId('grid'),
+        name: input.name.trim(),
+        nmi: input.nmi?.trim() || undefined,
+        externalKey: input.externalKey?.trim() || undefined,
+        isDefault: makeDefault,
+      };
+      store.gridSupplies.push(created);
+      bumpTreeRevision(store, input.installationId);
+    });
+    return created!;
+  },
+  async update(id, patch) {
+    let updated: GridSupply | null = null;
+    await updateStore((store) => {
+      const index = store.gridSupplies.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Grid supply not found');
+      const current = store.gridSupplies[index];
+      const installation = store.installations.find((item) => item.id === current.installationId);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing Grid supplies.');
+      if (patch.name !== undefined && !patch.name.trim()) throw new Error('Grid supply name is required.');
+      if (patch.isDefault === false && current.isDefault) {
+        throw new Error('Set another Grid supply as default instead.');
+      }
+      if (patch.isDefault) {
+        store.gridSupplies
+          .filter((item) => item.installationId === current.installationId)
+          .forEach((item) => { item.isDefault = item.id === id; });
+      }
+      updated = {
+        ...current,
+        ...patch,
+        id,
+        installationId: current.installationId,
+        name: patch.name?.trim() ?? current.name,
+        nmi: patch.nmi !== undefined ? patch.nmi.trim() || undefined : current.nmi,
+        externalKey: patch.externalKey !== undefined ? patch.externalKey.trim() || undefined : current.externalKey,
+      };
+      store.gridSupplies[index] = updated;
+      bumpTreeRevision(store, current.installationId);
+    });
+    return updated!;
+  },
+  async previewRemove(id) {
+    await initStore();
+    const store = getStore();
+    return {
+      boards: store.electricalAssets.filter(
+        (item) => item.electrical_source?.kind === 'GRID' && item.electrical_source.gridSupplyId === id,
+      ).length,
+      siteAssets: store.siteAssets.filter(
+        (item) => item.electrical_source?.kind === 'GRID' && item.electrical_source.gridSupplyId === id,
+      ).length,
+      assignments: store.measurementAssignments.filter(
+        (item) => item.target.kind === 'GRID_BOUNDARY' && item.target.gridSupplyId === id,
+      ).length,
+    };
+  },
+  async remove(id, convertDependentsToTbc) {
+    await updateStore((store) => {
+      const grid = store.gridSupplies.find((item) => item.id === id);
+      if (!grid) return;
+      const installation = store.installations.find((item) => item.id === grid.installationId);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before deleting a Grid supply.');
+      const siblings = store.gridSupplies.filter((item) => item.installationId === grid.installationId && item.id !== id);
+      if (!siblings.length) throw new Error('An installation must keep at least one Grid supply.');
+      if (grid.isDefault) throw new Error('Set another Grid supply as default before deleting this one.');
+      const boards = store.electricalAssets.filter(
+        (item) => item.audit_id === grid.installationId && item.electrical_source?.kind === 'GRID' && item.electrical_source.gridSupplyId === id,
+      );
+      const assets = store.siteAssets.filter(
+        (item) => item.audit_id === grid.installationId && item.electrical_source?.kind === 'GRID' && item.electrical_source.gridSupplyId === id,
+      );
+      const assignments = store.measurementAssignments.filter(
+        (item) => item.installationId === grid.installationId && item.target.kind === 'GRID_BOUNDARY' && item.target.gridSupplyId === id,
+      );
+      if (!convertDependentsToTbc && (boards.length || assets.length || assignments.length)) {
+        throw new Error('This Grid supply still has dependants. Preview and explicitly convert them to TBC first.');
+      }
+      boards.forEach((board) => {
+        board.electrical_source = { kind: 'TBC' };
+        board.electrical_parent_id = null;
+        board.electrical_parent_tbc = true;
+        board.updated_at = nowIso();
+      });
+      assets.forEach((asset) => {
+        asset.electrical_source = { kind: 'TBC' };
+        asset.electrical_board_id = null;
+        asset.electrical_board_tbc = true;
+        asset.updated_at = nowIso();
+      });
+      assignments.forEach((assignment) => {
+        assignment.target = { kind: 'TBC' };
+        assignment.status = 'TBC';
+      });
+      store.gridSupplies = store.gridSupplies.filter((item) => item.id !== id);
+      bumpTreeRevision(store, grid.installationId);
+    });
   },
 };
 
@@ -311,13 +682,11 @@ export const userRepo: UserRepository = {
     await initStore();
     return getStore().user;
   },
-  async updateProfile(patch) {
-    let updated: User | null = null;
+  async setCurrent(user) {
     await updateStore((s) => {
-      updated = { ...s.user, ...patch, id: s.user.id };
-      s.user = updated;
+      s.user = { ...user };
     });
-    return updated!;
+    return { ...user };
   },
 };
 
@@ -350,7 +719,10 @@ export const formsRepo: FormsRepository = {
       updated_at: timestamp,
     };
     await updateStore((store) => {
+      const installation = store.installations.find((item) => item.id === input.installation_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before adding a form.');
       store.formSubmissions.unshift(record);
+      bumpTreeRevision(store, input.installation_id);
     });
     return record;
   },
@@ -362,6 +734,10 @@ export const formsRepo: FormsRepository = {
       if (store.formSubmissions[index].status === 'Completed') {
         throw new Error('Completed forms are read-only. Create an amendment instead.');
       }
+      const installation = store.installations.find(
+        (item) => item.id === store.formSubmissions[index].installation_id,
+      );
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing a form.');
       updated = {
         ...store.formSubmissions[index],
         ...patch,
@@ -370,6 +746,7 @@ export const formsRepo: FormsRepository = {
         updated_at: nowIso(),
       };
       store.formSubmissions[index] = updated;
+      bumpTreeRevision(store, updated.installation_id);
     });
     return updated!;
   },
@@ -378,6 +755,13 @@ export const formsRepo: FormsRepository = {
     await updateStore((store) => {
       const index = store.formSubmissions.findIndex((form) => form.id === id);
       if (index < 0) throw new Error('Form submission not found');
+      if (store.formSubmissions[index].status === 'Completed') {
+        throw new Error('Completed forms are immutable. Create an amendment instead.');
+      }
+      const installation = store.installations.find(
+        (item) => item.id === store.formSubmissions[index].installation_id,
+      );
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before completing a form.');
       const timestamp = nowIso();
       updated = {
         ...store.formSubmissions[index],
@@ -386,6 +770,7 @@ export const formsRepo: FormsRepository = {
         updated_at: timestamp,
       };
       store.formSubmissions[index] = updated;
+      bumpTreeRevision(store, updated.installation_id);
     });
     return updated!;
   },
@@ -406,7 +791,10 @@ export const formsRepo: FormsRepository = {
       supersedes_id: original.id,
     };
     await updateStore((store) => {
+      const installation = store.installations.find((item) => item.id === clone.installation_id);
+      if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before creating an amendment.');
       store.formSubmissions.unshift(clone);
+      bumpTreeRevision(store, clone.installation_id);
     });
     return clone;
   },

@@ -1,6 +1,6 @@
-# InstallHub Mobile
+# Field App Complete
 
-Production-structured Expo React Native (iOS-first) app that mirrors the InstallHub web field installation workflow.
+Production-structured Expo React Native (iOS-first) app that mirrors the Field App Complete web field installation workflow.
 
 Location: `Tuvi/installhub-mobile` (sibling of `installhub/`, not nested inside it).
 
@@ -22,7 +22,7 @@ npx expo start
 # then press i for iOS simulator, or scan QR with Expo Go
 ```
 
-Sign in with an InstallHub account provisioned on the Sustainability Wise API.
+Sign in with a Field App Complete account provisioned on the Sustainability Wise API.
 
 Optional development configuration:
 

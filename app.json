@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "InstallHub",
-    "slug": "installhub-mobile",
+    "name": "Field App Complete",
+    "slug": "field-app-complete",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -9,10 +9,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tuvi.installhub",
+      "buildNumber": "1",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "infoPlist": {
-        "NSCameraUsageDescription": "InstallHub needs camera access to scan device barcodes and capture switchboard and device photos.",
-        "NSPhotoLibraryUsageDescription": "InstallHub needs photo library access to attach site photos.",
-        "NSLocationWhenInUseUsageDescription": "InstallHub uses your location to record installation coordinates on field forms."
+        "NSCameraUsageDescription": "Field App Complete needs camera access to scan device barcodes and capture switchboard and device photos.",
+        "NSPhotoLibraryUsageDescription": "Field App Complete needs photo library access to attach site photos.",
+        "NSLocationWhenInUseUsageDescription": "Field App Complete uses your location to record installation coordinates on field forms."
       }
     },
     "android": {
@@ -23,7 +27,13 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.tuvi.installhub",
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -33,20 +43,20 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "InstallHub needs camera access to scan device barcodes and capture installation photos.",
+          "cameraPermission": "Field App Complete needs camera access to scan device barcodes and capture installation photos.",
           "barcodeScannerEnabled": true
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow InstallHub to attach site and device photos."
+          "photosPermission": "Allow Field App Complete to attach site and device photos."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow InstallHub to record installation coordinates on field forms."
+          "locationWhenInUsePermission": "Allow Field App Complete to record installation coordinates on field forms."
         }
       ],
       [
@@ -61,6 +71,12 @@
       "expo-asset",
       "expo-secure-store",
       "expo-background-task"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0bbcc4dc-40f4-475f-9292-1ebfb70af9c9"
+      }
+    },
+    "owner": "rajchodisetti1"
   }
 }

@@ -27,7 +27,9 @@ export function DashboardScreen({ navigation }: Props) {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.hero}>
-        <Text style={[typography.title, { color: colors.foreground }]}>InstallHub</Text>
+        <Text style={[typography.title, { color: colors.foreground }]}>
+          Field App Complete
+        </Text>
         <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
           Site installations & Wattwatcher metering
         </Text>

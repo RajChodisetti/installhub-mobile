@@ -72,7 +72,7 @@ test('summarizes backup and thumbnail queue states independently', () => {
 });
 
 test('estimates UTF-8 byte length for ASCII and multibyte text', () => {
-  assert.equal(utf8ByteLength('InstallHub'), 10);
+  assert.equal(utf8ByteLength('Field App Complete'), 18);
   assert.equal(utf8ByteLength('A–B'), 5);
   assert.equal(utf8ByteLength('📷'), 4);
 });

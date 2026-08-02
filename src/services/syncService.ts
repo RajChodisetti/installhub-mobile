@@ -1,18 +1,26 @@
 import { File } from 'expo-file-system';
 import { sha256 } from 'js-sha256';
-import { apiClient, AuthError, NetworkError } from '../api/apiClient';
+import { apiClient, ApiError, AuthError, NetworkError } from '../api/apiClient';
 import {
   getInstallationBackupTree,
   getNextUpload,
   listInstallationsNeedingBackup,
   listUploadQueue,
   markInstallationBackedUp,
+  markInstallationBackupConflict,
+  recordInstallationServerTreeRevision,
   reconcileBackupMediaQueue,
   resetInterruptedUploads,
   updateUploadQueueItem,
 } from '../repositories/cloudSyncRepository';
+import { installationsRepo } from '../repositories';
 import type { CloudUploadQueueItem } from '../types';
 import { buildBackupPayload, discoverBackupMedia } from './backupMedia';
+import { reconcileResolvedDisplayCodes } from './displayCodeReconciliation';
+import {
+  recordBackupPendingAge,
+  recordSyncDiagnostic,
+} from './operationalDiagnostics';
 
 export type SyncProgress = {
   phase: 'idle' | 'preparing' | 'pushing' | 'uploading' | 'done' | 'error' | 'offline';
@@ -103,6 +111,11 @@ async function processUpload(row: CloudUploadQueueItem): Promise<void> {
       row.mime_type,
     );
     const confirmed = await apiClient.confirmUpload(session.sessionId, checksum);
+    // Confirmation mutates the server tree. Persist its authoritative CAS
+    // revision before clearing the queue row so a retry can safely replay the
+    // idempotent confirmation and the final push never uses metadata's stale
+    // base revision.
+    await recordInstallationServerTreeRevision(row.installation_id, confirmed.treeRevision);
     await markUploadComplete(row, checksum, confirmed.remoteUrl);
   } catch (error) {
     await updateUploadQueueItem(row.id, {
@@ -114,13 +127,33 @@ async function processUpload(row: CloudUploadQueueItem): Promise<void> {
   }
 }
 
+async function fetchAndMergeCanonicalTree(
+  installationId: string,
+  expectedTreeRevision: number,
+  replaceRecordedChanges: boolean,
+): Promise<void> {
+  const response = await apiClient.pull('1970-01-01T00:00:00.000Z', installationId);
+  const tree = response.installations.find(
+    (item) => String(item.installation.id ?? '') === installationId,
+  );
+  if (!tree) throw new Error('Canonical server tree was unavailable after backup.');
+  await reconcileResolvedDisplayCodes(
+    installationId,
+    tree,
+    expectedTreeRevision,
+    replaceRecordedChanges,
+  );
+}
+
 export async function runCloudBackup(
   onProgress: (progress: SyncProgress) => void = () => {},
 ): Promise<SyncProgress> {
+  const syncStartedAt = Date.now();
   await resetInterruptedUploads();
   const trees = await listInstallationsNeedingBackup();
   let uploaded = 0;
   let total = 0;
+  let activeInstallationId: string | undefined;
 
   if (!trees.length) {
     const done: SyncProgress = {
@@ -129,6 +162,10 @@ export async function runCloudBackup(
       total: 0,
       failedCount: 0,
     };
+    await recordSyncDiagnostic({
+      outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
+      latencyMs: Date.now() - syncStartedAt,
+    });
     onProgress(done);
     return done;
   }
@@ -136,6 +173,11 @@ export async function runCloudBackup(
   try {
     for (const originalTree of trees) {
       const installationId = originalTree.installation.id;
+      activeInstallationId = installationId;
+      const pendingSince = Date.parse(originalTree.watermark);
+      if (Number.isFinite(pendingSince)) {
+        void recordBackupPendingAge(Date.now() - pendingSince);
+      }
       onProgress({
         phase: 'preparing',
         installationId,
@@ -158,7 +200,22 @@ export async function runCloudBackup(
         total,
         failedCount: queue.filter((item) => item.status === 'failed').length,
       });
-      await apiClient.push(buildBackupPayload(originalTree, queue, 'metadata'));
+      const metadataResult = await apiClient.push(
+        buildBackupPayload(originalTree, queue, 'metadata'),
+      );
+      await recordInstallationServerTreeRevision(
+        installationId,
+        metadataResult.treeRevision,
+      );
+      await installationsRepo.applyServerState(installationId, {
+        status: originalTree.installation.status,
+        // A reopened Draft may still carry its last immutable version for
+        // historical reporting. A null metadata result must not erase it.
+        record_version_number: metadataResult.recordVersionNumber ??
+          originalTree.installation.record_version_number,
+        backup_conflict: { kind: 'NONE' },
+      });
+      await fetchAndMergeCanonicalTree(installationId, metadataResult.treeRevision, true);
 
       let next = await getNextUpload(installationId);
       while (next) {
@@ -188,8 +245,26 @@ export async function runCloudBackup(
         total,
         failedCount: 0,
       });
-      await apiClient.push(buildBackupPayload(latestTree, queue, 'complete'));
-      await markInstallationBackedUp(installationId, originalTree.watermark);
+      const completeResult = await apiClient.push(
+        buildBackupPayload(latestTree, queue, 'complete'),
+      );
+      await recordInstallationServerTreeRevision(
+        installationId,
+        completeResult.treeRevision,
+      );
+      // A push response only proves a revision was accepted. Fetch and merge
+      // the exact canonical tree before finalizing provisional generated codes
+      // or advancing the local backup watermark.
+      await fetchAndMergeCanonicalTree(installationId, completeResult.treeRevision, false);
+      await installationsRepo.applyServerState(installationId, {
+        status: latestTree.installation.status,
+        record_version_number: completeResult.recordVersionNumber ??
+          latestTree.installation.record_version_number,
+        backup_conflict: { kind: 'NONE' },
+      });
+      const reconciledTree = await getInstallationBackupTree(installationId);
+      if (!reconciledTree) throw new Error('Reconciled installation tree is unavailable.');
+      await markInstallationBackedUp(installationId, reconciledTree.watermark);
     }
 
     const done: SyncProgress = {
@@ -198,9 +273,26 @@ export async function runCloudBackup(
       total,
       failedCount: 0,
     };
+    await recordSyncDiagnostic({
+      outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
+      latencyMs: Date.now() - syncStartedAt,
+    });
     onProgress(done);
     return done;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : '';
+    const conflict = Boolean(
+      activeInstallationId &&
+      ((error instanceof ApiError && error.status === 409) ||
+        /display-code conflict|duplicate or empty display codes/i.test(errorMessage))
+    );
+    if (conflict && activeInstallationId) {
+      const remoteRevision = Number(errorMessage.match(/(?:treeRevision|revision)[^0-9]*(\d+)/i)?.[1]);
+      await markInstallationBackupConflict(
+        activeInstallationId,
+        Number.isFinite(remoteRevision) ? remoteRevision : undefined,
+      );
+    }
     const failedCount = (await listUploadQueue())
       .filter((item) => item.status === 'failed').length;
     const progress: SyncProgress = {
@@ -215,6 +307,12 @@ export async function runCloudBackup(
             ? error.message
             : String(error),
     };
+    await recordSyncDiagnostic({
+      outcome: conflict ? 'CONFLICT' : error instanceof NetworkError ? 'OFFLINE' : 'FAILURE',
+      conflict,
+      schemaVersion: 2,
+      latencyMs: Date.now() - syncStartedAt,
+    });
     onProgress(progress);
     return progress;
   }

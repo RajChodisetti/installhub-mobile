@@ -1,15 +1,15 @@
-# InstallHub Mobile: AI Onboarding and Architecture
+# Field App Complete: AI Onboarding and Architecture
 
 ## 1. Purpose and current maturity
 
-InstallHub Mobile is an iOS-first field workflow for installers who document a customer's
-electrical site and commission Wattwatcher metering hardware. It mirrors an InstallHub web
+Field App Complete is an iOS-first field workflow for installers who document a customer's
+electrical site and commission Wattwatcher metering hardware. It mirrors a Field App Complete web
 workflow, but this repository is a self-contained Expo app.
 
 The implemented journey is:
 
 ```text
-InstallHub API login
+Field App Complete API login
   -> installation dashboard
   -> installation
      ├─ edit details / Draft <-> Completed
@@ -109,6 +109,15 @@ index.ts
 - `AuthContext`: current user, boot/loading state, API login/session restore, and logout.
 - `ThemeContext`: light/dark/system preference, resolved colors, toggle/setters, and persistence.
 
+Login is API-authoritative. The app sends the identifier and unchanged password
+to `POST /v1/auth/login` with `app=installhub`; it writes the returned user
+profile into the local store only after the API issues a valid Field App
+Complete session. The API user ID replaces the fixture/profile ID. Passwords
+and password hashes are never stored locally. Tokens and the cached server
+identity remain in SecureStore. The optional account-source selector converts a
+plain username to the explicit Eco Audit or Solar Sense local identity when the
+same username exists in both source applications.
+
 Do not access these contexts outside their provider. Use `useAuth()` and `useTheme()`, which fail
 fast when misused.
 
@@ -138,22 +147,61 @@ AsyncStorage keys:
 
 | Key | Owner | Value |
 | --- | --- | --- |
-| `installhub.mobile.store.v2` | `data/seed.ts` | entire serialized `AppDataStore`, including forms |
+| `installhub.mobile.store.v3.manifest` | `data/storePersistence.ts` | atomic pointer to one verified immutable store generation |
+| `installhub.mobile.store.v3.generation.*` | `data/storePersistence.ts` | bounded chunks of the generation document |
+| `installhub.mobile.store.v3.recovery` | `data/seed.ts` | metadata for a temporary encrypted pre-migration recovery copy; never its key |
+| `installhub.mobile.operational-diagnostics.v1` | `operationalDiagnostics.ts` | bounded local-only, privacy-projected reliability events |
 | `installhub.theme` | `AppProviders.tsx` | `light`, `dark`, or `system` |
 | `installhub.active-report-jobs.v1` | `reportJobs.ts` | active form/installation API PDF job IDs |
-| `ih_cloud_jwt` | Expo SecureStore | short-lived InstallHub access token |
+| `ih_cloud_jwt` | Expo SecureStore | short-lived Field App Complete access token |
 | `ih_cloud_refresh` | Expo SecureStore | rotating refresh token |
 | `ih_cloud_user` | Expo SecureStore | cached offline session identity |
 | `ih_last_synced_at` | Expo SecureStore | last successful backup timestamp |
 
-The store initializes once per process. It loads v2, migrates a saved v1 document when needed, or
-deep-clones fixtures and persists them. `cloudSync` in the same document stores installation
+The store initializes once per process. A v3 write stages and verifies every chunk before one
+manifest-pointer flip, then verifies the active document before retiring the prior generation.
+Migration first seals the prior bytes with AES-256-GCM; the key is stored with the
+`installhub.local-recovery.v1` keychain service using this-device-only/when-unlocked access. The
+recovery metadata and its exact-key cleanup journal survive crashes. They are retired early only
+when the exact migration generation survives the next verified startup reload or when recovery is
+exercised. If an ordinary save advances the manifest first, cleanup fails safe by retaining the
+copy until the seven-day expiry gate. Startup never replaces an unreadable store with fixtures; it
+exposes retry/recovery UI instead. Legacy v1/v2 keys are accepted only as migration sources.
+
+`cloudSync` in the same document stores installation
 watermarks, the durable upload queue, and the durable imported-thumbnail queue. A reset replaces it
 with fresh fixture clones. Business records are not encrypted at rest. Existing records normalize
 to `cloud_backup_enabled=false`, so no installation is uploaded without explicit consent.
 
 The fixtures currently seed one demo user, three installations, four zones, four electrical
 boards, and four site assets.
+
+### Canonical installation v2
+
+`gridSupplies`, `meterDevices`, and `measurementAssignments` are first-class arrays and are the
+authoritative model. Nested legacy board meters and site-asset channel strings are compatibility
+projections only. Every board and site asset has an explicit `GRID`, `BOARD`, or `TBC` electrical
+source; absence never means Grid. Site-asset coverage is exactly `METERED`, `UNMETERED`, or `TBC`,
+and only the atomic reconciliation action may change it.
+
+A3RM/A6M devices have exact 3/6 positive channel ordinals. An Other meter instead requires its
+manufacturer, model, at least one explicitly numbered channel, and non-empty capabilities for each
+channel; it is never defaulted to three. Wattwatchers commissioning-form evidence is required only
+for A3RM/A6M. Fixed A3RM/A6M channels use their model contract and do not require custom capability
+objects; choosing `SPARE` clears incompatible load and sensor details. Measurement assignments
+retain explicit channel order, phase mode, direction, target, and stable identity.
+
+Meter deletion is Draft-only for the active installation tree: the meter and its assignments are
+retired and affected assets return to explicit `TBC`. Immutable Completed forms and their evidence
+remain readable with the original meter ID. That historical exception is deliberately narrow—a
+missing meter reference is valid only when the form status is exactly Completed and `completedAt`
+is a valid ISO timestamp.
+
+Offline display-code allocations are provisional. A successful push alone cannot finalize them:
+the app fetches and reconciles the exact canonical server tree. Once a code is server-confirmed it
+is immutable across later site/type/rule changes; only the explicit custom-code action may alter it.
+Rule-version metadata is preserved. Virtual/residual definitions and mapping exports are
+server-owned; local residuals are advisory shared/unallocated previews with no per-asset quantity.
 
 ### Cloud backup architecture
 
@@ -165,9 +213,20 @@ local repository write
      1. build complete installation tree
      2. push metadata with local paths removed
      3. checksum + deduplicate + session upload + confirm every evidence file
-     4. push metadata again with confirmed remote URLs
-     5. advance the installation watermark
+     4. push the complete tree with confirmed remote URLs
+     5. fetch and merge that exact canonical revision
+     6. advance the installation watermark only after the re-read matches
 ```
+
+During the metadata stage, every locally Completed form is deliberately sent as Draft without
+mutating local status—including zero-attachment forms and forms whose URLs were already remote.
+Only the explicit complete stage may transmit Completed, after every attachment has a confirmed
+remote URL. This avoids commissioning an immutable form from any metadata pass.
+
+`tree_revision` is the offline mutation counter; it is never used as the server CAS base. A separate
+persisted `server_tree_revision` starts absent for first offline capture, advances from the metadata
+push, advances again after every successful upload confirmation, and supplies the exact base for the
+complete push. Portal conflicts therefore report the last server base rather than a local edit count.
 
 `listInstallationsNeedingBackup()` excludes installations whose per-record opt-in is disabled.
 Turning backup off stops future pushes but does not silently delete an existing server backup.
@@ -186,6 +245,13 @@ Browse Cloud Backups
   -> expose the copy on Home after required previews are ready
 ```
 
+Before any ID remapping or local write, import validates the complete canonical-v2 graph: stable IDs
+must be non-empty and unique, canonical arrays must be present, source/target/status/phase/direction
+enums must be explicit, channel sets must be non-empty and duplicate-free, asset metering state must
+exactly match assignment targets, every reference must resolve, and the returned installation ID must
+exactly match the request. Canonical-v2 values are mapped without TBC/OTHER/CONSUMPTION fallbacks.
+Attachment-copy IDs are deterministic SHA-256 identities, so retries are idempotent.
+
 Imported copies default to local-only. If one is later opted into backup, the API reconciles
 `photo_copy_references` so it retains immutable originals without duplicating photo bytes. Preview
 files live in the Expo cache; missing, evicted, or interrupted jobs return to the queue on foreground.
@@ -199,6 +265,13 @@ deletion, or prior local backup conservatively requires opt-in backup of the cpN
 ID. Server report jobs are keyed by target plus a tree revision so an interrupted source job cannot
 be resumed after local data changes.
 
+Authoritative form and installation-pack jobs always request an immutable `recordVersionNumber`;
+unchanged imports retain and use the source installation's version. An unpinned diagnostic must opt
+in explicitly with `liveMode=true`. Remembered-job keys include the record version and exact local
+tree hash, and the app verifies the version plus server payload hash echoed by job creation/status
+before it downloads a PDF. Later Draft edits never silently retarget an older authoritative report
+to mutable live rows.
+
 The API prefix is `/v1/installhub`. Protected routes require a valid token and the
 `installhub` app claim. Installation-scoped reads/writes additionally require an
 inspector-or-higher role and creator, assigned-inspector, or elevated access to
@@ -207,8 +280,12 @@ Backend storage is separated into `ih_users`, `ih_installations`, `ih_zones`,
 `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions`. Meter arrays, form answers,
 and form attachments intentionally remain JSON because they are embedded/versioned mobile values.
 Photo bytes use the shared `photo_registry`, but every row is isolated by `app=installhub`.
+Native Field App Complete accounts remain authoritative in `ih_users`; the additive
+`unified_users` registry contains every Eco Audit, Solar Sense, and Field App Complete account so
+source credentials can receive Field App Complete access without changing any installed app login
+or user-management API contract.
 
-Additional InstallHub API capabilities (some are current UI flows and others
+Additional Field App Complete API capabilities (some are current UI flows and others
 are administrative/storage inspection contracts) are:
 
 ```text
@@ -225,9 +302,19 @@ are administrative/storage inspection contracts) are:
 The current user can change their password from Settings. Administrators also see User
 Management, Diagnostics, fixture reset, and installation access assignment:
 
-- User Management lists InstallHub-scoped accounts and can create users, edit name/email/role,
-  deactivate/reactivate accounts, and reset another user's password. The API prevents
-  self-demotion/self-deactivation and removal of the last active admin.
+- User Management lists Field App Complete-scoped accounts and can create users, edit
+  name/email/role, deactivate/reactivate accounts, and reset another user's password. The API
+  prevents self-demotion/self-deactivation and removal of the last active admin.
+- Accounts granted shared Field App Complete access from Eco Audit or Solar Sense are identified by
+  source metadata.
+  They remain selectable for installation access, but their profile, role, status, and
+  administrator password resets are read-only in Field App Complete and must be managed in the
+  source app.
+  A deleted source leaves a read-only registry tombstone for audit history and is labeled "Source
+  unavailable". A linked source-managed user can
+  still change their own shared credential after confirming the current password. The change
+  clears that device's local session immediately and revokes source-app and Field App Complete
+  refresh sessions; already-issued access tokens may remain valid for up to 15 minutes.
 - Access assignment gives one active user access to a backed-up installation. The creator and
   admins retain access; clearing the assignment removes only the additional user's access.
 - Cloud Files & History lists the installation's confirmed originals and completed report PDFs,
@@ -310,7 +397,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 
 | Route | Params | Responsibility |
 | --- | --- | --- |
-| `Login` | none | InstallHub API credentials, session restore and auth state |
+| `Login` | none | Field App Complete API credentials, session restore and auth state |
 | `MainTabs` | none | Dashboard/Settings bottom tabs |
 | `InstallationForm` | optional `installationId` | Create or edit an installation |
 | `InstallationDetail` | `installationId` | Site summary, status, zones, report entry points |
@@ -327,7 +414,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `FormTypePicker` | installation plus optional entity links | Central/contextual six-form catalog |
 | `FormEditor` | `formId` | Autosave, validation, location, evidence, completion and PDF |
 | `RemoteInstallations` | none | Browse accessible Cloud Backups and import a fresh-ID `cpN` copy |
-| `UserManagement` | none | Admin-only InstallHub account list |
+| `UserManagement` | none | Admin-only Field App Complete account list |
 | `UserEditor` | optional `userId` | Admin create/update/deactivate/reactivate/password reset |
 | `ChangePassword` | none | Current user's password change |
 | `InstallationAccess` | `installationId` | Admin assign/clear one active user's backup access |
@@ -431,7 +518,7 @@ diagnostics tests use Node's test runner via `tsx`.
 
 `app.json` defines:
 
-- App name `InstallHub`, slug `installhub-mobile`, version `1.0.0`.
+- App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
 - Camera and photo-library usage descriptions.
@@ -530,14 +617,15 @@ restart or contact a server.
 
 An agent should distinguish deliberate demo behavior from accidental architecture:
 
-- All business data is a single local JSON blob; v1-to-v2 is the only migration currently defined.
+- Business data is one logical JSON document, durably stored as verified v3 generations and chunks.
 - Cloud browsing imports a fresh-ID copy; there is no in-place overwrite/restore operation.
 - OS background scheduling is opportunistic and unavailable in Expo Go and iOS Simulator;
   foreground and explicit backup triggers remain authoritative for testing.
 - Board and site-asset photos remain local working copies after backup; clearing the app sandbox
   still requires a future restore workflow to bring them back.
 - Client report and photo inclusion are placeholders; toggles do not feed the exported PDF.
-- The TBC resolver links to the first eligible board rather than asking the user to choose.
+- Electrical and metering reconciliation require explicit searchable choices; candidates are capped
+  deterministically and large coverage/meter lists are virtualized.
 - Zone summary sending is an in-memory stub.
 - Some async screen operations have minimal error handling.
 - Pure form/report/storage tests exist; integration, E2E, lint and formatter commands do not.

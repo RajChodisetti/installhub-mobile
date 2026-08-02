@@ -14,6 +14,13 @@ import {
 import { Badge, Button, Card, LoadingState, TextField } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
+import {
+  isOrphanedSourceUser,
+  isSourceManagedUser,
+  passwordChangeSessionNotice,
+  sourceAppDisplayName,
+  sourceUserDisplayEmail,
+} from '../utils/sourceManagedUsers';
 
 type Props = {
   navigation: {
@@ -21,7 +28,14 @@ type Props = {
     navigate: (name: string, params?: Record<string, unknown>) => void;
     setOptions: (options: { title: string }) => void;
   };
-  route: { params?: { userId?: string } };
+  route: {
+    params?: {
+      userId?: string;
+      sourceManaged?: boolean;
+      sourceApp?: ManagedCloudUser['sourceApp'];
+      sourceState?: ManagedCloudUser['sourceState'];
+    };
+  };
 };
 
 export function UserEditorScreen({ navigation, route }: Props) {
@@ -43,8 +57,14 @@ export function UserEditorScreen({ navigation, route }: Props) {
   const [resettingPassword, setResettingPassword] = useState(false);
 
   useEffect(() => {
-    navigation.setOptions({ title: isEditing ? 'Edit user' : 'Add user' });
-  }, [isEditing, navigation]);
+    navigation.setOptions({
+      title: !isEditing
+        ? 'Add user'
+        : isSourceManagedUser(loadedUser)
+          ? 'User details'
+          : 'Edit user',
+    });
+  }, [isEditing, loadedUser, navigation]);
 
   useEffect(() => {
     if (!userId) return;
@@ -53,7 +73,19 @@ export function UserEditorScreen({ navigation, route }: Props) {
     void apiClient.getUser(userId)
       .then((result) => {
         if (!active) return;
-        setLoadedUser(result);
+        const sourceState =
+          result.sourceState ?? route.params?.sourceState;
+        const resultWithSource = {
+          ...result,
+          sourceManaged:
+            result.sourceManaged === true ||
+            route.params?.sourceManaged === true ||
+            sourceState === 'linked' ||
+            sourceState === 'orphaned',
+          sourceApp: result.sourceApp ?? route.params?.sourceApp ?? null,
+          sourceState,
+        };
+        setLoadedUser(resultWithSource);
         setEmail(result.email);
         setFullName(result.fullName ?? '');
         setRole(result.role);
@@ -70,7 +102,13 @@ export function UserEditorScreen({ navigation, route }: Props) {
     return () => {
       active = false;
     };
-  }, [navigation, userId]);
+  }, [
+    navigation,
+    route.params?.sourceApp,
+    route.params?.sourceManaged,
+    route.params?.sourceState,
+    userId,
+  ]);
 
   const validateProfile = (): string | null => {
     if (!email.trim() || !email.includes('@')) return 'Enter a valid email address.';
@@ -84,6 +122,13 @@ export function UserEditorScreen({ navigation, route }: Props) {
   };
 
   const save = async () => {
+    if (userId && isSourceManagedUser(loadedUser)) {
+      Alert.alert(
+        'Managed in the source app',
+        `Update this account in ${sourceAppDisplayName(loadedUser?.sourceApp)}.`,
+      );
+      return;
+    }
     const validationError = validateProfile();
     if (validationError) {
       Alert.alert('Check user details', validationError);
@@ -118,7 +163,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
   };
 
   const setAccountActive = async (isActive: boolean) => {
-    if (!userId || !loadedUser) return;
+    if (!userId || !loadedUser || isSourceManagedUser(loadedUser)) return;
     setChangingAccess(true);
     try {
       if (isActive) {
@@ -131,7 +176,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
         isActive ? 'Access restored' : 'Access removed',
         isActive
           ? 'The user can sign in again.'
-          : 'The user has been signed out and can no longer access InstallHub.',
+          : 'The user has been signed out and can no longer access Field App Complete.',
       );
     } catch (error) {
       Alert.alert('Could not change access', cloudConnectionErrorMessage(error));
@@ -149,7 +194,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
     }
     Alert.alert(
       'Deactivate this user?',
-      'Their InstallHub refresh sessions will be revoked. Existing backed-up data is retained.',
+      'Their Field App Complete refresh sessions will be revoked. Existing backed-up data is retained.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -162,7 +207,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
   };
 
   const resetAnotherUserPassword = async () => {
-    if (!userId) return;
+    if (!userId || isSourceManagedUser(loadedUser)) return;
     if (resetPassword.length < 6) {
       Alert.alert('Password too short', 'Use at least 6 characters.');
       return;
@@ -178,7 +223,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
       setConfirmResetPassword('');
       Alert.alert(
         'Password reset',
-        'Existing refresh sessions were revoked. Give the temporary password to the user securely.',
+        'Field App Complete refresh sessions were revoked. Already-issued access tokens may remain valid for up to 15 minutes. Give the temporary password to the user securely.',
       );
     } catch (error) {
       Alert.alert('Could not reset password', cloudConnectionErrorMessage(error));
@@ -190,6 +235,14 @@ export function UserEditorScreen({ navigation, route }: Props) {
   if (loading) return <LoadingState />;
 
   const isCurrentUser = Boolean(userId && userId === currentUser?.id);
+  const sourceManaged = isSourceManagedUser(loadedUser);
+  const sourceUnavailable = isOrphanedSourceUser(loadedUser);
+  const sourceAppName = sourceAppDisplayName(loadedUser?.sourceApp);
+  const displayEmail = sourceUserDisplayEmail(loadedUser?.email ?? email);
+  const sessionNotice = passwordChangeSessionNotice(
+    loadedUser?.sourceApp,
+    sourceManaged,
+  );
 
   return (
     <ScrollView
@@ -209,72 +262,148 @@ export function UserEditorScreen({ navigation, route }: Props) {
         </View>
       ) : null}
 
+      {sourceManaged ? (
+        <Card style={{ marginBottom: spacing.md }}>
+          <View style={styles.badgeRow}>
+            <Badge label={`Copied from ${sourceAppName}`} />
+            {sourceUnavailable ? <Badge label="Source unavailable" /> : null}
+            <Badge label="Read only here" />
+          </View>
+          <Text
+            style={[
+              styles.explanation,
+              { color: colors.mutedForeground, marginBottom: 0 },
+            ]}
+          >
+            {sourceUnavailable
+              ? `The ${sourceAppName} source account is unavailable. This retained Field App Complete record stays read-only for audit history; no future source synchronization is expected.`
+              : `Profile, role, account status, and administrator password resets are managed in ${sourceAppName}. Changes made there are copied to Field App Complete. When active, this user remains available for installation assignment.`}
+          </Text>
+        </Card>
+      ) : null}
+
       <Card>
-        <Text style={[typography.heading, { color: colors.foreground }]}>
-          Account details
-        </Text>
-        <TextField
-          label="Full name"
-          value={fullName}
-          onChangeText={setFullName}
-          autoCapitalize="words"
-          textContentType="name"
-          style={{ marginTop: spacing.md }}
-        />
-        <TextField
-          label="Email"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="email-address"
-          textContentType="emailAddress"
-        />
-        <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
-          ROLE
-        </Text>
-        <View style={styles.roleButtons}>
-          <Button
-            title="Inspector"
-            variant={role === 'inspector' ? 'primary' : 'secondary'}
-            onPress={() => setRole('inspector')}
-            style={{ flex: 1 }}
-          />
-          <Button
-            title="Administrator"
-            variant={role === 'admin' ? 'primary' : 'secondary'}
-            onPress={() => setRole('admin')}
-            style={{ flex: 1 }}
-          />
+        <View style={styles.headingRow}>
+          <Text style={[typography.heading, { color: colors.foreground }]}>
+            Account details
+          </Text>
+          {sourceManaged ? <Badge label="Read only" /> : null}
         </View>
 
-        {!isEditing ? (
-          <View style={{ marginTop: spacing.lg }}>
-            <TextField
-              label="Temporary password"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              autoCapitalize="none"
-              textContentType="newPassword"
-            />
-            <TextField
-              label="Confirm temporary password"
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              secureTextEntry
-              autoCapitalize="none"
-              textContentType="newPassword"
-            />
+        {sourceManaged && loadedUser ? (
+          <View style={{ marginTop: spacing.md }}>
+            <View
+              style={[
+                styles.readOnlyRow,
+                {
+                  borderBottomColor: colors.border,
+                  borderBottomWidth: StyleSheet.hairlineWidth,
+                },
+              ]}
+            >
+              <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
+                FULL NAME
+              </Text>
+              <Text style={[typography.body, { color: colors.foreground }]}>
+                {loadedUser.fullName || 'Not provided'}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.readOnlyRow,
+                {
+                  borderBottomColor: colors.border,
+                  borderBottomWidth: StyleSheet.hairlineWidth,
+                },
+              ]}
+            >
+              <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
+                EMAIL
+              </Text>
+              <Text style={[typography.body, { color: colors.foreground }]}>
+                {displayEmail}
+              </Text>
+            </View>
+            <View style={styles.readOnlyRow}>
+              <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
+                ROLE
+              </Text>
+              <Text style={[typography.body, { color: colors.foreground }]}>
+                {loadedUser.role === 'admin' ? 'Administrator' : 'Inspector'}
+              </Text>
+            </View>
           </View>
-        ) : null}
+        ) : (
+          <>
+            <TextField
+              label="Full name"
+              value={fullName}
+              onChangeText={setFullName}
+              autoCapitalize="words"
+              textContentType="name"
+              style={{ marginTop: spacing.md }}
+            />
+            <TextField
+              label="Email"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              textContentType="emailAddress"
+            />
+            <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
+              ROLE
+            </Text>
+            <View accessibilityRole="radiogroup" accessibilityLabel="User role" style={styles.roleButtons}>
+              <Button
+                title="Inspector"
+                variant={role === 'inspector' ? 'primary' : 'secondary'}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: role === 'inspector' }}
+                onPress={() => setRole('inspector')}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Administrator"
+                variant={role === 'admin' ? 'primary' : 'secondary'}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: role === 'admin' }}
+                onPress={() => setRole('admin')}
+                style={{ flex: 1 }}
+              />
+            </View>
 
-        <Button
-          title={saving ? 'Saving…' : isEditing ? 'Save changes' : 'Create user'}
-          disabled={saving || changingAccess || resettingPassword}
-          onPress={() => void save()}
-          style={{ marginTop: spacing.lg }}
-        />
+            {!isEditing ? (
+              <View style={{ marginTop: spacing.lg }}>
+                <TextField
+                  label="Temporary password"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  textContentType="newPassword"
+                />
+                <TextField
+                  label="Confirm temporary password"
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  textContentType="newPassword"
+                />
+              </View>
+            ) : null}
+
+            <Button
+              title={saving ? 'Saving…' : isEditing ? 'Save changes' : 'Create user'}
+              disabled={saving || changingAccess || resettingPassword}
+              accessibilityState={{ busy: saving }}
+              onPress={() => void save()}
+              style={{ marginTop: spacing.lg }}
+            />
+          </>
+        )}
       </Card>
 
       {userId && loadedUser ? (
@@ -282,21 +411,41 @@ export function UserEditorScreen({ navigation, route }: Props) {
           <Text style={[typography.heading, { color: colors.foreground }]}>
             Password
           </Text>
-          {isCurrentUser ? (
+          {isCurrentUser && sourceUnavailable ? (
+            <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
+              The source account is unavailable, so no password change is
+              available for this retained read-only record.
+            </Text>
+          ) : isCurrentUser ? (
             <>
               <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
-                Changing your own password requires your current password.
+                {sourceManaged
+                  ? `This password is shared with your ${sourceAppName} account. ${sessionNotice}`
+                  : `Changing your own password requires your current password. ${sessionNotice}`}
               </Text>
               <Button
                 title="Change my password"
                 variant="secondary"
+                accessibilityHint={
+                  sourceManaged
+                    ? `Updates the shared ${sourceAppName} credential.`
+                    : 'Opens the current-password confirmation form.'
+                }
                 onPress={() => navigation.navigate('ChangePassword')}
               />
             </>
+          ) : sourceManaged ? (
+            <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
+              {sourceUnavailable
+                ? 'The source account is unavailable, so administrator password reset is not offered for this retained read-only record.'
+                : `Administrator password resets for this copied account are managed in ${sourceAppName}.`}
+            </Text>
           ) : (
             <>
               <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
-                Resetting another user signs out their refresh sessions.
+                Resetting another user revokes their Field App Complete refresh
+                sessions. Already-issued access tokens may remain valid for up
+                to 15 minutes.
               </Text>
               <TextField
                 label="New temporary password"
@@ -318,6 +467,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
                 title={resettingPassword ? 'Resetting…' : 'Reset password'}
                 variant="secondary"
                 disabled={saving || changingAccess || resettingPassword}
+                accessibilityState={{ busy: resettingPassword }}
                 onPress={() => void resetAnotherUserPassword()}
               />
             </>
@@ -325,7 +475,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
         </Card>
       ) : null}
 
-      {userId && loadedUser && !isCurrentUser ? (
+      {userId && loadedUser && !isCurrentUser && !sourceManaged ? (
         <Card style={{ marginTop: spacing.md }}>
           <Text style={[typography.heading, { color: colors.foreground }]}>
             Access
@@ -345,6 +495,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
             }
             variant={loadedUser.isActive ? 'danger' : 'secondary'}
             disabled={saving || changingAccess || resettingPassword}
+            accessibilityState={{ busy: changingAccess }}
             onPress={confirmAccessChange}
           />
         </Card>
@@ -360,6 +511,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: spacing.md,
+  },
+  headingRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  readOnlyRow: {
+    minHeight: 56,
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
   },
   fieldLabel: {
     ...typography.label,

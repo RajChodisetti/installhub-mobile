@@ -24,6 +24,174 @@ export type SiteAssetType =
 
 export type MeterDeviceType = 'A3RM' | 'A6M' | 'Other';
 
+/** Stable taxonomy codes used by installation-canonical-v2. */
+export type BoardTypeCode =
+  | 'MSB'
+  | 'MSSB'
+  | 'DB'
+  | 'HVAC_DB'
+  | 'LX_DB'
+  | 'PV_DB'
+  | 'MCC'
+  | 'OTHER';
+
+export type SiteAssetTypeCode =
+  | 'PV'
+  | 'HVAC'
+  | 'LIGHTING'
+  | 'EV_CHARGER'
+  | 'VEHICLE_HOIST'
+  | 'FORKLIFT'
+  | 'EXHAUST_FAN_SYSTEM'
+  | 'POWER_OUTLET'
+  | 'HEATER_GEYSER'
+  | 'OTHER';
+
+export interface DisplayCode {
+  value: string;
+  generatedValue: string;
+  isOverridden: boolean;
+  /** Server-pinned generator rule; historical versions must round-trip. */
+  ruleVersion: number;
+  overrideReason?: string;
+  /** Offline allocations remain provisional until a successful v2 sync. */
+  provisional?: boolean;
+}
+
+export interface GridSupply {
+  id: string;
+  installationId: string;
+  name: string;
+  isDefault: boolean;
+  nmi?: string;
+  externalKey?: string;
+}
+
+export type ElectricalSource =
+  | { kind: 'GRID'; gridSupplyId: string }
+  | { kind: 'BOARD'; boardId: string }
+  | { kind: 'TBC' };
+
+export type MeterChannelPurpose = 'MAIN_SUPPLY' | 'SUB_CIRCUIT' | 'SPARE';
+
+export interface MeterChannel {
+  id: string;
+  ordinal: number;
+  purpose: MeterChannelPurpose;
+  phaseLabel?: string;
+  capabilities?: Record<string, unknown>;
+  loadTypeCode?: SiteAssetTypeCode;
+  customLoadTypeName?: string;
+  sensorRating?: string;
+  description?: string;
+  target?: MeasurementTarget;
+  direction?: MeasurementDirection;
+}
+
+export interface MeterDevice {
+  id: string;
+  installationId: string;
+  installedOnBoardId: string;
+  deviceFamily: 'WATTWATCHERS' | 'OTHER';
+  deviceModel: 'A3RM' | 'A6M' | 'OTHER';
+  customManufacturerName?: string;
+  customModelName?: string;
+  deviceNumber?: string;
+  serialNumber: string;
+  displayName: DisplayCode;
+  channels: MeterChannel[];
+  wwPhotos?: {
+    deviceInstalled?: string;
+    switchboardOverview?: string;
+    labeling?: string;
+    extra?: string[];
+  };
+  notes?: string;
+}
+
+export interface ResolvedDisplayCodeChange {
+  entityType: 'board' | 'site_asset' | 'meter';
+  entityId: string;
+  previousValue: string;
+  resolvedValue: string;
+  resolvedAt: string;
+}
+
+export interface VirtualMeterDefinition {
+  id: string;
+  parentNodeId: string;
+  totalMeasurementAssignmentId: string;
+  subtractAssignmentIds: string[];
+  formulaVersion: 1;
+  allocation: 'UNALLOCATED_RESIDUAL';
+}
+
+export type MeasurementTarget =
+  | { kind: 'BOARD'; boardId: string }
+  | { kind: 'SITE_ASSET'; siteAssetId: string }
+  | { kind: 'GRID_BOUNDARY'; gridSupplyId: string }
+  | { kind: 'TBC' };
+
+export type MeasurementDirection =
+  | 'CONSUMPTION'
+  | 'GENERATION'
+  | 'BIDIRECTIONAL';
+
+export interface MeasurementAssignment {
+  id: string;
+  installationId: string;
+  meterId: string;
+  channelIds: string[];
+  phaseMode: 'SINGLE_PHASE' | 'THREE_PHASE' | 'OTHER';
+  target: MeasurementTarget;
+  direction: MeasurementDirection;
+  status: 'CONFIRMED' | 'TBC';
+}
+
+export type MeteringState =
+  | { kind: 'METERED'; measurementAssignmentIds: string[] }
+  | { kind: 'UNMETERED' }
+  | { kind: 'TBC' };
+
+export type ReadinessEntityType =
+  | 'installation'
+  | 'grid_supply'
+  | 'board'
+  | 'site_asset'
+  | 'meter'
+  | 'channel'
+  | 'measurement_assignment'
+  | 'virtual_meter'
+  | 'form';
+
+export interface ReadinessIssue {
+  code: string;
+  severity: 'ERROR' | 'WARNING';
+  entityType: ReadinessEntityType;
+  entityId: string;
+  field?: string;
+  message: string;
+  candidateIds?: string[];
+}
+
+export interface InstallationReadiness {
+  installationId: string;
+  treeRevision: number;
+  recordVersionNumber?: number;
+  readyToComplete: boolean;
+  eligibility: {
+    draftDiagnosticReport: boolean;
+    authoritativeReport: boolean;
+    mappingExport: boolean;
+    dataDomeDelivery: boolean;
+  };
+  issues: ReadinessIssue[];
+}
+
+export type BackupConflictState =
+  | { kind: 'NONE' }
+  | { kind: 'CONFLICT'; localBaseTreeRevision: number; remoteTreeRevision?: number; detectedAt: string };
+
 export type FormType =
   | 'ww-installation'
   | 'a3rm-installation'
@@ -39,11 +207,13 @@ export type FormAnswer = 'yes' | 'no' | 'not_applicable' | '';
 export type FormValue = string | FormAnswer;
 export type CloudUploadStatus = 'pending' | 'uploading' | 'failed' | 'cleared';
 export type ThumbnailDownloadStatus = 'pending' | 'downloading' | 'failed' | 'ready';
+export type UserSourceApp = 'ecoaudit' | 'solarsense';
+export type UserSourceState = 'linked' | 'orphaned' | 'explicit';
 
 export interface CloudUploadQueueItem {
   id: string;
   installation_id: string;
-  entity_type: 'zone' | 'electrical_asset' | 'site_asset' | 'form_submission';
+  entity_type: 'zone' | 'electrical_asset' | 'site_asset' | 'meter_device' | 'form_submission';
   entity_id: string;
   field_name: string;
   local_uri: string;
@@ -90,7 +260,7 @@ export interface FormSubmission {
    * Immutable API identity retained only for an unchanged imported copy.
    * It lets server-side PDF generation use the original full-resolution
    * evidence without downloading originals into the mobile app.
-   */
+  */
   import_source_server_id?: string;
   form_type: FormType;
   schema_version: number;
@@ -106,6 +276,8 @@ export interface FormSubmission {
   updated_at: string;
   completed_at?: string;
   supersedes_id?: string;
+  /** Server-confirmed immutable commissioning history whose meter was removed. */
+  historical_meter_removed?: boolean;
 }
 
 export interface User {
@@ -113,6 +285,9 @@ export interface User {
   email: string;
   full_name: string;
   role: 'admin' | 'user';
+  source_managed?: boolean;
+  source_app?: UserSourceApp | null;
+  source_state?: UserSourceState;
 }
 
 export interface Installation {
@@ -123,11 +298,43 @@ export interface Installation {
   inspector_name: string;
   audit_date: string;
   status: InstallationStatus;
+  /** installation-canonical-v2 local metadata. */
+  tree_schema_version?: 2;
+  external_key?: string;
+  site_code?: string;
+  timezone?: string;
+  /** Monotonic local mutation counter. Never use this value as a server CAS base. */
+  tree_revision?: number;
+  /** Last authoritative server revision accepted by push/upload/lifecycle APIs. */
+  server_tree_revision?: number;
+  record_version_number?: number;
+  display_code_sequences?: Partial<Record<BoardTypeCode | SiteAssetTypeCode, number>>;
+  completed_at?: string;
+  completed_from_revision?: number;
+  reopened_at?: string;
+  reopen_reason?: string;
+  /** Preserves evidence that a schema-v1 client had marked this locally complete. */
+  legacy_completed_unpinned?: boolean;
+  pending_completion?: {
+    baseTreeRevision: number;
+    idempotencyKey: string;
+    createdAt: string;
+  };
+  backup_conflict?: BackupConflictState;
+  /** Generated display codes changed by the server during the latest sync. */
+  resolved_display_code_changes?: ResolvedDisplayCodeChange[];
+  server_derived?: {
+    treeRevision: number;
+    recordVersionNumber?: number;
+    virtualMeterDefinitions: VirtualMeterDefinition[];
+  };
   cloud_backup_enabled: boolean;
   /** A server copy still exists while future automatic backups are disabled. */
   cloud_backup_retained?: boolean;
   is_imported_copy?: boolean;
   import_source_server_id?: string;
+  /** Immutable source version used only while imported provenance remains intact. */
+  import_source_record_version_number?: number;
   /**
    * Import-time tree anchor written by provenance-aware app versions.
    * Older imported copies without it must be backed up under their local ID.
@@ -174,7 +381,13 @@ export interface WattwatcherSwitchboard {
 }
 
 export interface WattwatcherChannel {
+  /** Stable channel identity projected from the canonical meter definition. */
+  id?: string;
+  /** Explicit positive ordinal; never inferred as three channels for custom meters. */
+  ordinal?: number;
   purpose?: string;
+  phase_label?: string;
+  capabilities?: Record<string, unknown>;
   load_type?: string;
   rogowski_size?: string;
   description?: string;
@@ -210,6 +423,8 @@ export interface Meter {
   device_id: string;
   /** Optional field tag / device number (barcode-scannable). */
   device_number?: string;
+  custom_manufacturer_name?: string;
+  custom_model_name?: string;
   classification?: string;
   coverage?: string;
   ww_prestart?: WattwatcherPrestart;
@@ -227,6 +442,10 @@ export interface ElectricalAsset {
   asset_name: string;
   display_code: string;
   asset_type: BoardType;
+  type_code?: BoardTypeCode;
+  custom_type_name?: string;
+  display_code_meta?: DisplayCode;
+  electrical_source?: ElectricalSource;
   electrical_parent_id?: string | null;
   electrical_parent_tbc?: boolean;
   location_description?: string;
@@ -254,6 +473,11 @@ export interface SiteAsset {
   zone_id: string;
   asset_name: string;
   asset_type: SiteAssetType;
+  type_code?: SiteAssetTypeCode;
+  custom_type_name?: string;
+  display_code_meta?: DisplayCode;
+  electrical_source?: ElectricalSource;
+  metering_state?: MeteringState;
   electrical_board_id?: string | null;
   electrical_board_tbc?: boolean;
   location_description?: string;
@@ -270,11 +494,15 @@ export interface SiteAsset {
 }
 
 export interface AppDataStore {
+  schemaVersion?: 3;
   user: User;
   installations: Installation[];
+  gridSupplies: GridSupply[];
   zones: Zone[];
   electricalAssets: ElectricalAsset[];
   siteAssets: SiteAsset[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
   formSubmissions: FormSubmission[];
   cloudSync: CloudSyncState;
 }
@@ -304,3 +532,27 @@ export const SITE_ASSET_TYPES: SiteAssetType[] = [
 ];
 
 export const METER_DEVICE_TYPES: MeterDeviceType[] = ['A3RM', 'A6M', 'Other'];
+
+export const BOARD_TYPE_CODES: BoardTypeCode[] = [
+  'MSB',
+  'MSSB',
+  'DB',
+  'HVAC_DB',
+  'LX_DB',
+  'PV_DB',
+  'MCC',
+  'OTHER',
+];
+
+export const SITE_ASSET_TYPE_CODES: SiteAssetTypeCode[] = [
+  'PV',
+  'HVAC',
+  'LIGHTING',
+  'EV_CHARGER',
+  'VEHICLE_HOIST',
+  'FORKLIFT',
+  'EXHAUST_FAN_SYSTEM',
+  'POWER_OUTLET',
+  'HEATER_GEYSER',
+  'OTHER',
+];

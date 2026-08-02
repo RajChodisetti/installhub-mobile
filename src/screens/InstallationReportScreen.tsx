@@ -17,6 +17,7 @@ import {
   isRetryableFormPdfError,
   rememberReportJob,
   rememberedReportJob,
+  reportJobMatchesSelection,
   resolveInstallationPackServerTarget,
   shareInstallationPackPdf,
   waitForReportJob,
@@ -140,15 +141,23 @@ export function InstallationReportScreen({ route }: Props) {
         latest.id,
         target.installationId,
         installationPackRevision(tree, syncMetadata),
+        target.recordVersionNumber,
       );
       await clearRememberedReportJob(legacyJobKey);
-      let jobId = await rememberedReportJob(jobKey);
+      const remembered = await rememberedReportJob(jobKey);
+      let jobId = remembered?.jobId ?? null;
+      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
       if (jobId) {
         try {
           const existing = await apiClient.getExportJobStatus(jobId);
-          if (existing.status === 'failed') {
+          if (
+            existing.status === 'failed' ||
+            !reportJobMatchesSelection(existing, target, expectedPayloadHash)
+          ) {
             await clearRememberedReportJob(jobKey);
             jobId = null;
+          } else {
+            expectedPayloadHash = existing.recordVersionPayloadHash;
           }
         } catch {
           await clearRememberedReportJob(jobKey);
@@ -160,9 +169,14 @@ export function InstallationReportScreen({ route }: Props) {
         const started = await apiClient.startInstallationPdfJob(
           target.installationId,
           target.formSubmissionIds,
+          target,
         );
+        if (!reportJobMatchesSelection(started, target)) {
+          throw new Error('The report job did not preserve the requested record version.');
+        }
         jobId = started.jobId;
-        await rememberReportJob(jobKey, jobId);
+        expectedPayloadHash = started.recordVersionPayloadHash;
+        await rememberReportJob(jobKey, jobId, started);
       }
 
       const ready = await waitForReportJob(jobId, (status) => {
@@ -172,6 +186,9 @@ export function InstallationReportScreen({ route }: Props) {
             : '';
         setPdfStatus(`${status.phase || 'Generating pack…'}${progress}`);
       });
+      if (!reportJobMatchesSelection(ready, target, expectedPayloadHash)) {
+        throw new Error('The completed report job no longer matches the requested version.');
+      }
       setPdfStatus('Downloading installation pack securely…');
       const uri = await downloadReportJob(
         jobId,
@@ -245,7 +262,9 @@ export function InstallationReportScreen({ route }: Props) {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
-      <Text style={[typography.title, { color: colors.reportNavy }]}>INSTALLHUB</Text>
+      <Text style={[typography.title, { color: colors.reportNavy }]}>
+        FIELD APP COMPLETE
+      </Text>
       <Text style={{ color: colors.mutedForeground, marginBottom: spacing.lg }}>Installation Report</Text>
 
       <Card>

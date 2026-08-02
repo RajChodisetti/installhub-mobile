@@ -4,6 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useTheme } from '../context/AppProviders';
 import { radii, spacing, typography } from '../theme';
 import { Button, TextField } from './ui';
+import { scannerPermissionDecision } from './barcodeScannerPolicy';
 
 export type ScanMode = 'barcode' | 'qr';
 
@@ -58,7 +59,7 @@ export function BarcodeScanField({
     setScanned(false);
     if (!permission?.granted) {
       const res = await requestPermission();
-      if (!res.granted) return;
+      if (!scannerPermissionDecision(res.granted).openScanner) return;
     }
     setOpen(true);
   };
@@ -95,7 +96,7 @@ export function BarcodeScanField({
       </Pressable>
       {permission && !permission.granted ? (
         <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: -8, marginBottom: spacing.sm }}>
-          Camera permission needed to scan. You can still type the code.
+          {scannerPermissionDecision(false).fallbackMessage}
         </Text>
       ) : null}
 

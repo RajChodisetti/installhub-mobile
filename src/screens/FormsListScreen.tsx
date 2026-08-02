@@ -24,6 +24,7 @@ import {
   isRetryableFormPdfError,
   rememberReportJob,
   rememberedReportJob,
+  reportJobMatchesSelection,
   resolveFormReportServerTarget,
   shareFormPdf,
   waitForReportJob,
@@ -132,15 +133,23 @@ export function FormsListScreen({ navigation, route }: Props) {
         target.installationId,
         target.formId,
         installationPackRevision(tree, syncMetadata),
+        target.recordVersionNumber,
       );
       await clearRememberedReportJob(legacyJobKey);
-      let jobId = await rememberedReportJob(jobKey);
+      const remembered = await rememberedReportJob(jobKey);
+      let jobId = remembered?.jobId ?? null;
+      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
       if (jobId) {
         try {
           const existing = await apiClient.getExportJobStatus(jobId);
-          if (existing.status === 'failed') {
+          if (
+            existing.status === 'failed' ||
+            !reportJobMatchesSelection(existing, target, expectedPayloadHash)
+          ) {
             await clearRememberedReportJob(jobKey);
             jobId = null;
+          } else {
+            expectedPayloadHash = existing.recordVersionPayloadHash;
           }
         } catch {
           await clearRememberedReportJob(jobKey);
@@ -152,9 +161,14 @@ export function FormsListScreen({ navigation, route }: Props) {
         const started = await apiClient.startFormPdfJob(
           target.installationId,
           target.formId,
+          target,
         );
+        if (!reportJobMatchesSelection(started, target)) {
+          throw new Error('The report job did not preserve the requested record version.');
+        }
         jobId = started.jobId;
-        await rememberReportJob(jobKey, jobId);
+        expectedPayloadHash = started.recordVersionPayloadHash;
+        await rememberReportJob(jobKey, jobId, started);
       }
 
       const ready = await waitForReportJob(jobId, (status) => {
@@ -164,6 +178,9 @@ export function FormsListScreen({ navigation, route }: Props) {
             : '';
         setPdfStatus(`${status.phase || 'Generating PDF…'}${progress}`);
       });
+      if (!reportJobMatchesSelection(ready, target, expectedPayloadHash)) {
+        throw new Error('The completed report job no longer matches the requested version.');
+      }
       setPdfStatus('Downloading PDF securely…');
       const uri = await downloadReportJob(
         jobId,

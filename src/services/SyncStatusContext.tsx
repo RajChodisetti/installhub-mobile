@@ -10,7 +10,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AppProviders';
 import { subscribeStore } from '../data/seed';
-import { getStoredCloudJwt } from '../api/apiClient';
+import { hasStoredCloudSession } from '../api/apiClient';
 import { runCloudBackup, type SyncProgress } from './syncService';
 import { resetFailedUploadsForRetry } from '../repositories';
 import { runThumbnailDownloadWorker } from './thumbnailCache';
@@ -59,7 +59,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
   const triggerSync = useCallback(async () => {
     if (activeSync.current) return activeSync.current;
     const operation = (async () => {
-      if (!user || !await getStoredCloudJwt()) return defaultProgress;
+      if (!user || !await hasStoredCloudSession()) return defaultProgress;
       setSyncing(true);
       try {
         const result = await runCloudBackup(setProgress);

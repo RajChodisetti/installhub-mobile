@@ -1,6 +1,6 @@
 import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
-import { getStoredCloudJwt } from '../api/apiClient';
+import { hasStoredCloudSession } from '../api/apiClient';
 import { runCloudBackup } from './syncService';
 
 const TASK_NAME = 'installhub-cloud-backup';
@@ -8,7 +8,9 @@ const TASK_NAME = 'installhub-cloud-backup';
 if (!TaskManager.isTaskDefined(TASK_NAME)) {
   TaskManager.defineTask(TASK_NAME, async () => {
     try {
-      if (!await getStoredCloudJwt()) return BackgroundTask.BackgroundTaskResult.Success;
+      if (!await hasStoredCloudSession()) {
+        return BackgroundTask.BackgroundTaskResult.Success;
+      }
       const result = await runCloudBackup();
       return result.phase === 'done'
         ? BackgroundTask.BackgroundTaskResult.Success

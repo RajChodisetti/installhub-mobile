@@ -21,6 +21,13 @@ import {
 } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
+import {
+  isOrphanedSourceUser,
+  isSourceManagedUser,
+  sourceAppDisplayName,
+  sourceManagedBadgeLabel,
+  sourceUserDisplayEmail,
+} from '../utils/sourceManagedUsers';
 
 type Props = {
   navigation: {
@@ -61,7 +68,7 @@ export function UserManagementScreen({ navigation }: Props) {
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <EmptyState
           title="Administrator access required"
-          subtitle="Only InstallHub administrators can manage cloud user accounts."
+          subtitle="Only Field App Complete administrators can manage cloud user accounts."
         />
       </View>
     );
@@ -86,10 +93,13 @@ export function UserManagementScreen({ navigation }: Props) {
           <View style={styles.header}>
             <Text style={[typography.body, { color: colors.mutedForeground }]}>
               Create accounts, assign roles, reset passwords, and control access
-              to InstallHub Cloud Backup.
+              to Field App Complete Cloud Backup. Accounts copied from Eco Audit
+              or Solar Sense are read-only here. Active copied accounts remain
+              available for installation assignment.
             </Text>
             <Button
               title="Add user"
+              accessibilityHint="Opens the form to create a user managed in Field App Complete."
               onPress={() => navigation.navigate('UserEditor')}
               style={{ marginTop: spacing.md }}
             />
@@ -110,36 +120,61 @@ export function UserManagementScreen({ navigation }: Props) {
           !errorMessage ? (
             <EmptyState
               title="No cloud users"
-              subtitle="Add the first InstallHub account."
+              subtitle="Add the first Field App Complete account."
             />
           ) : null
         }
         renderItem={({ item }) => {
           const isCurrentUser = item.id === currentUser.id;
+          const sourceBadge = sourceManagedBadgeLabel(item);
+          const displayEmail = sourceUserDisplayEmail(item.email);
+          const displayName = item.fullName?.trim() || displayEmail;
+          const sourceUnavailable = isOrphanedSourceUser(item);
+          const sourceManaged = isSourceManagedUser(item);
           return (
             <Card style={styles.userCard}>
               <View style={styles.userHeading}>
                 <View style={{ flex: 1 }}>
                   <Text style={[typography.subheading, { color: colors.foreground }]}>
-                    {item.fullName || item.email}
+                    {displayName}
                   </Text>
                   <Text style={[typography.caption, { color: colors.mutedForeground }]}>
-                    {item.email}
+                    {displayEmail}
                   </Text>
                 </View>
-                <Badge
-                  label={item.isActive ? 'Active' : 'Inactive'}
-                  tone={item.isActive ? 'success' : 'danger'}
-                />
+                <View style={styles.badges}>
+                  <Badge
+                    label={item.isActive ? 'Active' : 'Inactive'}
+                    tone={item.isActive ? 'success' : 'danger'}
+                  />
+                  {sourceBadge ? <Badge label={sourceBadge} /> : null}
+                </View>
               </View>
               <Text style={[styles.meta, { color: colors.mutedForeground }]}>
                 Role: {item.role === 'admin' ? 'Administrator' : 'Inspector'}
                 {isCurrentUser ? ' · You' : ''}
               </Text>
+              {sourceManaged ? (
+                <Text style={[styles.meta, { color: colors.mutedForeground }]}>
+                  {sourceUnavailable
+                    ? `The ${sourceAppDisplayName(item.sourceApp)} source account is unavailable. This retained Field App Complete record is read-only.`
+                    : `Profile, role, status, and administrator password resets are managed in ${sourceAppDisplayName(item.sourceApp)}.`}
+                </Text>
+              ) : null}
               <Button
-                title="Edit user"
+                title={sourceManaged ? 'View user' : 'Edit user'}
                 variant="secondary"
-                onPress={() => navigation.navigate('UserEditor', { userId: item.id })}
+                accessibilityLabel={`${sourceManaged ? 'View' : 'Edit'} ${
+                  displayName
+                }`}
+                onPress={() =>
+                  navigation.navigate('UserEditor', {
+                    userId: item.id,
+                    sourceManaged,
+                    sourceApp: item.sourceApp,
+                    sourceState: item.sourceState,
+                  })
+                }
                 style={{ marginTop: spacing.md }}
               />
             </Card>
@@ -164,6 +199,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.md,
+  },
+  badges: {
+    maxWidth: '52%',
+    alignItems: 'flex-end',
+    gap: spacing.xs,
   },
   meta: { marginTop: spacing.sm },
 });

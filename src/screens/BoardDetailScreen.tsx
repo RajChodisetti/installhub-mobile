@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { electricalAssetsRepo } from '../repositories';
+import { electricalAssetsRepo, getLocalDeletionPreview } from '../repositories';
+import { useInstallation } from '../hooks';
 import type { ElectricalAsset } from '../types';
 import { ElectricalAssetForm, FormModal } from '../components/forms';
 import { Badge, Button, Card, LoadingState, SectionHeader } from '../components/ui';
@@ -17,6 +18,12 @@ export function BoardDetailScreen({ navigation, route }: Props) {
   const [board, setBoard] = useState<ElectricalAsset | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const {
+    item: installation,
+    boards: installationBoards,
+    gridSupplies,
+  } = useInstallation(installationId);
+  const readOnly = installation?.status === 'Completed';
 
   const refresh = async () => {
     setLoading(true);
@@ -49,9 +56,10 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       ) : null}
 
       <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.lg, flexWrap: 'wrap' }}>
-        <Button title="Edit board" variant="secondary" onPress={() => setEditOpen(true)} />
+        <Button title="Edit board" variant="secondary" disabled={readOnly} onPress={() => setEditOpen(true)} />
         <Button
           title="New Installation Form"
+          disabled={readOnly}
           onPress={() =>
             navigation.navigate('FormTypePicker', { installationId, zoneId, boardId })
           }
@@ -69,8 +77,9 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               {m.device_type} · {m.device_id || 'no serial'}
             </Text>
             <Button
-              title="Edit legacy meter summary"
+              title="Edit meter and channels"
               variant="ghost"
+              disabled={readOnly}
               style={{ marginTop: 10 }}
               onPress={() =>
                 navigation.navigate('MeterForm', {
@@ -83,6 +92,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
             <Button
               title="Start Comms Fault"
               variant="secondary"
+              disabled={readOnly}
               style={{ marginTop: 8 }}
               onPress={() =>
                 navigation.navigate('FormTypePicker', {
@@ -100,11 +110,16 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       <Button
         title="Delete board"
         variant="danger"
+        disabled={readOnly}
         style={{ marginTop: spacing.xl }}
-        onPress={() => {
+        onPress={() => { void (async () => {
+          const preview = await getLocalDeletionPreview({ kind: 'electrical_asset', id: boardId });
+          const impact = preview
+            ? `\n\nDeletes ${preview.deletes.meters} meter(s), ${preview.deletes.assignments} assignment(s), and ${preview.deletes.forms} linked form(s). Converts ${preview.convertsToTbc.boards} board(s) and ${preview.convertsToTbc.siteAssets} asset(s) to TBC.`
+            : '';
           Alert.alert(
             'Delete board?',
-            'Forms linked to this board or its meters will also be removed from this device. Other board and site-asset links will be marked TBC.',
+            `Forms linked to this board or its meters will also be removed from this device. Other links will be marked TBC.${impact}`,
             [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -117,12 +132,14 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               },
             ],
           );
-        }}
+        })(); }}
       />
 
       <FormModal visible={editOpen} title="Edit board" onClose={() => setEditOpen(false)}>
         <ElectricalAssetForm
           initial={board}
+          sourceBoards={installationBoards}
+          gridSupplies={gridSupplies}
           onSubmit={async (values) => {
             await electricalAssetsRepo.update(boardId, {
               ...values,

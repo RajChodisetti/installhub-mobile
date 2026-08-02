@@ -3,7 +3,10 @@ import type {
   CloudUploadQueueItem,
   ElectricalAsset,
   FormSubmission,
+  GridSupply,
   Installation,
+  MeasurementAssignment,
+  MeterDevice,
   SiteAsset,
   ThumbnailDownloadQueueItem,
   Zone,
@@ -12,10 +15,15 @@ import { getStore, initStore, updateStore } from '../data/seed';
 import { createId, nowIso } from '../utils';
 
 export interface InstallationBackupTree {
+  treeSchemaVersion: 2;
+  baseTreeRevision?: number;
   installation: Installation;
+  gridSupplies: GridSupply[];
   zones: Zone[];
   electricalAssets: ElectricalAsset[];
   siteAssets: SiteAsset[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
   formSubmissions: FormSubmission[];
   watermark: string;
 }
@@ -27,6 +35,12 @@ export interface BackupMediaReference {
   field_name: string;
   local_uri: string;
   mime_type: string;
+  /** Queue identities written by schema-v1 clients for this same evidence slot. */
+  legacy_aliases?: Array<{
+    entity_type: CloudUploadQueueItem['entity_type'];
+    entity_id: string;
+    field_name: string;
+  }>;
 }
 
 function treeWatermark(store: AppDataStore, installationId: string): string {
@@ -46,17 +60,63 @@ function treeWatermark(store: AppDataStore, installationId: string): string {
   return timestamps.sort().at(-1) ?? new Date(0).toISOString();
 }
 
-function backupTree(store: AppDataStore, installation: Installation): InstallationBackupTree {
+export function serverBaseTreeRevision(installation: Installation): number | undefined {
+  const revision = installation.server_tree_revision;
+  return Number.isSafeInteger(revision) && revision !== undefined && revision >= 0
+    ? revision
+    : undefined;
+}
+
+export function buildInstallationBackupTree(
+  store: AppDataStore,
+  installation: Installation,
+): InstallationBackupTree {
+  const baseTreeRevision = serverBaseTreeRevision(installation);
   return {
+    treeSchemaVersion: 2,
+    ...(baseTreeRevision !== undefined ? { baseTreeRevision } : {}),
     installation,
+    gridSupplies: store.gridSupplies.filter((item) => item.installationId === installation.id),
     zones: store.zones.filter((item) => item.audit_id === installation.id),
     electricalAssets: store.electricalAssets.filter((item) => item.audit_id === installation.id),
     siteAssets: store.siteAssets.filter((item) => item.audit_id === installation.id),
+    meterDevices: store.meterDevices.filter((item) => item.installationId === installation.id),
+    measurementAssignments: store.measurementAssignments.filter(
+      (item) => item.installationId === installation.id,
+    ),
     formSubmissions: store.formSubmissions.filter(
       (item) => item.installation_id === installation.id,
     ),
     watermark: treeWatermark(store, installation.id),
   };
+}
+
+export function applyServerTreeRevision(
+  store: AppDataStore,
+  installationId: string,
+  treeRevision: number,
+): void {
+  if (!Number.isSafeInteger(treeRevision) || treeRevision < 0) {
+    throw new Error('Server returned an invalid tree revision.');
+  }
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('Installation not found.');
+  const current = serverBaseTreeRevision(installation);
+  if (current !== undefined && treeRevision < current) {
+    throw new Error(
+      `Server tree revision regressed from ${current} to ${treeRevision}.`,
+    );
+  }
+  installation.server_tree_revision = treeRevision;
+}
+
+export async function recordInstallationServerTreeRevision(
+  installationId: string,
+  treeRevision: number,
+): Promise<void> {
+  await updateStore((store) => {
+    applyServerTreeRevision(store, installationId, treeRevision);
+  });
 }
 
 export async function listInstallationsNeedingBackup(): Promise<InstallationBackupTree[]> {
@@ -65,7 +125,7 @@ export async function listInstallationsNeedingBackup(): Promise<InstallationBack
   const forced = new Set(store.cloudSync.force_dirty_installation_ids);
   return store.installations
     .filter((installation) => installation.cloud_backup_enabled)
-    .map((installation) => backupTree(store, installation))
+    .map((installation) => buildInstallationBackupTree(store, installation))
     .filter((tree) => {
       const syncedAt = store.cloudSync.synced_at_by_installation[tree.installation.id];
       return forced.has(tree.installation.id) || !syncedAt || tree.watermark > syncedAt;
@@ -78,7 +138,7 @@ export async function getInstallationBackupTree(
   await initStore();
   const store = getStore();
   const installation = store.installations.find((item) => item.id === installationId);
-  return installation ? backupTree(store, installation) : null;
+  return installation ? buildInstallationBackupTree(store, installation) : null;
 }
 
 export async function markInstallationDirty(installationId: string): Promise<void> {
@@ -94,20 +154,68 @@ export async function markInstallationBackedUp(
   watermark: string,
 ): Promise<void> {
   await updateStore((store) => {
+    const hasProvisionalCode = [
+      ...store.electricalAssets
+        .filter((item) => item.audit_id === installationId)
+        .map((item) => item.display_code_meta),
+      ...store.siteAssets
+        .filter((item) => item.audit_id === installationId)
+        .map((item) => item.display_code_meta),
+      ...store.meterDevices
+        .filter((item) => item.installationId === installationId)
+        .map((item) => item.displayName),
+    ].some((display) => display?.provisional);
+    if (hasProvisionalCode) {
+      throw new Error('Canonical display-code reconciliation is required before backup can finish.');
+    }
     store.cloudSync.synced_at_by_installation[installationId] = watermark;
     store.cloudSync.force_dirty_installation_ids =
       store.cloudSync.force_dirty_installation_ids.filter((id) => id !== installationId);
+    const installation = store.installations.find((item) => item.id === installationId);
+    if (installation) installation.backup_conflict = { kind: 'NONE' };
   });
+}
+
+export async function markInstallationBackupConflict(
+  installationId: string,
+  remoteTreeRevision?: number,
+): Promise<void> {
+  await updateStore((store) => {
+    applyInstallationBackupConflict(store, installationId, remoteTreeRevision, nowIso());
+  });
+}
+
+export function applyInstallationBackupConflict(
+  store: AppDataStore,
+  installationId: string,
+  remoteTreeRevision?: number,
+  detectedAt = nowIso(),
+): void {
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) return;
+  installation.backup_conflict = {
+    kind: 'CONFLICT',
+    localBaseTreeRevision: serverBaseTreeRevision(installation) ?? 0,
+    remoteTreeRevision,
+    detectedAt,
+  };
+  if (!store.cloudSync.force_dirty_installation_ids.includes(installationId)) {
+    store.cloudSync.force_dirty_installation_ids.push(installationId);
+  }
 }
 
 export async function getInstallationSyncMetadata(
   installationId: string,
-): Promise<{ forceDirty: boolean; syncedWatermark?: string }> {
+): Promise<{ forceDirty: boolean; syncedWatermark?: string; serverTreeRevision?: number }> {
   await initStore();
   const sync = getStore().cloudSync;
+  const installation = getStore().installations.find((item) => item.id === installationId);
   return {
     forceDirty: sync.force_dirty_installation_ids.includes(installationId),
     syncedWatermark: sync.synced_at_by_installation[installationId],
+    ...(installation && serverBaseTreeRevision(installation) !== undefined
+      ? { serverTreeRevision: serverBaseTreeRevision(installation) }
+      : {}),
   };
 }
 
@@ -145,15 +253,26 @@ export function reconciledBackupMediaQueue(
   }
 
   const desired = new Map<string, BackupMediaReference>();
+  const desiredIdentityByAlias = new Map<string, string>();
   for (const reference of references) {
-    desired.set(queueIdentity(reference), reference);
+    const identity = queueIdentity(reference);
+    desired.set(identity, reference);
+    for (const alias of reference.legacy_aliases ?? []) {
+      desiredIdentityByAlias.set(queueIdentity({
+        ...reference,
+        ...alias,
+      }), identity);
+    }
   }
 
   const bestCurrent = new Map<string, CloudUploadQueueItem>();
   for (const item of queue) {
     if (item.installation_id !== installationId) continue;
-    const identity = queueIdentity(item);
-    if (!desired.has(identity)) continue;
+    const rawIdentity = queueIdentity(item);
+    const identity = desired.has(rawIdentity)
+      ? rawIdentity
+      : desiredIdentityByAlias.get(rawIdentity);
+    if (!identity) continue;
     const current = bestCurrent.get(identity);
     if (!current || queueStatusRank(item.status) > queueStatusRank(current.status)) {
       bestCurrent.set(identity, item);
@@ -162,9 +281,14 @@ export function reconciledBackupMediaQueue(
 
   const reconciled = queue.filter((item) => item.installation_id !== installationId);
   for (const [identity, reference] of desired) {
+    const { legacy_aliases: _legacyAliases, ...persistedReference } = reference;
+    const current = bestCurrent.get(identity);
     reconciled.push(
-      bestCurrent.get(identity) ?? {
-        ...reference,
+      current ? {
+        ...current,
+        ...persistedReference,
+      } : {
+        ...persistedReference,
         id: createQueueId(),
         status: 'pending',
         attempts: 0,

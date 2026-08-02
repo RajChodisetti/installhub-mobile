@@ -29,9 +29,13 @@ export function remoteInstallationTreeRevision(
 ): string {
   return sha256(JSON.stringify(canonicalize({
     installation: tree.installation,
+    gridSupplies: byRemoteId(tree.gridSupplies ?? []),
     zones: byRemoteId(tree.zones),
     electricalAssets: byRemoteId(tree.electricalAssets),
     siteAssets: byRemoteId(tree.siteAssets),
+    meterDevices: byRemoteId(tree.meterDevices ?? []),
+    measurementAssignments: byRemoteId(tree.measurementAssignments ?? []),
     formSubmissions: byRemoteId(tree.formSubmissions),
+    serverDerived: tree.serverDerived,
   })));
 }

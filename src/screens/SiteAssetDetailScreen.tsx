@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { siteAssetsRepo } from '../repositories';
+import { getLocalDeletionPreview, siteAssetsRepo } from '../repositories';
+import { useInstallation } from '../hooks';
 import type { SiteAsset } from '../types';
 import { FormModal, SiteAssetForm } from '../components/forms';
 import { Badge, Button, LoadingState } from '../components/ui';
@@ -17,6 +18,12 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
   const [asset, setAsset] = useState<SiteAsset | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const {
+    item: installation,
+    boards: installationBoards,
+    gridSupplies,
+  } = useInstallation(installationId);
+  const readOnly = installation?.status === 'Completed';
 
   const refresh = async () => {
     setLoading(true);
@@ -44,8 +51,11 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
         {asset.display_code ? ` · ${asset.display_code}` : ''}
       </Text>
       <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-        {asset.electrical_board_tbc ? <Badge label="Board TBC" tone="tbc" /> : null}
-        {asset.meter_present ? <Badge label="Metered" tone="success" /> : null}
+        {asset.electrical_source?.kind === 'TBC' ? <Badge label="Supply TBC" tone="tbc" /> : null}
+        <Badge
+          label={asset.metering_state?.kind ?? 'TBC'}
+          tone={asset.metering_state?.kind === 'METERED' ? 'success' : asset.metering_state?.kind === 'TBC' ? 'tbc' : 'default'}
+        />
       </View>
       {asset.location_description ? (
         <Text style={{ color: colors.mutedForeground, marginTop: 12 }}>{asset.location_description}</Text>
@@ -54,10 +64,18 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
         <Text style={{ color: colors.foreground, marginTop: 12 }}>{asset.comments}</Text>
       ) : null}
 
-      <Button title="Edit asset" style={{ marginTop: spacing.lg }} onPress={() => setEditOpen(true)} />
+      <Button title="Edit asset" disabled={readOnly} style={{ marginTop: spacing.lg }} onPress={() => setEditOpen(true)} />
+      <Button
+        title="Reconcile meter and channels"
+        variant="secondary"
+        disabled={readOnly}
+        style={{ marginTop: spacing.md }}
+        onPress={() => navigation.navigate('DataView', { installationId })}
+      />
       <Button
         title="New Water / Logger Form"
         variant="secondary"
+        disabled={readOnly}
         style={{ marginTop: spacing.md }}
         onPress={() =>
           navigation.navigate('FormTypePicker', {
@@ -70,11 +88,16 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
       <Button
         title="Delete asset"
         variant="danger"
+        disabled={readOnly}
         style={{ marginTop: spacing.md }}
-        onPress={() => {
+        onPress={() => { void (async () => {
+          const preview = await getLocalDeletionPreview({ kind: 'site_asset', id: assetId });
+          const impact = preview
+            ? `\n\nDeletes ${preview.deletes.assignments} assignment(s) and ${preview.deletes.forms} linked form(s).`
+            : '';
           Alert.alert(
             'Delete asset?',
-            'Forms linked to this site asset and their on-device evidence will also be removed.',
+            `Forms linked to this site asset and their on-device evidence will also be removed.${impact}`,
             [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -87,12 +110,14 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
               },
             ],
           );
-        }}
+        })(); }}
       />
 
       <FormModal visible={editOpen} title="Edit asset" onClose={() => setEditOpen(false)}>
         <SiteAssetForm
           initial={asset}
+          sourceBoards={installationBoards}
+          gridSupplies={gridSupplies}
           onSubmit={async (values) => {
             await siteAssetsRepo.update(assetId, values);
             setEditOpen(false);

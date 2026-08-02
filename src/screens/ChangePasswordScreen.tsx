@@ -4,6 +4,10 @@ import { apiClient, cloudConnectionErrorMessage } from '../api/apiClient';
 import { Button, Card, TextField } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
+import {
+  passwordChangeSessionNotice,
+  sourceAppDisplayName,
+} from '../utils/sourceManagedUsers';
 
 export function ChangePasswordScreen() {
   const { user, logout } = useAuth();
@@ -12,10 +16,24 @@ export function ChangePasswordScreen() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const sourceManaged = user?.source_managed === true;
+  const sourceUnavailable = user?.source_state === 'orphaned';
+  const sourceAppName = sourceAppDisplayName(user?.source_app);
+  const sessionNotice = passwordChangeSessionNotice(
+    user?.source_app,
+    sourceManaged,
+  );
 
   const submit = async () => {
     if (!user) {
       Alert.alert('Session required', 'Sign in before changing your password.');
+      return;
+    }
+    if (sourceUnavailable) {
+      Alert.alert(
+        'Source account unavailable',
+        'A password cannot be changed for this retained read-only Field App Complete record.',
+      );
       return;
     }
     if (!currentPassword) {
@@ -40,7 +58,9 @@ export function ChangePasswordScreen() {
       await logout();
       Alert.alert(
         'Password changed',
-        'Your existing cloud sessions were revoked. Sign in again with the new password.',
+        sourceManaged
+          ? `Your shared ${sourceAppName} credential was updated. ${sessionNotice} Sign in again with the new password.`
+          : `${sessionNotice} Sign in again with the new password.`,
       );
     } catch (error) {
       Alert.alert('Could not change password', cloudConnectionErrorMessage(error));
@@ -59,40 +79,51 @@ export function ChangePasswordScreen() {
         <Text style={[typography.heading, { color: colors.foreground }]}>
           Change your password
         </Text>
-        <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
-          Confirm your current password. After the change, InstallHub signs out
-          this device and revokes other refresh sessions.
-        </Text>
-        <TextField
-          label="Current password"
-          value={currentPassword}
-          onChangeText={setCurrentPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          textContentType="password"
-        />
-        <TextField
-          label="New password"
-          value={newPassword}
-          onChangeText={setNewPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          textContentType="newPassword"
-        />
-        <TextField
-          label="Confirm new password"
-          value={confirmPassword}
-          onChangeText={setConfirmPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          textContentType="newPassword"
-        />
-        <Button
-          title={saving ? 'Changing password…' : 'Change password'}
-          disabled={saving}
-          onPress={() => void submit()}
-          style={{ marginTop: spacing.sm }}
-        />
+        {sourceUnavailable ? (
+          <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
+            The source account is unavailable. This retained Field App Complete
+            record is read-only, so its password cannot be changed.
+          </Text>
+        ) : (
+          <>
+            <Text style={[styles.explanation, { color: colors.mutedForeground }]}>
+              {sourceManaged
+                ? `This password is shared with your ${sourceAppName} account. ${sessionNotice}`
+                : `Confirm your current password. ${sessionNotice}`}
+            </Text>
+            <TextField
+              label="Current password"
+              value={currentPassword}
+              onChangeText={setCurrentPassword}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="password"
+            />
+            <TextField
+              label="New password"
+              value={newPassword}
+              onChangeText={setNewPassword}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="newPassword"
+            />
+            <TextField
+              label="Confirm new password"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="newPassword"
+            />
+            <Button
+              title={saving ? 'Changing password…' : 'Change password'}
+              disabled={saving}
+              accessibilityState={{ busy: saving }}
+              onPress={() => void submit()}
+              style={{ marginTop: spacing.sm }}
+            />
+          </>
+        )}
       </Card>
     </ScrollView>
   );

@@ -9,7 +9,10 @@ import {
   TextInput,
   TextInputProps,
   View,
+  type ViewProps,
   ViewStyle,
+  type AccessibilityState,
+  type AccessibilityRole,
 } from 'react-native';
 import { radii, spacing, typography } from '../../theme';
 import { useTheme } from '../../context/AppProviders';
@@ -21,12 +24,20 @@ export function Button({
   variant = 'primary',
   disabled,
   style,
+  accessibilityLabel,
+  accessibilityHint,
+  accessibilityState,
+  accessibilityRole = 'button',
 }: {
   title: string;
   onPress?: () => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   disabled?: boolean;
   style?: ViewStyle;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  accessibilityState?: AccessibilityState;
+  accessibilityRole?: AccessibilityRole;
 }) {
   const { colors } = useTheme();
   const bg =
@@ -50,6 +61,13 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      accessibilityRole={accessibilityRole}
+      accessibilityLabel={accessibilityLabel ?? title}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{
+        ...accessibilityState,
+        disabled: Boolean(disabled || accessibilityState?.disabled),
+      }}
       style={({ pressed }) => [
         styles.button,
         { backgroundColor: bg, opacity: disabled ? 0.5 : pressed ? 0.85 : 1 },
@@ -74,6 +92,7 @@ export function TextField({
       <TextInput
         placeholderTextColor={colors.mutedForeground}
         {...props}
+        accessibilityLabel={props.accessibilityLabel ?? label}
         style={[
           styles.input,
           {
@@ -99,10 +118,10 @@ export function TextArea(props: TextInputProps & { label?: string }) {
   );
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {
+export function Card({ children, style, ...props }: ViewProps & { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }, style]}>
+    <View {...props} style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }, style]}>
       {children}
     </View>
   );
@@ -174,7 +193,12 @@ export function SectionHeader({
     <View style={styles.sectionHeader}>
       <Text style={[typography.subheading, { color: colors.foreground }]}>{title}</Text>
       {actionLabel && onAction ? (
-        <Pressable onPress={onAction}>
+        <Pressable
+          onPress={onAction}
+          accessibilityRole="button"
+          accessibilityLabel={`${actionLabel} ${title}`}
+          style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 }}
+        >
           <Text style={{ color: colors.primary, fontWeight: '600' }}>{actionLabel}</Text>
         </Pressable>
       ) : null}
@@ -217,6 +241,8 @@ export function ListRow({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={subtitle ? `${title}. ${subtitle}` : title}
       style={({ pressed }) => [
         styles.listRow,
         { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.9 : 1 },
@@ -247,18 +273,33 @@ export function PhotoThumbnailGrid({
   const { colors } = useTheme();
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoRow}>
-      {uris.map((uri) => (
-        <Pressable
-          key={uri}
-          onLongPress={() => onRemove?.(uri)}
-          style={[styles.photoThumb, { borderColor: colors.border, backgroundColor: colors.muted }]}
-        >
-          <Image source={{ uri: cachedThumbnailUri(uri) ?? uri }} style={styles.photoImage} />
-        </Pressable>
+      {uris.map((uri, index) => (
+        <View key={`${uri}:${index}`} style={styles.photoItem}>
+          <Pressable
+            onLongPress={() => onRemove?.(uri)}
+            accessibilityRole="image"
+            accessibilityLabel={`Evidence photo ${index + 1}`}
+            style={[styles.photoThumb, { borderColor: colors.border, backgroundColor: colors.muted }]}
+          >
+            <Image source={{ uri: cachedThumbnailUri(uri) ?? uri }} style={styles.photoImage} />
+          </Pressable>
+          {onRemove ? (
+            <Pressable
+              onPress={() => onRemove(uri)}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove photo ${index + 1}`}
+              style={[styles.photoRemove, { borderColor: colors.border, backgroundColor: colors.card }]}
+            >
+              <Text style={{ color: colors.destructive, fontWeight: '700', fontSize: 12 }}>Remove</Text>
+            </Pressable>
+          ) : null}
+        </View>
       ))}
       {onAdd ? (
         <Pressable
           onPress={onAdd}
+          accessibilityRole="button"
+          accessibilityLabel="Add photo"
           style={[styles.photoThumb, styles.photoAdd, { borderColor: colors.border, backgroundColor: colors.card }]}
         >
           <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 28 }}>+</Text>
@@ -271,6 +312,7 @@ export function PhotoThumbnailGrid({
 const styles = StyleSheet.create({
   button: {
     borderRadius: radii.md,
+    minHeight: 44,
     paddingVertical: 12,
     paddingHorizontal: 16,
     alignItems: 'center',
@@ -279,6 +321,7 @@ const styles = StyleSheet.create({
   field: { gap: 6, marginBottom: spacing.md },
   label: { ...typography.label, textTransform: 'uppercase' },
   input: {
+    minHeight: 44,
     borderWidth: 1,
     borderRadius: radii.md,
     paddingHorizontal: 12,
@@ -320,6 +363,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   photoRow: { gap: 8, paddingVertical: 4 },
+  photoItem: { width: 88, gap: 4 },
   photoThumb: {
     width: 88,
     height: 88,
@@ -328,5 +372,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   photoImage: { width: '100%', height: '100%' },
+  photoRemove: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: radii.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   photoAdd: { alignItems: 'center', justifyContent: 'center' },
 });
