@@ -188,7 +188,9 @@ A3RM/A6M devices have exact 3/6 positive channel ordinals. An Other meter instea
 manufacturer, model, at least one explicitly numbered channel, and non-empty capabilities for each
 channel; it is never defaulted to three. Wattwatchers commissioning-form evidence is required only
 for A3RM/A6M. Fixed A3RM/A6M channels use their model contract and do not require custom capability
-objects; choosing `SPARE` clears incompatible load and sensor details. Measurement assignments
+objects. Each WW commissioning channel records explicit `MAIN_SUPPLY`, `SUB_CIRCUIT`, or `SPARE`
+purpose; active channels require a load, and `Other` requires a separate custom load label.
+Choosing `SPARE` clears incompatible load, custom label, sensor, description, and evidence details. Measurement assignments
 retain explicit channel order, phase mode, direction, target, and stable identity.
 
 The mobile commissioning workflow now enforces the canonical sequence: choose or create a physical
@@ -489,11 +491,12 @@ preserving:
 - Installation uses one `device.type` controller. A3RM exposes three channels
   with exactly `3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`; A6M exposes six
   channels with exactly `60A`, `120A`, `200A`, `400A`, or `600A`.
-- Every visible Installation channel requires a Load. Choosing `Not Used` is a
-  channel state, not a sensor size: rating, description, nameplate evidence,
-  polarity and current are hidden and cleared. The API rejects a stored rating
-  on a `Not Used` channel. Choosing a real load requires the exact
-  type-compatible rating.
+- Every visible Installation channel first requires a purpose: Main board supply,
+  Sub-circuit / asset, or Spare / unused. Active purposes require a Load; choosing
+  `Other` also requires a separate custom load label. Spare channels hide and
+  clear load, custom label, rating, description, nameplate evidence, polarity,
+  and current. Historical drafts that used `Not Used` remain readable through
+  the bounded legacy mapper, while current authoring uses the explicit purpose.
 - Comms Fault applies the same dependent choice rule to both the
   existing and replacement device; replacement identity, sensor and
   recommissioning fields are shown only when replacement is selected.
@@ -655,8 +658,9 @@ An agent should distinguish deliberate demo behavior from accidental architectur
   assets, while the electrical view keeps FED_FROM hierarchy separate from the MEASURES overlay.
 - A completed Wattwatchers installation form creates the stable operational meter and immediately
   routes to commissioning step 2. The installer must represent every non-spare channel exactly once
-  and explicitly choose phase, direction, and a Board/Grid/Site Asset/TBC target. The historical
-  form schema-v2 catalog is deliberately unchanged.
+  and explicitly choose phase, direction, and a Board/Grid/Site Asset/TBC target. Current schema-v2
+  authoring records channel purpose and a conditional custom load label; older drafts without those
+  answers remain readable and must supply the missing explicit values before completion.
 - Site-asset editor recovery drafts are local-only records inside the encrypted transactional store.
   They are bound to user and installation, checksum-verified, expire after seven days, are cleared
   on logout/success/explicit discard, and require explicit review if the base tree or asset changed.
@@ -688,11 +692,13 @@ blob. Either normalize old records on read, add a migration, or deliberately inc
 key (which resets local data).
 
 The August 2026 electrical-mapping hardening requires no API database migration and does not change
-the canonical-v2 form or installation payload. It uses existing `board_id`, `meter_id`,
+the canonical-v2 installation envelope. It uses existing `board_id`, `meter_id`,
 `meterDevices`, `measurementAssignments`, and `metering_state` fields. The only new persisted value
 is the optional, local-only `siteAssetEditorDrafts` recovery array. Existing v3 stores normalize a
 missing array to empty, so no store-key reset or destructive migration is required; this field is
-excluded from `InstallationBackupTree` and never sent to the API.
+excluded from `InstallationBackupTree` and never sent to the API. WW forms add forward-compatible
+string answers for channel purpose and conditional custom load label inside the existing JSON answer
+map, so neither the mobile store nor API database needs a structural migration.
 
 ### Installation and mapping workflow
 

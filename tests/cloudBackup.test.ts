@@ -123,6 +123,28 @@ test('cloud payload labels metadata and complete pushes without changing legacy 
   assert.equal('syncStage' in buildBackupPayload(tree, queue), false);
 });
 
+test('WW purpose and custom-load answers survive backup serialization unchanged', () => {
+  const answers = {
+    'channel.1.purpose': 'Sub-circuit / asset',
+    'channel.1.load': 'Other',
+    'channel.1.custom_load_type': 'Refrigeration',
+    'channel.1.rating': '3000A - 9cm',
+    'channel.1.description': 'Cold room plant',
+  };
+  const purposeTree: InstallationBackupTree = {
+    ...tree,
+    formSubmissions: [{
+      ...tree.formSubmissions[0]!,
+      form_type: 'ww-installation',
+      answers,
+    }],
+  };
+
+  const payload = buildBackupPayload(purposeTree, [], 'metadata');
+  assert.deepEqual(payload.formSubmissions[0]?.answers, answers);
+  assert.equal(payload.formSubmissions[0]?.historicalMeterRemoved, false);
+});
+
 test('staged sync keeps unresolved local Completed forms Draft until evidence is remote', () => {
   const metadata = buildBackupPayload(tree, [], 'metadata');
   assert.equal(metadata.formSubmissions[0]?.status, 'Draft');

@@ -7,6 +7,10 @@ import type {
   MeterDeviceType,
   WattwatcherChannel,
 } from '../types';
+import {
+  channelPurposeFromFormAnswer,
+  completedFormLoadType,
+} from './formMeterPrefill';
 
 /**
  * A site asset can have only one direct meter owner. The current meter keeps
@@ -78,12 +82,6 @@ export function answersWithCanonicalBoardContext(
   };
 }
 
-function channelPurpose(load: string): WattwatcherChannel['purpose'] {
-  if (!load.trim() || load === 'Not Used') return 'SPARE';
-  if (load === 'Mains Supply') return 'MAIN_SUPPLY';
-  return 'SUB_CIRCUIT';
-}
-
 /** Build the single stable operational meter owned by a WW commissioning form. */
 export function meterFromInstallationForm(
   form: FormSubmission,
@@ -109,20 +107,31 @@ export function meterFromInstallationForm(
   const channels = Array.from({ length: channelCount }, (_, index) => {
     const ordinal = index + 1;
     const load = String(form.answers[`channel.${ordinal}.load`] ?? '');
+    const persistedLoad = completedFormLoadType(
+      load,
+      form.answers[`channel.${ordinal}.custom_load_type`],
+    );
     const rating = String(form.answers[`channel.${ordinal}.rating`] ?? '');
     const previous = existing?.ww_channels?.find(
       (channel, previousIndex) => (channel.ordinal ?? previousIndex + 1) === ordinal,
     );
+    const purpose = channelPurposeFromFormAnswer(
+      form.answers[`channel.${ordinal}.purpose`],
+      load,
+    );
+    const isSpare = purpose === 'SPARE';
     return {
       ...previous,
       id: previous?.id ?? `${meterId}:${ordinal}`,
       ordinal,
-      purpose: channelPurpose(load),
-      load_type: load,
-      description: String(form.answers[`channel.${ordinal}.description`] ?? ''),
+      purpose,
+      load_type: isSpare ? undefined : persistedLoad,
+      description: isSpare
+        ? undefined
+        : String(form.answers[`channel.${ordinal}.description`] ?? ''),
       ...(deviceType === 'A3RM'
-        ? { rogowski_size: rating, ct_ratio: undefined }
-        : { ct_ratio: rating, rogowski_size: undefined }),
+        ? { rogowski_size: isSpare ? undefined : rating, ct_ratio: undefined }
+        : { ct_ratio: isSpare ? undefined : rating, rogowski_size: undefined }),
     } satisfies WattwatcherChannel;
   });
   return {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   FORM_DEFINITION_BY_TYPE,
@@ -14,6 +15,19 @@ import {
 import { buildFormReportHtml } from '../src/services/formReportHtml';
 import { formPdfFilename } from '../src/services/reportFilenames';
 import type { FormAttachment, FormSubmission } from '../src/types';
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(
+        (value as Record<string, unknown>)[key],
+      )}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 test('the picker catalog contains the six supplied form families', () => {
   assert.deepEqual(
@@ -34,6 +48,30 @@ test('the picker catalog contains the six supplied form families', () => {
 test('legacy A3RM and A6M form types remain readable', () => {
   assert.equal(FORM_DEFINITION_BY_TYPE['a3rm-installation'].availableForNew, false);
   assert.equal(FORM_DEFINITION_BY_TYPE['a6m-installation'].availableForNew, false);
+});
+
+test('the full mobile catalog matches the audited portal contract fingerprint', () => {
+  const sectionCount = FORM_DEFINITIONS.reduce(
+    (count, definition) => count + definition.sections.length,
+    0,
+  );
+  const fieldCount = FORM_DEFINITIONS.reduce(
+    (count, definition) => count + definition.sections.reduce(
+      (fields, section) => fields + section.fields.length,
+      0,
+    ),
+    0,
+  );
+  const fingerprint = createHash('sha256')
+    .update(canonicalJson(FORM_DEFINITIONS))
+    .digest('hex');
+
+  assert.equal(sectionCount, 56);
+  assert.equal(fieldCount, 390);
+  assert.equal(
+    fingerprint,
+    'df5cda7af9d65d9f6c19bdcaec182a61d248b1d9fe47bb29478f1d736e1b482a',
+  );
 });
 
 test('Installation form dynamically exposes exact A3RM and A6M options', () => {
@@ -63,6 +101,33 @@ test('Installation form dynamically exposes exact A3RM and A6M options', () => {
   assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, ['60A', '120A', '200A', '400A', '600A']);
 });
 
+test('WW channel contract matches the API and portal parity signature', () => {
+  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const channelContract = Array.from({ length: 6 }, (_, index) => {
+    const channel = index + 1;
+    const section = definition.sections.find((candidate) =>
+      candidate.fields.some((field) => field.key === `channel.${channel}.purpose`));
+    assert.ok(section, `channel ${channel} section is declared`);
+    return {
+      channel,
+      showWhen: section.showWhen,
+      fields: section.fields.map((field) => ({
+        key: field.key,
+        kind: field.kind,
+        required: field.required ?? false,
+        ...(field.options ? { options: field.options } : {}),
+        ...(field.showWhen ? { showWhen: field.showWhen } : {}),
+        ...(field.optionsWhen ? { optionsWhen: field.optionsWhen } : {}),
+      })),
+    };
+  });
+
+  assert.equal(
+    createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
+    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
+  );
+});
+
 test('changing device type clears stale dependent ratings and hidden channels', () => {
   const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
   const next = answersAfterChange(
@@ -79,22 +144,26 @@ test('changing device type clears stale dependent ratings and hidden channels', 
   assert.equal(next['channel.4.rating'], undefined);
 });
 
-test('an unused WW channel clears and hides sensor, evidence and commissioning values', () => {
+test('a spare WW channel clears and hides load, sensor, evidence and commissioning values', () => {
   const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
   const next = answersAfterChange(
     definition,
     {
       'device.type': 'A6M',
+      'channel.4.purpose': 'Sub-circuit / asset',
       'channel.4.load': 'HVAC',
+      'channel.4.custom_load_type': 'Legacy custom value',
       'channel.4.rating': '120A',
       'channel.4.description': 'Warehouse air conditioning',
       'commissioning.channel_4_polarity': 'yes',
       'commissioning.channel_4_current': '18.2',
     },
-    'channel.4.load',
-    'Not Used',
+    'channel.4.purpose',
+    'Spare / unused',
   );
-  assert.equal(next['channel.4.load'], 'Not Used');
+  assert.equal(next['channel.4.purpose'], 'Spare / unused');
+  assert.equal(next['channel.4.load'], undefined);
+  assert.equal(next['channel.4.custom_load_type'], undefined);
   assert.equal(next['channel.4.rating'], undefined);
   assert.equal(next['channel.4.description'], undefined);
   assert.equal(next['commissioning.channel_4_polarity'], undefined);
@@ -121,6 +190,75 @@ test('an unused WW channel clears and hides sensor, evidence and commissioning v
     validateForm(submission).some((error) => error.startsWith('Channel 4:')),
     false,
   );
+});
+
+test('WW channel validation requires purpose first and load only for active purposes', () => {
+  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const channel = definition.sections.find((section) => section.title === 'Channel 1')!;
+  const purpose = channel.fields.find((field) => field.key === 'channel.1.purpose')!;
+  const load = channel.fields.find((field) => field.key === 'channel.1.load')!;
+  assert.deepEqual(purpose.options, [
+    'Main board supply',
+    'Sub-circuit / asset',
+    'Spare / unused',
+  ]);
+  assert.deepEqual(
+    optionsForField(load, { 'channel.1.purpose': 'Main board supply' }),
+    ['Mains Supply'],
+  );
+  assert.deepEqual(
+    optionsForField(load, { 'channel.1.purpose': 'Sub-circuit / asset' }),
+    ['HVAC', 'Lighting', 'Solar PV', 'Forklift Charger', 'Hot Water', 'General Power', 'Other'],
+  );
+  assert.deepEqual(
+    optionsForField(load, { 'channel.1.purpose': 'Spare / unused' }),
+    [],
+  );
+  assert.equal(isFieldVisible(load, { 'channel.1.purpose': 'Spare / unused' }), false);
+  assert.equal(isFieldVisible(load, { 'channel.1.purpose': 'Sub-circuit / asset' }), true);
+
+  const changedToMain = answersAfterChange(
+    definition,
+    {
+      'device.type': 'A3RM',
+      'channel.1.purpose': 'Sub-circuit / asset',
+      'channel.1.load': 'HVAC',
+      'channel.1.rating': '3000A - 9cm',
+    },
+    'channel.1.purpose',
+    'Main board supply',
+  );
+  assert.equal(changedToMain['channel.1.purpose'], 'Main board supply');
+  assert.equal(changedToMain['channel.1.load'], undefined);
+  assert.equal(changedToMain['channel.1.rating'], undefined);
+
+  const draft: FormSubmission = {
+    id: 'purpose-validation', form_type: 'ww-installation', schema_version: 2,
+    status: 'Draft', installation_id: 'installation-1', attachments: [],
+    answers: {
+      'device.type': 'A3RM',
+      'channel.1.purpose': 'Sub-circuit / asset',
+      'channel.2.purpose': 'Spare / unused',
+      'channel.3.purpose': 'Spare / unused',
+    },
+    created_at: '2026-08-02T00:00:00.000Z',
+    updated_at: '2026-08-02T00:00:00.000Z',
+  };
+  assert.ok(validateForm(draft).includes('Channel 1: Load'));
+  draft.answers['channel.1.load'] = 'Mains Supply';
+  assert.ok(validateForm(draft).includes('Channel 1: Load has an invalid selection'));
+  draft.answers['channel.1.load'] = 'Other';
+  draft.answers['channel.1.rating'] = '3000A - 9cm';
+  assert.ok(validateForm(draft).includes('Channel 1: Custom load type'));
+  draft.answers['channel.1.custom_load_type'] = 'Refrigeration';
+  assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
+  draft.answers = answersAfterChange(
+    definition,
+    draft.answers,
+    'channel.1.purpose',
+    'Spare / unused',
+  );
+  assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
 });
 
 test('Comms replacement-only commissioning values are hidden and cleared when no replacement occurs', () => {

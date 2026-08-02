@@ -48,6 +48,9 @@ export function completeFormSubmissionInStore(
     const linkedDevice = meterId
       ? store.meterDevices.find((item) => item.id === meterId)
       : undefined;
+    if (meterId && !linkedDevice) {
+      throw new Error('The linked meter is no longer available. Reconcile the form before completing it.');
+    }
     if (linkedDevice && linkedDevice.installedOnBoardId !== board.id) {
       throw new Error('This form meter is already installed on another switchboard.');
     }

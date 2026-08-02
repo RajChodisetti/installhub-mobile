@@ -297,7 +297,7 @@ function legacyChannelToCanonical(
     phaseLabel: channel.phase_label,
     capabilities: channel.capabilities,
     loadTypeCode,
-    customLoadTypeName: loadTypeCode === 'OTHER' && channel.load_type && channel.load_type !== 'Other'
+    customLoadTypeName: loadTypeCode === 'OTHER' && channel.load_type
       ? channel.load_type
       : undefined,
     sensorRating: channel.rogowski_size ?? channel.ct_ratio,

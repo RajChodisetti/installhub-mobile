@@ -7,6 +7,7 @@ import type {
   User,
 } from '../types';
 import type { ScanMode } from '../components/BarcodeScanField';
+import { WW_CHANNEL_PURPOSE_FORM_OPTIONS } from '../domain/formMeterPrefill';
 
 export type FormFieldKind = 'text' | 'multiline' | 'number' | 'yesno' | 'select' | 'photo';
 
@@ -172,11 +173,34 @@ function dynamicChannelFields(): FormSectionDefinition[] {
           : { key: 'device.type', equals: 'A6M' },
       fields: [
         {
+          key: `${prefix}.purpose`,
+          label: 'Channel purpose',
+          kind: 'select',
+          options: [...WW_CHANNEL_PURPOSE_FORM_OPTIONS],
+          required: true,
+        },
+        {
           key: `${prefix}.load`,
           label: 'Load',
           kind: 'select',
-          options: loads,
           required: true,
+          showWhen: {
+            key: `${prefix}.purpose`,
+            equals: ['Main board supply', 'Sub-circuit / asset'],
+          },
+          optionsWhen: {
+            key: `${prefix}.purpose`,
+            values: {
+              'Main board supply': ['Mains Supply'],
+              'Sub-circuit / asset': loads.filter(
+                (load) => load !== 'Mains Supply' && load !== 'Not Used',
+              ),
+            },
+          },
+        },
+        {
+          ...text(`${prefix}.custom_load_type`, 'Custom load type', true),
+          showWhen: { key: `${prefix}.load`, equals: 'Other' },
         },
         {
           ...sensorField(

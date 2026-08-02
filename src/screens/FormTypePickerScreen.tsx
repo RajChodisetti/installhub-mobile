@@ -16,6 +16,8 @@ import { createInitialFormAnswers } from '../forms/catalog';
 import { useInstallation } from '../hooks';
 import { ElectricalAssetForm, FormModal, SelectChips } from '../components/forms';
 import { SOURCE_BOARD_RESULT_LIMIT, searchSourceBoards } from '../domain/sourcePicker';
+import { isFormTypeAvailableForContext } from '../domain/formPickerContext';
+import { installationFormAnswersForMeter } from '../domain/formMeterPrefill';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
@@ -28,6 +30,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
     boards,
     zones,
     gridSupplies,
+    meterDevices,
     loading,
   } = useInstallation(installationId);
   const [busy, setBusy] = useState<FormType | null>(null);
@@ -49,18 +52,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
 
   const allowed = FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
-    if (meterId) return definition.type === 'comms-fault';
-    if (boardId) {
-      return ['ww-installation', 'ace-switchboard'].includes(
-        definition.type,
-      );
-    }
-    if (siteAssetId) {
-      return ['honeywell-q400', 'captis-logger', 'sums-logger'].includes(
-        definition.type,
-      );
-    }
-    return true;
+    return isFormTypeAvailableForContext(definition.type, { boardId, meterId, siteAssetId });
   });
 
   return (
@@ -182,6 +174,14 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                       answers['existing.device_number'] = meter.device_number ?? '';
                       answers['existing.device_type'] = meter.device_type;
                     }
+                  }
+                }
+                if (definition.type === 'ww-installation' && meterId) {
+                  const canonicalMeter = meterDevices.find(
+                    (item) => item.id === meterId && item.installedOnBoardId === formBoardId,
+                  );
+                  if (canonicalMeter) {
+                    Object.assign(answers, installationFormAnswersForMeter(canonicalMeter));
                   }
                 }
                 if (siteAssetId) {

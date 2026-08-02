@@ -53,6 +53,18 @@ test('WW form cannot complete without a board and leaves the store unchanged', (
   assert.equal(JSON.stringify(store), before);
 });
 
+test('WW form cannot resurrect a missing linked meter and leaves the store unchanged', () => {
+  const store = fixture(wwForm('board', 'meter-deleted'));
+  const before = JSON.stringify(store);
+  assert.throws(
+    () => completeFormSubmissionInStore(store, 'form', timestamp, () => {
+      throw new Error('must not allocate a replacement ID');
+    }),
+    /linked meter is no longer available/,
+  );
+  assert.equal(JSON.stringify(store), before);
+});
+
 test('WW completion atomically pins canonical board and one stable operational meter', () => {
   const store = fixture(wwForm('board'));
   const completed = completeFormSubmissionInStore(
