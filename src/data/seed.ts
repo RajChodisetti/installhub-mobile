@@ -101,6 +101,7 @@ export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
     meterDevices: value.meterDevices ?? [],
     measurementAssignments: value.measurementAssignments ?? [],
     formSubmissions: (value.formSubmissions ?? []).map(normalizeFormSubmission),
+    siteAssetEditorDrafts: value.siteAssetEditorDrafts ?? [],
     cloudSync: {
       synced_at_by_installation: syncedAtByInstallation,
       force_dirty_installation_ids: value.cloudSync?.force_dirty_installation_ids ?? [],

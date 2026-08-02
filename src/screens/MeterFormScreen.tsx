@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import {
   canonicalInstallationRepo,
@@ -7,18 +7,84 @@ import {
   formsRepo,
   installationsRepo,
   siteAssetsRepo,
+  zonesRepo,
 } from '../repositories';
-import type { Meter } from '../types';
-import { WattwatcherForm, createEmptyMeter } from '../components/forms';
-import { Button, LoadingState } from '../components/ui';
+import type {
+  ElectricalAsset,
+  GridSupply,
+  MeasurementAssignment,
+  MeasurementDirection,
+  MeasurementTarget,
+  Meter,
+  MeterChannelPurpose,
+  SiteAsset,
+  Zone,
+} from '../types';
+import { meterDeviceFromLegacy } from '../domain/installationV2';
+import { siteAssetTargetIdsOwnedByOtherMeters } from '../domain/meterCommissioning';
+import { SelectChips, WattwatcherForm, createEmptyMeter } from '../components/forms';
+import { Button, Card, LoadingState, SearchBar, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { createId } from '../utils';
+import { boundedPickerResults } from '../domain/sourcePicker';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MeterForm'>;
+type AssignmentDraft = Omit<MeasurementAssignment, 'phaseMode' | 'target' | 'direction'> & {
+  phaseMode: MeasurementAssignment['phaseMode'] | '';
+  target: MeasurementTarget | null;
+  direction: MeasurementDirection | '';
+};
+type TargetCandidate = {
+  key: string;
+  label: string;
+  subtitle: string;
+  target: MeasurementTarget;
+};
+const TARGET_RESULT_LIMIT = 100;
+
+function boardIsUpstreamOf(
+  boards: ElectricalAsset[],
+  upstreamBoardId: string,
+  targetBoardId: string,
+): boolean {
+  const byId = new Map(boards.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let currentId: string | undefined = targetBoardId;
+  while (currentId && !seen.has(currentId)) {
+    if (currentId === upstreamBoardId) return true;
+    seen.add(currentId);
+    const current = byId.get(currentId);
+    currentId = current?.electrical_source?.kind === 'BOARD'
+      ? current.electrical_source.boardId
+      : undefined;
+  }
+  return false;
+}
+
+function meterBoardReachesGrid(
+  boards: ElectricalAsset[],
+  meterBoardId: string,
+  gridSupplyId: string,
+): boolean {
+  const byId = new Map(boards.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let current = byId.get(meterBoardId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.electrical_source?.kind === 'GRID') {
+      return current.electrical_source.gridSupplyId === gridSupplyId;
+    }
+    current = current.electrical_source?.kind === 'BOARD'
+      ? byId.get(current.electrical_source.boardId)
+      : undefined;
+  }
+  return false;
+}
 
 export function MeterFormScreen({ navigation, route }: Props) {
-  const { boardId, meterId, deviceType = 'A3RM' } = route.params;
+  const { boardId, meterId, deviceType = 'A3RM', finishChannelMapping = false } = route.params;
   const { colors } = useTheme();
   const [meter, setMeter] = useState<Meter | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,6 +92,14 @@ export function MeterFormScreen({ navigation, route }: Props) {
   const [readOnly, setReadOnly] = useState(false);
   const [lockedByCompletedForm, setLockedByCompletedForm] = useState(false);
   const [completedFormId, setCompletedFormId] = useState<string | null>(null);
+  const [board, setBoard] = useState<ElectricalAsset | null>(null);
+  const [boards, setBoards] = useState<ElectricalAsset[]>([]);
+  const [gridSupplies, setGridSupplies] = useState<GridSupply[]>([]);
+  const [assets, setAssets] = useState<SiteAsset[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [assignmentDrafts, setAssignmentDrafts] = useState<AssignmentDraft[]>([]);
+  const [siteAssetIdsOwnedByOtherMeters, setSiteAssetIdsOwnedByOtherMeters] = useState<Set<string>>(new Set());
+  const [targetSearch, setTargetSearch] = useState<Record<string, string>>({});
   const [deletionPreview, setDeletionPreview] = useState({
     assignmentIds: [] as string[],
     tbcAssetLabels: [] as string[],
@@ -40,12 +114,25 @@ export function MeterFormScreen({ navigation, route }: Props) {
         setLoading(false);
         return;
       }
-      const [installation, forms, assignments, assets] = await Promise.all([
+      const [installation, forms, assignments, installationAssets, installationBoards, grids] = await Promise.all([
         installationsRepo.getById(board.audit_id),
         formsRepo.listByInstallation(board.audit_id),
         canonicalInstallationRepo.measurementAssignments(board.audit_id),
         siteAssetsRepo.listByInstallation(board.audit_id),
+        electricalAssetsRepo.listByInstallation(board.audit_id),
+        canonicalInstallationRepo.gridSupplies(board.audit_id),
       ]);
+      const installationZones = await Promise.all(
+        [...new Set(installationBoards.map((item) => item.zone_id).concat(installationAssets.map((item) => item.zone_id)))]
+          .map((id) => zonesRepo.getById(id)),
+      );
+      setBoard(board);
+      setBoards(installationBoards);
+      setGridSupplies(grids);
+      setAssets(installationAssets);
+      setZones(installationZones.filter((item): item is Zone => Boolean(item)));
+      setAssignmentDrafts(assignments.filter((assignment) => assignment.meterId === meterId));
+      setSiteAssetIdsOwnedByOtherMeters(siteAssetTargetIdsOwnedByOtherMeters(assignments, meterId));
       setReadOnly(installation?.status === 'Completed');
       const completedForm = meterId
         ? forms.find((form) => form.meter_id === meterId && form.status === 'Completed')
@@ -59,7 +146,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
       const retainedForms = meterId ? forms.filter((form) => form.meter_id === meterId) : [];
       setDeletionPreview({
         assignmentIds: [...deletedAssignmentIds].sort(),
-        tbcAssetLabels: assets
+        tbcAssetLabels: installationAssets
           .filter((asset) => asset.metering_state?.kind === 'METERED' &&
             asset.metering_state.measurementAssignmentIds.some((id) => deletedAssignmentIds.has(id)) &&
             !asset.metering_state.measurementAssignmentIds.some((id) => !deletedAssignmentIds.has(id)))
@@ -83,7 +170,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
     })();
   }, [boardId, meterId, deviceType]);
 
-  if (loading || !meter) {
+  if (loading || !meter || !board) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <LoadingState />
@@ -91,15 +178,138 @@ export function MeterFormScreen({ navigation, route }: Props) {
     );
   }
 
+  const previewDevice = meterDeviceFromLegacy(board.audit_id, board, meter);
+  const zoneName = (zoneId: string) => zones.find((item) => item.id === zoneId)?.zone_name ?? 'Unknown zone';
+  const purposeFor = (assignment: AssignmentDraft): MeterChannelPurpose | null => {
+    const purposes = new Set(
+      assignment.channelIds
+        .map((id) => previewDevice.channels.find((channel) => channel.id === id)?.purpose)
+        .filter((purpose): purpose is MeterChannelPurpose => Boolean(purpose)),
+    );
+    return purposes.size === 1 ? [...purposes][0] : null;
+  };
+  const targetKindsFor = (assignment: AssignmentDraft): MeasurementTarget['kind'][] => {
+    const purpose = purposeFor(assignment);
+    if (purpose === 'MAIN_SUPPLY') return ['BOARD', 'GRID_BOUNDARY', 'TBC'];
+    if (purpose === 'SUB_CIRCUIT') return ['BOARD', 'SITE_ASSET', 'TBC'];
+    return ['BOARD', 'GRID_BOUNDARY', 'SITE_ASSET', 'TBC'];
+  };
+  const candidatesFor = (assignment: AssignmentDraft) => {
+    if (!assignment.target) return { total: 0, visible: [] as TargetCandidate[], selectedPinned: false };
+    const needle = (targetSearch[assignment.id] ?? '').trim().toLocaleLowerCase();
+    const bound = (candidates: TargetCandidate[]) => {
+      const matches = candidates.filter((candidate) => !needle ||
+        `${candidate.label} ${candidate.subtitle}`.toLocaleLowerCase().includes(needle));
+      const isSelected = (candidate: TargetCandidate) =>
+        JSON.stringify(candidate.target) === JSON.stringify(assignment.target);
+      const result = boundedPickerResults(matches, TARGET_RESULT_LIMIT, isSelected);
+      const selected = candidates.find(isSelected);
+      if (!selected || result.visible.some((candidate) => candidate.key === selected.key)) return result;
+      return {
+        ...result,
+        visible: [selected, ...result.visible].slice(0, TARGET_RESULT_LIMIT),
+        selectedPinned: true,
+      };
+    };
+    if (assignment.target.kind === 'BOARD') {
+      const purpose = purposeFor(assignment);
+      return bound(boards
+        .filter((item) => purpose === 'MAIN_SUPPLY'
+          ? item.id === board.id
+          : purpose === 'SUB_CIRCUIT'
+            ? item.id !== board.id && boardIsUpstreamOf(boards, board.id, item.id)
+            : boardIsUpstreamOf(boards, board.id, item.id))
+        .map((item) => ({
+          key: item.id,
+          label: `${item.display_code} · ${item.asset_name}`,
+          subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}`,
+          target: { kind: 'BOARD' as const, boardId: item.id },
+        })));
+    }
+    if (assignment.target.kind === 'GRID_BOUNDARY') {
+      return bound(gridSupplies
+        .filter((item) => meterBoardReachesGrid(boards, board.id, item.id))
+        .map((item) => ({
+          key: item.id,
+          label: item.name,
+          subtitle: item.nmi ? `NMI ${item.nmi}` : 'Grid boundary',
+          target: { kind: 'GRID_BOUNDARY' as const, gridSupplyId: item.id },
+        })));
+    }
+    if (assignment.target.kind === 'SITE_ASSET') {
+      return bound(assets
+        .filter((item) => item.electrical_source?.kind === 'BOARD' &&
+          boardIsUpstreamOf(boards, board.id, item.electrical_source.boardId) &&
+          !siteAssetIdsOwnedByOtherMeters.has(item.id))
+        .map((item) => ({
+          key: item.id,
+          label: `${item.display_code ?? item.id} · ${item.asset_name}`,
+          subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}`,
+          target: { kind: 'SITE_ASSET' as const, siteAssetId: item.id },
+        })));
+    }
+    return { total: 0, visible: [] as TargetCandidate[], selectedPinned: false };
+  };
+  const updateAssignment = (
+    assignmentId: string,
+    transform: (current: AssignmentDraft) => AssignmentDraft,
+  ) => setAssignmentDrafts((current) => current.map((item) =>
+    item.id === assignmentId ? transform(item) : item));
+  const setTargetKind = (
+    assignment: AssignmentDraft,
+    kind: MeasurementTarget['kind'],
+  ) => {
+    const target: MeasurementTarget = kind === 'BOARD'
+      ? { kind, boardId: '' }
+      : kind === 'GRID_BOUNDARY'
+        ? { kind, gridSupplyId: '' }
+        : kind === 'SITE_ASSET'
+          ? { kind, siteAssetId: '' }
+          : { kind: 'TBC' };
+    updateAssignment(assignment.id, (current) => ({
+      ...current,
+      target,
+      status: kind === 'TBC' ? 'TBC' : 'CONFIRMED',
+    }));
+  };
+  const addAssignment = () => {
+    const used = new Set(assignmentDrafts.flatMap((item) => item.channelIds));
+    const channel = previewDevice.channels.find(
+      (item) => item.purpose !== 'SPARE' && !used.has(item.id),
+    );
+    if (!channel) {
+      Alert.alert('No channel available', 'Every non-spare channel already has an assignment.');
+      return;
+    }
+    setAssignmentDrafts((current) => [...current, {
+      id: createId('assignment'),
+      installationId: board.audit_id,
+      meterId: meter.id,
+      channelIds: [channel.id],
+      phaseMode: '',
+      target: null,
+      direction: '',
+      status: 'TBC',
+    }]);
+  };
+
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.lg }]}>
         Wattwatcher {meter.device_type}
       </Text>
+      {finishChannelMapping ? (
+        <Card style={{ marginBottom: spacing.lg }}>
+          <Text accessibilityRole="alert" style={[typography.subheading, { color: colors.foreground }]}>Finish channel mapping</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 21 }}>
+            The installation form is complete. Commissioning step 2 is required: assign every non-spare channel exactly once and explicitly choose its phase, measurement direction, and target. Use TBC only when the target is genuinely unresolved.
+          </Text>
+        </Card>
+      ) : null}
       {lockedByCompletedForm ? (
         <View style={{ marginBottom: spacing.md }}>
           <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
-            Identity and channel commissioning are pinned by a completed form. Create an amendment before changing them. Draft meter deletion remains available and retains completed form history and evidence.
+            Meter identity and channel definitions are pinned by a completed form. Measurement assignments remain editable below. Create an amendment to change the commissioned device itself; deletion retains completed form history and evidence.
           </Text>
           <Button
             title="Create commissioning amendment"
@@ -113,14 +323,232 @@ export function MeterFormScreen({ navigation, route }: Props) {
           />
         </View>
       ) : null}
-      <WattwatcherForm deviceType={meter.device_type} data={meter} onChange={(next) => setMeter({ ...meter, ...next })} />
+      <View
+        pointerEvents={readOnly || lockedByCompletedForm ? 'none' : 'auto'}
+        style={{ opacity: readOnly || lockedByCompletedForm ? 0.68 : 1 }}
+      >
+        <WattwatcherForm deviceType={meter.device_type} data={meter} onChange={(next) => setMeter({ ...meter, ...next })} />
+      </View>
+
+      <View style={{ marginTop: spacing.xl }}>
+        <SectionHeader title="Measurement assignments" actionLabel={readOnly ? undefined : '+ Add'} onAction={readOnly ? undefined : addAssignment} />
+        <Text style={{ color: colors.mutedForeground, lineHeight: 20, marginBottom: spacing.md }}>
+          Group same-purpose channels, choose the phase and direction, then map them to a board, Grid boundary, site asset, or explicit TBC target. A channel can be used only once.
+        </Text>
+        {!assignmentDrafts.length ? (
+          <Card style={{ marginBottom: spacing.md }}>
+            <Text style={{ color: colors.mutedForeground }}>
+              No channel mappings yet. Spare channels do not need assignments.
+            </Text>
+          </Card>
+        ) : null}
+        {assignmentDrafts.map((assignment, index) => {
+          const assignmentPurpose = purposeFor(assignment);
+          const candidateResults = candidatesFor(assignment);
+          const candidates = candidateResults.visible;
+          const activeChannelCount = previewDevice.channels.filter((channel) => channel.purpose !== 'SPARE').length;
+          const representedChannelCount = new Set(assignmentDrafts.flatMap((item) => item.channelIds)).size;
+          const requiredInGroup = assignment.phaseMode === 'SINGLE_PHASE'
+            ? 'exactly 1'
+            : assignment.phaseMode === 'THREE_PHASE'
+              ? 'exactly 3'
+              : assignment.phaseMode === 'OTHER'
+                ? 'at least 1'
+                : 'an explicit phase choice';
+          return (
+            <Card key={assignment.id} style={{ marginBottom: spacing.md }}>
+              <View pointerEvents={readOnly ? 'none' : 'auto'} style={{ opacity: readOnly ? 0.68 : 1 }}>
+                <SectionHeader title={`Assignment ${index + 1}`} />
+                <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+                  {assignmentPurpose ? assignmentPurpose.replace('_', ' ') : 'Select channels with one purpose'}
+                </Text>
+                <SelectChips
+                  label="Phase mode"
+                  value={assignment.phaseMode}
+                  options={['', 'SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
+                  getLabel={(value) => value === '' ? 'Choose phase' : value === 'SINGLE_PHASE' ? 'Single phase (1)' : value === 'THREE_PHASE' ? 'Three phase (3)' : 'Other group'}
+                  onChange={(phaseMode) => updateAssignment(assignment.id, (current) => ({ ...current, phaseMode }))}
+                />
+                <SelectChips
+                  label="Direction"
+                  value={assignment.direction}
+                  options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
+                  getLabel={(value) => value === '' ? 'Choose direction' : value === 'BIDIRECTIONAL' ? 'Bidirectional' : value === 'GENERATION' ? 'Generation' : 'Consumption'}
+                  onChange={(direction) => updateAssignment(assignment.id, (current) => ({ ...current, direction }))}
+                />
+                <Text style={[styles.label, { color: colors.mutedForeground }]}>Channels</Text>
+                <Text
+                  accessibilityRole="summary"
+                  accessibilityLiveRegion="polite"
+                  style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}
+                >
+                  Assignment {index + 1} requires {requiredInGroup}; {assignment.channelIds.length} selected in this group. {representedChannelCount} of {activeChannelCount} active channels are represented across all groups.
+                </Text>
+                <View accessibilityLabel={`Assignment ${index + 1} channel checkboxes`} style={styles.channelGrid}>
+                  {previewDevice.channels.map((channel, channelIndex) => {
+                    const selected = assignment.channelIds.includes(channel.id);
+                    const usedElsewhere = assignmentDrafts.some(
+                      (item) => item.id !== assignment.id && item.channelIds.includes(channel.id),
+                    );
+                    const disabled = channel.purpose === 'SPARE' || usedElsewhere;
+                    return (
+                      <Pressable
+                        key={channel.id}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: selected, disabled }}
+                        accessibilityLabel={`Channel ${channel.ordinal}, ${channel.purpose}${usedElsewhere ? ', assigned in another group' : channel.purpose === 'SPARE' ? ', spare and assignment-exempt' : ''}`}
+                        accessibilityHint={`${channelIndex + 1} of ${previewDevice.channels.length}. ${disabled ? usedElsewhere ? 'Unavailable because another assignment uses it.' : 'Unavailable because spare channels do not require mapping.' : 'Double tap to toggle this channel in the group.'}`}
+                        disabled={disabled}
+                        onPress={() => {
+                          updateAssignment(assignment.id, (current) => {
+                            if (selected) {
+                              return { ...current, channelIds: current.channelIds.filter((id) => id !== channel.id) };
+                            }
+                            const currentPurpose = purposeFor(current);
+                            if (currentPurpose && currentPurpose !== channel.purpose) {
+                              Alert.alert('Purpose conflict', 'One assignment cannot mix main-supply and sub-circuit channels.');
+                              return current;
+                            }
+                            const next = { ...current, channelIds: [...current.channelIds, channel.id] };
+                            if (channel.purpose === 'MAIN_SUPPLY' && next.target && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(next.target.kind)) {
+                              return { ...next, target: null, status: 'TBC' };
+                            }
+                            if (channel.purpose === 'SUB_CIRCUIT' && next.target?.kind === 'GRID_BOUNDARY') {
+                              return { ...next, target: null, status: 'TBC' };
+                            }
+                            return next;
+                          });
+                        }}
+                        style={{
+                          minHeight: 48,
+                          minWidth: 92,
+                          justifyContent: 'center',
+                          borderWidth: 1,
+                          borderColor: selected ? colors.primary : colors.border,
+                          backgroundColor: selected ? colors.muted : colors.card,
+                          opacity: disabled ? 0.45 : 1,
+                          borderRadius: 10,
+                          paddingHorizontal: spacing.sm,
+                          paddingVertical: spacing.xs,
+                        }}
+                      >
+                        <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                          {selected ? '✓ ' : ''}Ch {channel.ordinal}
+                        </Text>
+                        <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>
+                          {channel.purpose.replace('_', ' ')}{usedElsewhere ? ' · in use' : ''}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <SelectChips
+                  label="Measurement target type"
+                  value={assignment.target?.kind ?? ''}
+                  options={['', ...targetKindsFor(assignment)]}
+                  getLabel={(value) => value === '' ? 'Choose target type' : value === 'GRID_BOUNDARY' ? 'Grid boundary' : value === 'SITE_ASSET' ? 'Site asset' : value === 'BOARD' ? 'Board' : 'TBC'}
+                  onChange={(kind) => kind
+                    ? setTargetKind(assignment, kind)
+                    : updateAssignment(assignment.id, (current) => ({ ...current, target: null, status: 'TBC' }))}
+                />
+                {assignment.target && assignment.target.kind !== 'TBC' ? (
+                  <View style={{ marginBottom: spacing.md }}>
+                    <SearchBar
+                      value={targetSearch[assignment.id] ?? ''}
+                      onChangeText={(value) => setTargetSearch((current) => ({ ...current, [assignment.id]: value }))}
+                      placeholder="Search compatible target"
+                    />
+                    <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+                      {candidateResults.total > TARGET_RESULT_LIMIT
+                        ? `Showing ${TARGET_RESULT_LIMIT} of ${candidateResults.total} matches. Refine the search to choose another target.`
+                        : `${candidateResults.total} compatible target${candidateResults.total === 1 ? '' : 's'}.`}
+                      {candidateResults.selectedPinned ? ' The selected target remains pinned.' : ''}
+                    </Text>
+                    <View accessibilityRole="radiogroup" accessibilityLabel={`Assignment ${index + 1} target`}>
+                      {candidates.map((candidate) => {
+                        const selected = JSON.stringify(assignment.target) === JSON.stringify(candidate.target);
+                        return (
+                          <Pressable
+                            key={candidate.key}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked: selected }}
+                            onPress={() => updateAssignment(assignment.id, (current) => ({
+                              ...current,
+                              target: candidate.target,
+                              status: 'CONFIRMED',
+                            }))}
+                            style={{
+                              minHeight: 54,
+                              justifyContent: 'center',
+                              borderWidth: 1,
+                              borderColor: selected ? colors.primary : colors.border,
+                              borderRadius: 10,
+                              paddingHorizontal: spacing.md,
+                              marginBottom: spacing.sm,
+                              backgroundColor: selected ? colors.muted : colors.card,
+                            }}
+                          >
+                            <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                              {selected ? '✓ ' : ''}{candidate.label}
+                            </Text>
+                            <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>{candidate.subtitle}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {!candidates.length ? (
+                      <Text style={{ color: colors.mutedForeground }}>
+                        No compatible target matches. Choose another target type or TBC.
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : assignment.target?.kind === 'TBC' ? (
+                  <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+                    This mapping stays visibly unresolved and blocks installation completion until confirmed.
+                  </Text>
+                ) : null}
+                <Button
+                  title="Remove assignment"
+                  variant="danger"
+                  onPress={() => setAssignmentDrafts((current) => current.filter((item) => item.id !== assignment.id))}
+                />
+              </View>
+            </Card>
+          );
+        })}
+      </View>
       <Button
-        title={busy ? 'Saving…' : 'Save meter'}
-        disabled={busy || readOnly || lockedByCompletedForm}
+        title={busy ? 'Saving…' : 'Save device & assignments'}
+        disabled={busy || readOnly}
         style={{ marginTop: spacing.lg }}
         onPress={async () => {
           setBusy(true);
           try {
+            const finalizedAssignments: MeasurementAssignment[] = assignmentDrafts.map((assignment, index) => {
+              if (!assignment.phaseMode) {
+                throw new Error(`Choose the phase mode for assignment ${index + 1}.`);
+              }
+              if (!assignment.direction) {
+                throw new Error(`Choose the measurement direction for assignment ${index + 1}.`);
+              }
+              if (!assignment.target) {
+                throw new Error(`Choose the measurement target type for assignment ${index + 1}.`);
+              }
+              if (
+                (assignment.target.kind === 'BOARD' && !assignment.target.boardId) ||
+                (assignment.target.kind === 'GRID_BOUNDARY' && !assignment.target.gridSupplyId) ||
+                (assignment.target.kind === 'SITE_ASSET' && !assignment.target.siteAssetId)
+              ) {
+                throw new Error(`Choose the exact measurement target for assignment ${index + 1}.`);
+              }
+              return {
+                ...assignment,
+                phaseMode: assignment.phaseMode,
+                target: assignment.target,
+                direction: assignment.direction,
+                status: assignment.target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
+              };
+            });
             if (meter.device_type === 'Other') {
               if (!meter.custom_manufacturer_name?.trim() || !meter.custom_model_name?.trim()) {
                 throw new Error('Custom meters require manufacturer and model.');
@@ -141,15 +569,11 @@ export function MeterFormScreen({ navigation, route }: Props) {
                 throw new Error(`Custom meter channel ${invalidOrdinal + 1} requires a stable positive ordinal.`);
               }
             }
-            const board = await electricalAssetsRepo.getById(boardId);
-            if (!board) throw new Error('Board not found');
-            let meters = [...board.meters];
-            if (meterId) {
-              meters = meters.map((m) => (m.id === meterId ? meter : m));
-            } else {
-              meters.push(meter);
-            }
-            await electricalAssetsRepo.update(boardId, { meters, meter_present: true });
+            await electricalAssetsRepo.saveMeterConfiguration(
+              boardId,
+              meter,
+              finalizedAssignments,
+            );
             navigation.goBack();
           } catch (e) {
             Alert.alert('Error', e instanceof Error ? e.message : 'Save failed');
@@ -216,4 +640,6 @@ export function MeterFormScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   pad: { padding: spacing.lg, paddingBottom: 48 },
+  label: { fontSize: 14, lineHeight: 20, fontWeight: '700', marginBottom: spacing.sm },
+  channelGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
 });

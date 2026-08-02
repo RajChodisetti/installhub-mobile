@@ -5,6 +5,7 @@ import {
   buildInstallationMappingExport,
   allAssetMeteringRows,
   canonicalJsonStringify,
+  cycleSafeBoardCandidates,
   createMeasurementAssignment,
   deriveVirtualMeters,
   electricalTreeRows,
@@ -12,6 +13,8 @@ import {
   normalizeCanonicalStore,
   primaryGridSupplyId,
   replaceBoardMetersFromLegacy,
+  replaceMeterMeasurementAssignments,
+  setAssetMeteringState,
   siteAssetTypeCode,
 } from '../src/domain/installationV2';
 import type { AppDataStore } from '../src/types';
@@ -173,7 +176,7 @@ test('legacy MSB without NMI evidence remains explicitly TBC', () => {
   assert.deepEqual(store.electricalAssets[0]!.electrical_source, { kind: 'TBC' });
 });
 
-test('invalid timezone is a non-completion-blocking export warning', () => {
+test('invalid timezone blocks local completion and mapping export', () => {
   const store = normalizeCanonicalStore(storeFixture());
   store.installations[0]!.timezone = 'Mars/Olympus_Mons';
   store.meterDevices = [];
@@ -186,8 +189,8 @@ test('invalid timezone is a non-completion-blocking export warning', () => {
   store.siteAssets[0]!.meter_present = false;
   const readiness = installationReadiness(store, 'installation');
   const timezone = readiness.issues.find((item) => item.code === 'TIMEZONE_REQUIRED_FOR_EXPORT');
-  assert.equal(timezone?.severity, 'WARNING');
-  assert.equal(readiness.readyToComplete, true);
+  assert.equal(timezone?.severity, 'ERROR');
+  assert.equal(readiness.readyToComplete, false);
   assert.equal(readiness.eligibility.mappingExport, false);
 });
 
@@ -273,7 +276,7 @@ test('measurement-assignment identity hashing never mutates persisted phase orde
   };
   const assignment = createMeasurementAssignment({
     installationId: 'installation', assetId: 'asset', meter,
-    channelIds: ['c3', 'c1', 'c2'], phaseMode: 'THREE_PHASE',
+    channelIds: ['c3', 'c1', 'c2'], phaseMode: 'THREE_PHASE', direction: 'CONSUMPTION',
   });
   assert.deepEqual(assignment.channelIds, ['c3', 'c1', 'c2']);
 });
@@ -352,6 +355,54 @@ test('shared residual coverage uses one unallocated boundary ID for several know
   assert.equal(JSON.stringify(rows).includes('percentage'), false);
 });
 
+test('ancestor residual never claims an unmetered asset below a directly measured child board', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const root = store.electricalAssets[0]!;
+  const gridId = store.gridSupplies[0]!.id;
+  root.electrical_source = { kind: 'GRID', gridSupplyId: gridId };
+  const child = {
+    ...root,
+    id: 'child-db',
+    asset_name: 'Measured child DB',
+    display_code: 'ESS-DB-001',
+    type_code: 'DB' as const,
+    asset_type: 'DB' as const,
+    meters: [],
+    meter_present: false,
+    electrical_source: { kind: 'BOARD' as const, boardId: root.id },
+  };
+  store.electricalAssets.push(child);
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: child.id };
+  asset.metering_state = { kind: 'UNMETERED' };
+  store.meterDevices = [{
+    id: 'root-total-meter', installationId: 'installation', installedOnBoardId: root.id,
+    deviceFamily: 'OTHER', deviceModel: 'OTHER', customManufacturerName: 'Example',
+    customModelName: 'Boundary meter', serialNumber: 'boundary',
+    displayName: { value: 'ESS-METER-ROOT', generatedValue: 'ESS-METER-ROOT', isOverridden: false, ruleVersion: 1 },
+    channels: [
+      { id: 'root-total', ordinal: 1, purpose: 'MAIN_SUPPLY', capabilities: { current: true } },
+      { id: 'child-direct', ordinal: 2, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+    ],
+  }];
+  store.measurementAssignments = [
+    {
+      id: 'root-total-assignment', installationId: 'installation', meterId: 'root-total-meter',
+      channelIds: ['root-total'], phaseMode: 'SINGLE_PHASE', target: { kind: 'BOARD', boardId: root.id },
+      direction: 'CONSUMPTION', status: 'CONFIRMED',
+    },
+    {
+      id: 'child-direct-assignment', installationId: 'installation', meterId: 'root-total-meter',
+      channelIds: ['child-direct'], phaseMode: 'SINGLE_PHASE', target: { kind: 'BOARD', boardId: child.id },
+      direction: 'CONSUMPTION', status: 'CONFIRMED',
+    },
+  ];
+  assert.equal(deriveVirtualMeters(store, 'installation').some((item) => item.parentNodeId === root.id), true);
+  const row = allAssetMeteringRows(store, 'installation').find((item) => item.id === asset.id);
+  assert.equal(row?.state, 'UNMETERED');
+  assert.equal(row?.virtualMeterId, undefined);
+});
+
 test('Draft meter removal retires active mapping while retaining completed form evidence', () => {
   const store = normalizeCanonicalStore(storeFixture());
   const board = store.electricalAssets[0]!;
@@ -385,4 +436,179 @@ test('Draft meter removal retires active mapping while retaining completed form 
   assert.equal(installationReadiness(store, 'installation').issues.some(
     (issue) => issue.code === 'FORM_CONTEXT_REQUIRED' && issue.entityId === 'completed-meter-form',
   ), false);
+});
+
+test('cycle-safe parent choices exclude the edited board and all descendants', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const root = store.electricalAssets[0]!;
+  const child = {
+    ...root, id: 'child', asset_name: 'Child', display_code: 'ESS-DB-001',
+    type_code: 'DB' as const, asset_type: 'DB' as const, meters: [], meter_present: false,
+    electrical_source: { kind: 'BOARD' as const, boardId: root.id },
+  };
+  const grandchild = {
+    ...child, id: 'grandchild', asset_name: 'Grandchild', display_code: 'ESS-DB-002',
+    electrical_source: { kind: 'BOARD' as const, boardId: child.id },
+  };
+  const independent = {
+    ...child, id: 'independent', asset_name: 'Independent', display_code: 'ESS-DB-003',
+    electrical_source: { kind: 'GRID' as const, gridSupplyId: store.gridSupplies[0]!.id },
+  };
+  const candidates = cycleSafeBoardCandidates([root, child, grandchild, independent], root.id);
+  assert.deepEqual(candidates.map((item) => item.id), ['independent']);
+  assert.deepEqual(
+    cycleSafeBoardCandidates([root, child], undefined).map((item) => item.id),
+    [root.id, child.id],
+  );
+});
+
+test('one meter can expose BOARD, GRID_BOUNDARY, SITE_ASSET, and explicit TBC targets with exact rules', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const root = store.electricalAssets[0]!;
+  const gridId = store.gridSupplies[0]!.id;
+  root.electrical_source = { kind: 'GRID', gridSupplyId: gridId };
+  const child = {
+    ...root, id: 'child-board', asset_name: 'Child Board', display_code: 'ESS-DB-001',
+    type_code: 'DB' as const, asset_type: 'DB' as const, meters: [], meter_present: false,
+    electrical_source: { kind: 'BOARD' as const, boardId: root.id },
+  };
+  store.electricalAssets.push(child);
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: child.id };
+  const meter = {
+    id: 'mapping-meter', installationId: 'installation', installedOnBoardId: root.id,
+    deviceFamily: 'OTHER' as const, deviceModel: 'OTHER' as const,
+    customManufacturerName: 'Example', customModelName: 'Five Channel', serialNumber: 'SERIAL',
+    displayName: { value: 'ESS-METER-001', generatedValue: 'ESS-METER-001', isOverridden: false, ruleVersion: 1 as const },
+    channels: [
+      { id: 'main-grid', ordinal: 1, purpose: 'MAIN_SUPPLY' as const, capabilities: { current: true } },
+      { id: 'main-board', ordinal: 2, purpose: 'MAIN_SUPPLY' as const, capabilities: { current: true } },
+      { id: 'sub-board', ordinal: 3, purpose: 'SUB_CIRCUIT' as const, capabilities: { current: true } },
+      { id: 'sub-asset', ordinal: 4, purpose: 'SUB_CIRCUIT' as const, capabilities: { current: true } },
+      { id: 'sub-tbc', ordinal: 5, purpose: 'SUB_CIRCUIT' as const, capabilities: { current: true } },
+    ],
+  };
+  store.meterDevices = [meter];
+  const assignments = [
+    { id: 'a-grid', channelIds: ['main-grid'], target: { kind: 'GRID_BOUNDARY' as const, gridSupplyId: gridId }, status: 'CONFIRMED' as const },
+    { id: 'a-board-total', channelIds: ['main-board'], target: { kind: 'BOARD' as const, boardId: root.id }, status: 'CONFIRMED' as const },
+    { id: 'a-child', channelIds: ['sub-board'], target: { kind: 'BOARD' as const, boardId: child.id }, status: 'CONFIRMED' as const },
+    { id: 'a-asset', channelIds: ['sub-asset'], target: { kind: 'SITE_ASSET' as const, siteAssetId: asset.id }, status: 'CONFIRMED' as const },
+    { id: 'a-tbc', channelIds: ['sub-tbc'], target: { kind: 'TBC' as const }, status: 'TBC' as const },
+  ].map((assignment) => ({
+    ...assignment,
+    installationId: 'installation', meterId: meter.id,
+    phaseMode: 'SINGLE_PHASE' as const, direction: 'CONSUMPTION' as const,
+  }));
+  replaceMeterMeasurementAssignments(store, meter.id, assignments);
+  assert.deepEqual(
+    store.measurementAssignments.map((item) => item.target.kind),
+    ['GRID_BOUNDARY', 'BOARD', 'BOARD', 'SITE_ASSET', 'TBC'],
+  );
+  assert.deepEqual(asset.metering_state, {
+    kind: 'METERED', measurementAssignmentIds: ['a-asset'],
+  });
+
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [{
+    ...assignments[1]!, id: 'bad-main-child', target: { kind: 'BOARD', boardId: child.id },
+  }]), /installed-on board/);
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [{
+    ...assignments[2]!, id: 'bad-phase', phaseMode: 'THREE_PHASE', channelIds: ['sub-board'],
+  }]), /phase mode/);
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [
+    { ...assignments[2]!, id: 'duplicate-a', channelIds: ['sub-board'] },
+    { ...assignments[3]!, id: 'duplicate-b', channelIds: ['sub-board'] },
+  ]), /only one measurement assignment/);
+});
+
+test('meter assignment save requires every active channel exactly once while SPARE stays exempt', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  meter.channels = [
+    { id: 'active', ordinal: 1, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+    { id: 'spare', ordinal: 2, purpose: 'SPARE', capabilities: { current: true } },
+  ];
+  const before = JSON.stringify(store);
+  assert.throws(
+    () => replaceMeterMeasurementAssignments(store, meter.id, []),
+    /Every non-spare meter channel/,
+  );
+  assert.equal(JSON.stringify(store), before);
+  replaceMeterMeasurementAssignments(store, meter.id, [{
+    id: 'active-tbc', installationId: 'installation', meterId: meter.id,
+    channelIds: ['active'], phaseMode: 'SINGLE_PHASE', target: { kind: 'TBC' },
+    direction: 'BIDIRECTIONAL', status: 'TBC',
+  }]);
+  assert.deepEqual(store.measurementAssignments.map((item) => item.channelIds), [['active']]);
+});
+
+test('readiness exposes every absent active channel as CHANNEL_UNASSIGNED', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  meter.channels = [
+    { id: 'active-1', ordinal: 1, purpose: 'MAIN_SUPPLY', capabilities: { current: true } },
+    { id: 'active-2', ordinal: 2, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+    { id: 'spare', ordinal: 3, purpose: 'SPARE', capabilities: { current: true } },
+  ];
+  const issues = installationReadiness(store, 'installation').issues
+    .filter((item) => item.code === 'CHANNEL_UNASSIGNED');
+  assert.deepEqual(issues.map((item) => item.entityId), ['active-1', 'active-2']);
+  assert.ok(issues.every((item) => item.field === 'measurementAssignments'));
+});
+
+test('one site asset cannot receive two direct assignments and rejection is atomic', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  const board = store.electricalAssets[0]!;
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: board.id };
+  meter.channels = [
+    { id: 'direct-1', ordinal: 1, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+    { id: 'direct-2', ordinal: 2, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+  ];
+  const before = JSON.stringify(store);
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [
+    {
+      id: 'direct-a', installationId: 'installation', meterId: meter.id,
+      channelIds: ['direct-1'], phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: asset.id }, direction: 'CONSUMPTION', status: 'CONFIRMED',
+    },
+    {
+      id: 'direct-b', installationId: 'installation', meterId: meter.id,
+      channelIds: ['direct-2'], phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: asset.id }, direction: 'CONSUMPTION', status: 'CONFIRMED',
+    },
+  ]), /only one direct measurement assignment/);
+  assert.equal(JSON.stringify(store), before);
+});
+
+test('asset metering transition validates before mutation and removes exact assignments together', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const asset = store.siteAssets[0]!;
+  const meter = store.meterDevices[0]!;
+  const assignment = {
+    id: 'asset-assignment', installationId: 'installation', meterId: meter.id,
+    channelIds: [meter.channels[0]!.id], phaseMode: 'SINGLE_PHASE' as const,
+    target: { kind: 'SITE_ASSET' as const, siteAssetId: asset.id },
+    direction: 'CONSUMPTION' as const, status: 'CONFIRMED' as const,
+  };
+  store.measurementAssignments = [assignment];
+  asset.metering_state = { kind: 'METERED', measurementAssignmentIds: [assignment.id] };
+  const before = JSON.stringify(store);
+  assert.throws(
+    () => setAssetMeteringState(
+      store,
+      asset.id,
+      { kind: 'METERED', measurementAssignmentIds: ['missing'] },
+      [],
+    ),
+    /every selected assignment/,
+  );
+  assert.equal(JSON.stringify(store), before);
+
+  setAssetMeteringState(store, asset.id, { kind: 'UNMETERED' });
+  assert.deepEqual(asset.metering_state, { kind: 'UNMETERED' });
+  assert.equal(store.measurementAssignments.length, 1);
+  assert.deepEqual(store.measurementAssignments[0]!.target, { kind: 'TBC' });
+  assert.equal(store.measurementAssignments[0]!.direction, 'CONSUMPTION');
 });

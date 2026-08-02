@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { electricalAssetsRepo, getLocalDeletionPreview } from '../repositories';
+import { electricalAssetsRepo, formsRepo, getLocalDeletionPreview } from '../repositories';
 import { useInstallation } from '../hooks';
 import type { ElectricalAsset } from '../types';
 import { ElectricalAssetForm, FormModal } from '../components/forms';
@@ -22,6 +22,9 @@ export function BoardDetailScreen({ navigation, route }: Props) {
     item: installation,
     boards: installationBoards,
     gridSupplies,
+    zones,
+    siteAssets,
+    measurementAssignments,
   } = useInstallation(installationId);
   const readOnly = installation?.status === 'Completed';
 
@@ -140,10 +143,36 @@ export function BoardDetailScreen({ navigation, route }: Props) {
           initial={board}
           sourceBoards={installationBoards}
           gridSupplies={gridSupplies}
-          onSubmit={async (values) => {
+          zones={zones}
+          onSubmit={async (values, options) => {
+            if (options.removeMeters) {
+              const meterIds = new Set(board.meters.map((meter) => meter.id));
+              const affectedAssignments = measurementAssignments.filter((assignment) => meterIds.has(assignment.meterId));
+              const affectedAssetIds = new Set(affectedAssignments.flatMap((assignment) =>
+                assignment.target.kind === 'SITE_ASSET' ? [assignment.target.siteAssetId] : []));
+              const linkedForms = (await formsRepo.listByInstallation(installationId))
+                .filter((form) => Boolean(form.meter_id && meterIds.has(form.meter_id)));
+              const accepted = await new Promise<boolean>((resolve) => {
+                Alert.alert(
+                  'Remove all meter devices?',
+                  [
+                    `${board.meters.length} meter device(s):\n${board.meters.map((meter) => `${meter.device_name || meter.id} (${meter.id})`).join('\n')}`,
+                    `${affectedAssignments.length} active assignment(s):${affectedAssignments.length ? `\n${affectedAssignments.map((assignment) => assignment.id).join('\n')}` : ' none'}`,
+                    `${affectedAssetIds.size} affected asset(s) become TBC:${affectedAssetIds.size ? `\n${siteAssets.filter((asset) => affectedAssetIds.has(asset.id)).map((asset) => `${asset.display_code ?? asset.id} · ${asset.asset_name}`).join('\n')}` : ' none'}`,
+                    `${linkedForms.length} linked form record(s) and ${linkedForms.reduce((count, form) => count + form.attachments.length, 0)} evidence attachment(s) remain retained for history.`,
+                  ].join('\n\n'),
+                  [
+                    { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                    { text: 'Remove devices', style: 'destructive', onPress: () => resolve(true) },
+                  ],
+                  { cancelable: true, onDismiss: () => resolve(false) },
+                );
+              });
+              if (!accepted) return;
+            }
             await electricalAssetsRepo.update(boardId, {
               ...values,
-              meters: board.meters,
+              meters: options.removeMeters ? [] : board.meters,
             });
             setEditOpen(false);
             await refresh();

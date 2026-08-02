@@ -191,6 +191,22 @@ for A3RM/A6M. Fixed A3RM/A6M channels use their model contract and do not requir
 objects; choosing `SPARE` clears incompatible load and sensor details. Measurement assignments
 retain explicit channel order, phase mode, direction, target, and stable identity.
 
+The mobile commissioning workflow now enforces the canonical sequence: choose or create a physical
+zone and switchboard, start the WW form against that exact board, complete the validated form, then
+map active channels. Form completion and operational-meter materialization are one store
+transaction: the immutable Completed form receives the same stable `board_id` and `meter_id` that
+the canonical `meterDevices` row uses. Canonical board name/code/type/zone/location/NMI are shown as
+read-only context in the form and are normalized again at completion.
+
+An assignment may target `BOARD`, `GRID_BOUNDARY`, `SITE_ASSET`, or explicit `TBC`. Main-supply
+channels may identify their installed-on board, an upstream Grid boundary, or TBC; sub-circuit
+channels may identify a downstream board, a site asset on the same source path, or TBC. One
+assignment cannot mix purposes, phase counts are explicit, and one channel cannot be assigned
+twice. Asset entry makes `METERED`, `UNMETERED`, and `TBC` an explicit decision. The Metered branch
+uses dependent source-path/device/channel/phase/direction choices and can detour to commissioning
+without discarding the partially entered asset draft. Moving an existing Metered asset to
+Unmetered/TBC previews the exact assignments and channels removed before the atomic save.
+
 Meter deletion is Draft-only for the active installation tree: the meter and its assignments are
 retired and affected assets return to explicit `TBC`. Immutable Completed forms and their evidence
 remain readable with the original meter ID. That historical exception is deliberately narrow—a
@@ -356,12 +372,17 @@ AppDataStore
 │       ├── ww_verification
 │       ├── ww_commissioning
 │       └── ww_photos
-└── siteAssets: SiteAsset[]
+├── siteAssets: SiteAsset[]
     ├── audit_id -> Installation.id
     ├── zone_id -> Zone.id
     ├── electrical_board_id? -> ElectricalAsset.id
     ├── meter_switchboard_id? -> ElectricalAsset.id
-    └── meter_channels?
+│   └── meter_channels? (compatibility projection)
+├── gridSupplies: GridSupply[]
+├── meterDevices: MeterDevice[]
+│   └── channels[] with stable ID, ordinal, purpose and capabilities
+└── measurementAssignments: MeasurementAssignment[]
+    └── meter/channel group -> BOARD | GRID_BOUNDARY | SITE_ASSET | TBC
 ```
 
 Important terminology:
@@ -371,7 +392,8 @@ Important terminology:
 - A site asset is a load/equipment item such as HVAC, lighting, solar/PV, EV charger, or hot water.
 - TBC flags explicitly track unresolved board relationships; they are not generic validation
   errors.
-- Wattwatcher meters are embedded in boards. They do not have a repository of their own.
+- `meterDevices` owns canonical meter identity and channels. Embedded board meters are a legacy UI
+  compatibility projection updated only through repository/domain transactions.
 - An imported installation also stores `import_source_server_id`, the import timestamp/hash
   provenance anchors, `copy_index`, and thumbnail readiness. These are identity/provenance fields,
   not editable customer data.
@@ -401,11 +423,11 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `MainTabs` | none | Dashboard/Settings bottom tabs |
 | `InstallationForm` | optional `installationId` | Create or edit an installation |
 | `InstallationDetail` | `installationId` | Site summary, status, zones, report entry points |
-| `ZoneWorkspace` | `zoneId`, `installationId` | Zone edit/photos, boards, site assets, summary stub |
+| `ZoneWorkspace` | `zoneId`, `installationId` | Zone edit/photos, boards/assets, coverage and unresolved summary |
 | `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list |
 | `SiteAssetDetail` | `assetId`, `installationId`, `zoneId` | Site asset edit/delete |
-| `MeterForm` | `boardId`, optional `meterId`, optional `deviceType` | A3RM/A6M commissioning |
-| `DataView` | `installationId` | Counts, meter registry, heuristic TBC resolution |
+| `MeterForm` | `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments |
+| `DataView` | `installationId` | Reconciliation, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
 | `MeteringTable` | `installationId` | Combined board-meter/site-asset metering rows |
 | `InstallationReport` | `installationId` | Summary and PDF export/share |
 | `ClientReport` | `installationId` | Placeholder client-facing summary |
@@ -460,6 +482,10 @@ preserving:
   Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger. The old
   `a3rm-installation` and `a6m-installation` types remain in the catalog only so
   stored submissions and PDFs remain readable.
+- A WW form cannot be created or completed without a real board in the same installation. The
+  installation-wide picker has searchable board choices plus an inline add-board detour.
+- New-board entry explicitly asks whether to commission a meter next. Parent-board search includes
+  code/name/type/zone and excludes the edited board and every descendant, preventing cycles.
 - Installation uses one `device.type` controller. A3RM exposes three channels
   with exactly `3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`; A6M exposes six
   channels with exactly `60A`, `120A`, `200A`, `400A`, or `600A`.
@@ -624,8 +650,16 @@ An agent should distinguish deliberate demo behavior from accidental architectur
 - Board and site-asset photos remain local working copies after backup; clearing the app sandbox
   still requires a future restore workflow to bring them back.
 - Client report and photo inclusion are placeholders; toggles do not feed the exported PDF.
-- Electrical and metering reconciliation require explicit searchable choices; candidates are capped
-  deterministically and large coverage/meter lists are virtualized.
+- Reconciliation uses explicit searchable, path-safe choices; candidates are capped deterministically
+  and large coverage/meter lists are virtualized. The physical view lists zone-contained boards and
+  assets, while the electrical view keeps FED_FROM hierarchy separate from the MEASURES overlay.
+- A completed Wattwatchers installation form creates the stable operational meter and immediately
+  routes to commissioning step 2. The installer must represent every non-spare channel exactly once
+  and explicitly choose phase, direction, and a Board/Grid/Site Asset/TBC target. The historical
+  form schema-v2 catalog is deliberately unchanged.
+- Site-asset editor recovery drafts are local-only records inside the encrypted transactional store.
+  They are bound to user and installation, checksum-verified, expire after seven days, are cleared
+  on logout/success/explicit discard, and require explicit review if the base tree or asset changed.
 - Zone summary sending is an in-memory stub.
 - Some async screen operations have minimal error handling.
 - Pure form/report/storage tests exist; integration, E2E, lint and formatter commands do not.
@@ -652,6 +686,34 @@ types
 Adding a field only to fixture JSON is insufficient because existing installs load the saved v1
 blob. Either normalize old records on read, add a migration, or deliberately increment the storage
 key (which resets local data).
+
+The August 2026 electrical-mapping hardening requires no API database migration and does not change
+the canonical-v2 form or installation payload. It uses existing `board_id`, `meter_id`,
+`meterDevices`, `measurementAssignments`, and `metering_state` fields. The only new persisted value
+is the optional, local-only `siteAssetEditorDrafts` recovery array. Existing v3 stores normalize a
+missing array to empty, so no store-key reset or destructive migration is required; this field is
+excluded from `InstallationBackupTree` and never sent to the API.
+
+### Installation and mapping workflow
+
+```text
+login
+  -> create/open installation (identity, audit date, IANA timezone)
+  -> walk physical zones
+  -> add a switchboard and explicitly choose Grid / parent board / TBC
+  -> choose whether a meter device is installed
+  -> complete the immutable WW evidence form
+  -> app opens the stable meter's assignment editor
+  -> map every active channel exactly once (phase + direction + target)
+  -> add site assets as encountered and classify Metered / Unmetered / TBC
+  -> reconcile supply, channel, and metering issues in Data View
+  -> Cloud validate and complete only when no blocking readiness issues remain
+```
+
+Physical containment answers “where is this record?” Electrical `FED_FROM` answers “what supplies
+it?” Measurement assignments answer “what does this exact meter channel measure?” These are
+separate relationships. A virtual meter is only an immediate-boundary residual (one total minus
+directly measured immediate children); it never propagates through an already measured child board.
 
 ### Cloud Backup contract changes
 

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { getLocalDeletionPreview, siteAssetsRepo } from '../repositories';
 import { useInstallation } from '../hooks';
@@ -17,13 +18,29 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
   const { colors } = useTheme();
   const [asset, setAsset] = useState<SiteAsset | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  const [assetFormKey, setAssetFormKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const {
     item: installation,
     boards: installationBoards,
     gridSupplies,
+    zones,
+    meterDevices,
+    measurementAssignments,
+    refresh: refreshInstallation,
   } = useInstallation(installationId);
   const readOnly = installation?.status === 'Completed';
+  const deviceDetourActive = useRef(false);
+  const [deviceDetourReturnToken, setDeviceDetourReturnToken] = useState(0);
+
+  useFocusEffect(useCallback(() => {
+    if (!deviceDetourActive.current) return;
+    deviceDetourActive.current = false;
+    void refreshInstallation().then(() => {
+      setEditOpen(true);
+      setDeviceDetourReturnToken((current) => current + 1);
+    });
+  }, [refreshInstallation]));
 
   const refresh = async () => {
     setLoading(true);
@@ -115,11 +132,34 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
 
       <FormModal visible={editOpen} title="Edit asset" onClose={() => setEditOpen(false)}>
         <SiteAssetForm
+          key={assetFormKey}
+          active={editOpen}
           initial={asset}
           sourceBoards={installationBoards}
           gridSupplies={gridSupplies}
-          onSubmit={async (values) => {
-            await siteAssetsRepo.update(assetId, values);
+          zones={zones}
+          meterDevices={meterDevices}
+          measurementAssignments={measurementAssignments}
+          deviceDetourReturnToken={deviceDetourReturnToken}
+          onDraftRestored={() => {
+            if (!readOnly) setEditOpen(true);
+          }}
+          onDiscardDraft={() => {
+            setEditOpen(false);
+            setAssetFormKey((current) => current + 1);
+          }}
+          onAddDevice={(sourceBoardId) => {
+            deviceDetourActive.current = true;
+            setEditOpen(false);
+            const sourceBoard = installationBoards.find((item) => item.id === sourceBoardId);
+            navigation.navigate('FormTypePicker', {
+              installationId,
+              zoneId: sourceBoard?.zone_id ?? zoneId,
+              boardId: sourceBoardId,
+            });
+          }}
+          onSubmit={async (values, metering) => {
+            await siteAssetsRepo.saveEditor(assetId, values, metering);
             setEditOpen(false);
             await refresh();
           }}

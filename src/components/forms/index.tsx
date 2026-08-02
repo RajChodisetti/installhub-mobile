@@ -1,16 +1,20 @@
-import React, { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import type {
   BoardTypeCode,
   ElectricalAsset,
   ElectricalSource,
   GridSupply,
   Installation,
+  MeasurementAssignment,
+  MeasurementDirection,
   Meter,
+  MeterDevice,
   MeterDeviceType,
   SiteAsset,
   SiteAssetTypeCode,
   WattwatcherChannel,
+  Zone,
 } from '../../types';
 import { BOARD_TYPE_CODES, METER_DEVICE_TYPES, SITE_ASSET_TYPE_CODES } from '../../types';
 import {
@@ -18,18 +22,40 @@ import {
   SITE_ASSET_TYPE_LABELS,
   boardTypeCode,
   boardTypeFromCode,
+  cycleSafeBoardCandidates,
   siteAssetTypeCode,
   siteAssetTypeFromCode,
 } from '../../domain/installationV2';
 import { createId } from '../../utils';
 import { useTheme } from '../../context/AppProviders';
-import { Button, Card, TextArea, TextField, SectionHeader } from '../ui';
+import { Button, Card, SearchBar, TextArea, TextField, SectionHeader } from '../ui';
 import { BarcodeScanField, withLegacyOption } from '../BarcodeScanField';
 import {
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
 } from '../../domain/meterCommissioning';
 import { radii, spacing, typography } from '../../theme';
+import { validateInstallationIdentity } from '../../domain/installationValidation';
+import {
+  meteringRemovalPreview,
+  resolveDeviceCommissioningDetour,
+} from '../../domain/assetMeteringWorkflow';
+import {
+  SOURCE_BOARD_RESULT_LIMIT,
+  searchSourceBoards,
+  sourceKeyAfterKindSelection,
+} from '../../domain/sourcePicker';
+import {
+  clearSiteAssetEditorDraft,
+  loadSiteAssetEditorDraft,
+  saveSiteAssetEditorDraft,
+  siteAssetEditorDraftScope,
+  type SiteAssetEditorDraftSnapshot,
+} from '../../services/siteAssetEditorDraft';
+import { booleanConsequenceHint } from '../../domain/accessibilityCopy';
+import { searchEligibleMeters } from '../../domain/meterSearch';
+
+const ELIGIBLE_METER_RESULT_LIMIT = 100;
 
 export function SelectChips<T extends string>({
   label,
@@ -87,10 +113,12 @@ function BoolRow({
   label,
   value,
   onChange,
+  accessibilityHint,
 }: {
   label: string;
   value?: boolean;
   onChange: (v: boolean) => void;
+  accessibilityHint?: string;
 }) {
   const { colors } = useTheme();
   return (
@@ -110,6 +138,7 @@ function BoolRow({
         onValueChange={onChange}
         accessibilityRole="switch"
         accessibilityLabel={label}
+        accessibilityHint={accessibilityHint ?? booleanConsequenceHint(label, Boolean(value))}
         accessibilityState={{ checked: Boolean(value) }}
       />
     </View>
@@ -132,6 +161,7 @@ export function InstallationForm({
   }) => Promise<void> | void;
   submitLabel?: string;
 }) {
+  const { colors } = useTheme();
   const [client_name, setClient] = useState(initial?.client_name ?? '');
   const [site_name, setSite] = useState(initial?.site_name ?? '');
   const [site_address, setAddress] = useState(initial?.site_address ?? '');
@@ -141,27 +171,53 @@ export function InstallationForm({
     initial?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   );
   const [busy, setBusy] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<ReturnType<typeof validateInstallationIdentity>>([]);
+  const errorFor = (field: string) => validationErrors.find((error) => error.field === field)?.message;
 
   return (
     <View>
-      <TextField label="Client name" value={client_name} onChangeText={setClient} />
-      <TextField label="Site name" value={site_name} onChangeText={setSite} />
-      <TextArea label="Site address" value={site_address} onChangeText={setAddress} />
-      <TextField label="Inspector" value={inspector_name} onChangeText={setInspector} />
-      <TextField label="Audit date (YYYY-MM-DD)" value={audit_date} onChangeText={setDate} />
+      <TextField label="Client name" value={client_name} error={errorFor('client_name')} onChangeText={setClient} />
+      <TextField label="Site name" value={site_name} error={errorFor('site_name')} onChangeText={setSite} />
+      <TextArea label="Site address" value={site_address} error={errorFor('site_address')} onChangeText={setAddress} />
+      <TextField label="Inspector" value={inspector_name} error={errorFor('inspector_name')} onChangeText={setInspector} />
+      <TextField label="Audit date (YYYY-MM-DD)" value={audit_date} error={errorFor('audit_date')} onChangeText={setDate} />
       <TextField
         label="Installation timezone"
         accessibilityHint="Use an IANA timezone such as Australia/Sydney"
         value={timezone}
+        error={errorFor('timezone')}
         onChangeText={setTimezone}
       />
+      {validationErrors.length ? (
+        <Text
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          style={{ color: colors.destructive, marginBottom: spacing.md, lineHeight: 20 }}
+        >
+          {validationErrors.length} installation detail{validationErrors.length === 1 ? '' : 's'} need attention. Correct the labelled fields above.
+        </Text>
+      ) : null}
       <Button
         title={busy ? 'Saving…' : submitLabel}
-        disabled={busy || !client_name || !site_name}
+        disabled={busy}
         onPress={async () => {
           setBusy(true);
           try {
-            await onSubmit({ client_name, site_name, site_address, inspector_name, audit_date, timezone: timezone.trim() });
+            const values = {
+              client_name: client_name.trim(),
+              site_name: site_name.trim(),
+              site_address: site_address.trim(),
+              inspector_name: inspector_name.trim(),
+              audit_date: audit_date.trim(),
+              timezone: timezone.trim(),
+            };
+            const errors = validateInstallationIdentity(values);
+            if (errors.length) {
+              setValidationErrors(errors);
+              return;
+            }
+            setValidationErrors([]);
+            await onSubmit(values);
           } finally {
             setBusy(false);
           }
@@ -175,14 +231,16 @@ export function ElectricalAssetForm({
   initial,
   sourceBoards = [],
   gridSupplies = [],
+  zones = [],
   onSubmit,
 }: {
   initial?: Partial<ElectricalAsset>;
   sourceBoards?: ElectricalAsset[];
   gridSupplies?: GridSupply[];
+  zones?: Zone[];
   onSubmit: (values: Omit<ElectricalAsset, 'id' | 'created_at' | 'updated_at' | 'meters' | 'extra_photos'> & {
     meters?: Meter[];
-  }) => Promise<void> | void;
+  }, options: { commissionMeter: boolean; removeMeters: boolean }) => Promise<void> | void;
 }) {
   const { colors } = useTheme();
   const [asset_name, setName] = useState(initial?.asset_name ?? '');
@@ -211,7 +269,27 @@ export function ElectricalAssetForm({
         : 'TBC',
   );
   const [comments, setComments] = useState(initial?.comments ?? '');
+  const [parentSearch, setParentSearch] = useState('');
+  const [meterDecision, setMeterDecision] = useState<'YES' | 'NO'>(
+    (initial?.meters?.length ?? 0) > 0 ? 'YES' : 'NO',
+  );
   const [busy, setBusy] = useState(false);
+  const parentCandidateResults = useMemo(() => {
+    const safe = cycleSafeBoardCandidates(sourceBoards, initial?.id);
+    return searchSourceBoards(
+      safe,
+      zones,
+      parentSearch,
+      SOURCE_BOARD_RESULT_LIMIT,
+      sourceKey.startsWith('BOARD:') ? sourceKey.slice(6) : undefined,
+    );
+  }, [initial?.id, parentSearch, sourceBoards, sourceKey, zones]);
+  const parentCandidates = parentCandidateResults.visible;
+  const sourceKind = sourceKey === 'TBC'
+    ? 'TBC'
+    : sourceKey.startsWith('GRID:')
+      ? 'GRID'
+      : 'BOARD';
 
   return (
     <View>
@@ -226,7 +304,12 @@ export function ElectricalAssetForm({
       {type_code === 'OTHER' ? (
         <TextField label="Custom board type" value={custom_type_name} onChangeText={setCustomTypeName} />
       ) : null}
-      <BoolRow label="Use custom display code" value={customCode} onChange={setCustomCode} />
+      <BoolRow
+        label="Use custom display code"
+        value={customCode}
+        onChange={setCustomCode}
+        accessibilityHint="Turning this off returns the board to its generated display-code rule."
+      />
       {customCode ? (
         <TextField label="Custom display code" value={display_code} onChangeText={setCode} />
       ) : (
@@ -235,28 +318,98 @@ export function ElectricalAssetForm({
         </Text>
       )}
       <SelectChips
-        label="Electrical source"
-        value={sourceKey}
-        options={[
-          ...gridSupplies.map((grid) => `GRID:${grid.id}`),
-          ...sourceBoards.filter((board) => board.id !== initial?.id).map((board) => `BOARD:${board.id}`),
-          'TBC',
-        ]}
-        getLabel={(value) => {
-          if (value === 'TBC') return 'To be confirmed';
-          if (value.startsWith('GRID:')) {
+        label="Electrical source type"
+        value={sourceKind}
+        options={['GRID', 'BOARD', 'TBC']}
+        getLabel={(value) => value === 'GRID' ? 'Grid supply' : value === 'BOARD' ? 'Parent board' : 'To be confirmed'}
+        onChange={(value) => {
+          if (value === 'TBC') setSourceKey('TBC');
+          else if (value === 'GRID') setSourceKey(`GRID:${gridSupplies.find((item) => item.isDefault)?.id ?? gridSupplies[0]?.id ?? ''}`);
+          else setSourceKey(sourceKeyAfterKindSelection('BOARD'));
+        }}
+      />
+      {sourceKind === 'GRID' ? (
+        <SelectChips
+          label="Grid supply"
+          value={sourceKey}
+          options={gridSupplies.map((grid) => `GRID:${grid.id}`)}
+          getLabel={(value) => {
             const grid = gridSupplies.find((item) => `GRID:${item.id}` === value);
             return grid ? `${grid.name}${grid.isDefault ? ' · default' : ''}` : 'Grid supply';
-          }
-          const board = sourceBoards.find((item) => `BOARD:${item.id}` === value);
-          return board ? `${board.display_code} · ${board.asset_name}` : 'Board';
-        }}
-        onChange={setSourceKey}
-      />
+          }}
+          onChange={setSourceKey}
+        />
+      ) : null}
+      {sourceKind === 'BOARD' ? (
+        <View style={{ marginBottom: spacing.md }}>
+          <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Parent board</Text>
+          <SearchBar
+            value={parentSearch}
+            onChangeText={setParentSearch}
+            placeholder="Search code, name, type, or zone"
+          />
+          <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+            {parentCandidateResults.total > SOURCE_BOARD_RESULT_LIMIT
+              ? `Showing ${SOURCE_BOARD_RESULT_LIMIT} of ${parentCandidateResults.total} cycle-safe matches. Refine the search to choose another board.`
+              : `${parentCandidateResults.total} cycle-safe parent${parentCandidateResults.total === 1 ? '' : 's'}.`}
+            {parentCandidateResults.selectedPinned ? ' The selected parent remains pinned.' : ''}
+          </Text>
+          <View accessibilityRole="radiogroup" accessibilityLabel="Parent board">
+            {parentCandidates.map((board) => {
+              const value = `BOARD:${board.id}`;
+              const selected = sourceKey === value;
+              const zone = zones.find((item) => item.id === board.zone_id);
+              return (
+                <Pressable
+                  key={board.id}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  accessibilityLabel={`${board.display_code}, ${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
+                  onPress={() => setSourceKey(value)}
+                  style={{
+                    minHeight: 54,
+                    justifyContent: 'center',
+                    borderWidth: 1,
+                    borderColor: selected ? colors.primary : colors.border,
+                    borderRadius: radii.md,
+                    paddingHorizontal: spacing.md,
+                    marginBottom: spacing.sm,
+                    backgroundColor: selected ? colors.muted : colors.card,
+                  }}
+                >
+                  <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                    {selected ? '✓ ' : ''}{board.display_code} · {board.asset_name}
+                  </Text>
+                  <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
+                    {board.asset_type} · {zone?.zone_name ?? 'Unknown zone'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!parentCandidateResults.total ? (
+            <Text style={{ color: colors.mutedForeground }}>No cycle-safe parent matches this search.</Text>
+          ) : null}
+        </View>
+      ) : null}
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
       <TextField label="Phase" value={phase} onChangeText={setPhase} />
       <TextField label="Amperage" value={amperage_rating} onChangeText={setAmps} />
       <TextField label="Site NMI" value={site_nmi} onChangeText={setNmi} />
+      <SelectChips
+        label={initial?.id ? 'Are meter devices installed on this switchboard?' : 'Install a meter on this switchboard now?'}
+        value={meterDecision}
+        options={['YES', 'NO']}
+        getLabel={(value) => value === 'YES'
+          ? initial?.id ? 'Yes — keep devices' : 'Yes — commission next'
+          : initial?.id ? 'No — remove devices' : 'No — board only'}
+        onChange={setMeterDecision}
+      />
+      {initial?.id && meterDecision === 'NO' && (initial.meters?.length ?? 0) > 0 ? (
+        <Text accessibilityRole="alert" style={{ color: colors.destructive, marginBottom: spacing.md, lineHeight: 20 }}>
+          Saving No removes {initial.meters?.length} installed meter device{initial.meters?.length === 1 ? '' : 's'} and their active channel assignments. You will review the exact impact before it is applied.
+        </Text>
+      ) : null}
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
       <Button
         title={busy ? 'Saving…' : 'Save board'}
@@ -269,6 +422,12 @@ export function ElectricalAssetForm({
               : sourceKey.startsWith('GRID:')
                 ? { kind: 'GRID', gridSupplyId: sourceKey.slice(5) }
                 : { kind: 'BOARD', boardId: sourceKey.slice(6) };
+            if (electrical_source.kind === 'BOARD' && !electrical_source.boardId) {
+              throw new Error('Choose a cycle-safe parent board or mark the source TBC.');
+            }
+            if (electrical_source.kind === 'GRID' && !electrical_source.gridSupplyId) {
+              throw new Error('Choose the Grid supply or mark the source TBC.');
+            }
             await onSubmit({
               audit_id: initial?.audit_id ?? '',
               zone_id: initial?.zone_id ?? '',
@@ -299,6 +458,9 @@ export function ElectricalAssetForm({
               sub_circuits_description: initial?.sub_circuits_description ?? '',
               comments,
               meters: initial?.meters,
+            }, {
+              commissionMeter: meterDecision === 'YES',
+              removeMeters: Boolean(initial?.id && meterDecision === 'NO' && (initial.meters?.length ?? 0) > 0),
             });
           } finally {
             setBusy(false);
@@ -309,18 +471,64 @@ export function ElectricalAssetForm({
   );
 }
 
+export type SiteAssetMeteringDraft =
+  | {
+      kind: 'METERED';
+      meterId: string;
+      channelIds: string[];
+      phaseMode: MeasurementAssignment['phaseMode'];
+      direction: MeasurementDirection;
+    }
+  | { kind: 'UNMETERED' }
+  | { kind: 'TBC' };
+
+function boardIsUpstreamOnPath(
+  boards: ElectricalAsset[],
+  upstreamBoardId: string,
+  targetBoardId: string,
+): boolean {
+  const byId = new Map(boards.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let currentId: string | undefined = targetBoardId;
+  while (currentId && !seen.has(currentId)) {
+    if (currentId === upstreamBoardId) return true;
+    seen.add(currentId);
+    const current = byId.get(currentId);
+    currentId = current?.electrical_source?.kind === 'BOARD'
+      ? current.electrical_source.boardId
+      : undefined;
+  }
+  return false;
+}
+
 export function SiteAssetForm({
   initial,
   sourceBoards = [],
   gridSupplies = [],
+  zones = [],
+  meterDevices = [],
+  measurementAssignments = [],
+  active = false,
+  onAddDevice,
+  deviceDetourReturnToken = 0,
+  onDraftRestored,
+  onDiscardDraft,
   onSubmit,
 }: {
   initial?: Partial<SiteAsset>;
   sourceBoards?: ElectricalAsset[];
   gridSupplies?: GridSupply[];
+  zones?: Zone[];
+  meterDevices?: MeterDevice[];
+  measurementAssignments?: MeasurementAssignment[];
+  active?: boolean;
+  onAddDevice?: (boardId: string) => void;
+  deviceDetourReturnToken?: number;
+  onDraftRestored?: () => void;
+  onDiscardDraft?: () => void;
   onSubmit: (values: Omit<SiteAsset, 'id' | 'created_at' | 'updated_at' | 'extra_photos' | 'meter_channels'> & {
     meter_channels?: SiteAsset['meter_channels'];
-  }) => Promise<void> | void;
+  }, metering: SiteAssetMeteringDraft) => Promise<void> | void;
 }) {
   const { colors } = useTheme();
   const [asset_name, setName] = useState(initial?.asset_name ?? '');
@@ -344,8 +552,249 @@ export function SiteAssetForm({
         : 'TBC',
   );
   const meteringState = initial?.metering_state ?? { kind: 'TBC' as const };
+  const initialAssignment = meteringState.kind === 'METERED'
+    ? measurementAssignments.find((item) =>
+        meteringState.measurementAssignmentIds.includes(item.id))
+    : undefined;
+  const [meteringKind, setMeteringKind] = useState<SiteAssetMeteringDraft['kind']>(meteringState.kind);
+  const [selectedMeterId, setSelectedMeterId] = useState(initialAssignment?.meterId ?? '');
+  const [selectedChannelIds, setSelectedChannelIds] = useState(initialAssignment?.channelIds ?? []);
+  const [phaseMode, setPhaseMode] = useState<MeasurementAssignment['phaseMode']>(
+    initialAssignment?.phaseMode ?? 'SINGLE_PHASE',
+  );
+  const [direction, setDirection] = useState<MeasurementDirection | ''>(
+    initialAssignment?.direction ?? '',
+  );
+  const [sourceBoardSearch, setSourceBoardSearch] = useState('');
+  const [meterSearch, setMeterSearch] = useState('');
+  const [deviceDetour, setDeviceDetour] = useState<{
+    beforeMeterIds: string[];
+    startReturnToken: number;
+  } | null>(null);
+  const [meterAnnouncement, setMeterAnnouncement] = useState('');
   const [comments, setComments] = useState(initial?.comments ?? '');
   const [busy, setBusy] = useState(false);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [draftPersistenceError, setDraftPersistenceError] = useState('');
+  const restoredDraft = useRef(false);
+  const draftScope = useMemo(() => siteAssetEditorDraftScope({
+    assetId: initial?.id,
+    installationId: initial?.audit_id,
+    zoneId: initial?.zone_id,
+  }), [initial?.audit_id, initial?.id, initial?.zone_id]);
+  const draftInstallationId = initial?.audit_id ?? '';
+  const draftAssetId = initial?.id;
+  const selectedSourceBoardId = sourceKey.startsWith('BOARD:') ? sourceKey.slice(6) : '';
+  const sourceKind = sourceKey === 'TBC'
+    ? 'TBC'
+    : sourceKey.startsWith('GRID:')
+      ? 'GRID'
+      : 'BOARD';
+  const sourceBoardResults = useMemo(
+    () => searchSourceBoards(
+      sourceBoards,
+      zones,
+      sourceBoardSearch,
+      SOURCE_BOARD_RESULT_LIMIT,
+      selectedSourceBoardId || undefined,
+    ),
+    [selectedSourceBoardId, sourceBoardSearch, sourceBoards, zones],
+  );
+  const ownAssignmentIds = new Set(
+    meteringState.kind === 'METERED' ? meteringState.measurementAssignmentIds : [],
+  );
+  const eligibleMeters = useMemo(() => {
+    if (!selectedSourceBoardId) return [];
+    return meterDevices.filter((meter) =>
+      boardIsUpstreamOnPath(sourceBoards, meter.installedOnBoardId, selectedSourceBoardId));
+  }, [meterDevices, selectedSourceBoardId, sourceBoards]);
+  const eligibleMeterResults = useMemo(
+    () => searchEligibleMeters(
+      eligibleMeters,
+      meterSearch,
+      ELIGIBLE_METER_RESULT_LIMIT,
+      selectedMeterId,
+      (meter) => {
+        const meterBoard = sourceBoards.find((item) => item.id === meter.installedOnBoardId);
+        return [meter.deviceNumber, meterBoard?.display_code, meterBoard?.asset_name];
+      },
+    ),
+    [eligibleMeters, meterSearch, selectedMeterId, sourceBoards],
+  );
+  const selectedMeter = meterDevices.find((item) => item.id === selectedMeterId);
+  const selectedPhaseCount = phaseMode === 'SINGLE_PHASE' ? 1 : phaseMode === 'THREE_PHASE' ? 3 : null;
+  const selectedGroupComplete = selectedPhaseCount === null
+    ? selectedChannelIds.length > 0
+    : selectedChannelIds.length === selectedPhaseCount;
+  const removalPreview = useMemo(
+    () => meteringRemovalPreview(initial?.metering_state, measurementAssignments, meterDevices),
+    [initial?.metering_state, measurementAssignments, meterDevices],
+  );
+
+  const currentDraftSnapshot = (
+    detourOverride: typeof deviceDetour = deviceDetour,
+  ): SiteAssetEditorDraftSnapshot => ({
+    version: 1,
+    assetName: asset_name,
+    typeCode: type_code,
+    customTypeName: custom_type_name,
+    displayCode: display_code,
+    customCode,
+    locationDescription: location_description,
+    sourceKey,
+    sourceBoardSearch,
+    meteringKind,
+    selectedMeterId,
+    selectedChannelIds,
+    phaseMode,
+    direction,
+    meterSearch,
+    comments,
+    deviceDetour: detourOverride,
+  });
+
+  useEffect(() => {
+    let live = true;
+    setDraftHydrated(false);
+    const applySaved = (saved: SiteAssetEditorDraftSnapshot) => {
+      if (!live) return;
+      restoredDraft.current = true;
+      setName(saved.assetName);
+      setTypeCode(saved.typeCode);
+      setCustomTypeName(saved.customTypeName);
+      setCode(saved.displayCode);
+      setCustomCode(saved.customCode);
+      setLoc(saved.locationDescription);
+      setSourceKey(saved.sourceKey);
+      setSourceBoardSearch(saved.sourceBoardSearch);
+      setMeteringKind(saved.meteringKind);
+      setSelectedMeterId(saved.selectedMeterId);
+      setSelectedChannelIds(saved.selectedChannelIds);
+      setPhaseMode(saved.phaseMode);
+      setDirection(saved.direction);
+      setMeterSearch(saved.meterSearch);
+      setComments(saved.comments);
+      setDeviceDetour(saved.deviceDetour
+        ? { ...saved.deviceDetour, startReturnToken: deviceDetourReturnToken - 1 }
+        : null);
+      setDraftHydrated(true);
+      onDraftRestored?.();
+    };
+    void loadSiteAssetEditorDraft(draftScope).then((result) => {
+      if (!live) return;
+      if (result.status === 'READY') {
+        applySaved(result.draft);
+      } else if (result.status === 'CONFLICT') {
+        Alert.alert(
+          'Saved draft conflicts with newer site data',
+          'The installation or asset changed after this recovery draft began. Review it explicitly, or discard it to keep the newer canonical data.',
+          [
+            {
+              text: 'Discard saved draft',
+              style: 'destructive',
+              onPress: () => { void clearSiteAssetEditorDraft(draftScope).finally(() => {
+                if (live) setDraftHydrated(true);
+              }); },
+            },
+            { text: 'Review saved draft', onPress: () => applySaved(result.draft) },
+          ],
+          { cancelable: false },
+        );
+      } else {
+        setDraftHydrated(true);
+        if (result.status === 'CORRUPT') {
+          Alert.alert('Recovery draft removed', 'The saved asset draft failed integrity verification and was not applied.');
+        }
+      }
+    }).catch((error) => {
+      if (!live) return;
+      setDraftHydrated(true);
+      setDraftPersistenceError(error instanceof Error ? error.message : 'The recovery draft could not be read.');
+    });
+    return () => { live = false; };
+  }, [draftScope]);
+
+  useEffect(() => {
+    if (!draftHydrated || (!active && !restoredDraft.current)) return;
+    void saveSiteAssetEditorDraft(draftScope, {
+      installationId: draftInstallationId,
+      assetId: draftAssetId,
+      draft: currentDraftSnapshot(),
+    })
+      .then(() => setDraftPersistenceError(''))
+      .catch((error) => setDraftPersistenceError(
+        error instanceof Error ? error.message : 'The asset recovery draft could not be saved.',
+      ));
+  }, [
+    active, asset_name, comments, customCode, custom_type_name, deviceDetour,
+    direction, display_code, draftAssetId, draftHydrated, draftInstallationId, draftScope, location_description,
+    meterSearch, meteringKind, phaseMode, selectedChannelIds, selectedMeterId,
+    sourceBoardSearch, sourceKey, type_code,
+  ]);
+
+  useEffect(() => {
+    if (draftHydrated && restoredDraft.current) return;
+    if (!selectedMeterId && initialAssignment?.meterId) {
+      setSelectedMeterId(initialAssignment.meterId);
+      setSelectedChannelIds(initialAssignment.channelIds);
+      setPhaseMode(initialAssignment.phaseMode);
+      setDirection(initialAssignment.direction);
+    }
+  }, [draftHydrated, initialAssignment, selectedMeterId]);
+
+  useEffect(() => {
+    if (!deviceDetour || deviceDetourReturnToken === deviceDetour.startReturnToken) return;
+    const addedEligibleIds = eligibleMeters
+      .map((item) => item.id)
+      .filter((id) => !deviceDetour.beforeMeterIds.includes(id));
+    const resolved = resolveDeviceCommissioningDetour({
+      draft: true,
+      beforeMeterIds: deviceDetour.beforeMeterIds,
+      eligibleAfterMeterIds: eligibleMeters.map((item) => item.id),
+      outcome: addedEligibleIds.length ? 'SUCCESS' : 'CANCELLED',
+    });
+    if (resolved.newMeterId) {
+      const commissioned = eligibleMeters.find((item) => item.id === resolved.newMeterId);
+      setSelectedMeterId(resolved.newMeterId);
+      setSelectedChannelIds([]);
+      setMeterAnnouncement(`${commissioned?.displayName.value ?? 'New device'} is selected. Choose its channels.`);
+    } else if (addedEligibleIds.length > 1) {
+      setMeterAnnouncement('More than one new eligible device was found. Choose the intended device; your asset draft is preserved.');
+    } else {
+      setMeterAnnouncement('No new device was commissioned. Your asset draft is preserved.');
+    }
+    setDeviceDetour(null);
+  }, [deviceDetour, deviceDetourReturnToken, eligibleMeters]);
+
+  const requestMeteringKind = (next: SiteAssetMeteringDraft['kind']) => {
+    if (
+      initial?.metering_state?.kind === 'METERED' &&
+      next !== 'METERED' &&
+      removalPreview.assignmentIds.length
+    ) {
+      Alert.alert(
+        next === 'UNMETERED' ? 'Confirm unmetered asset' : 'Move metering to TBC',
+        [
+          `This removes ${removalPreview.assignmentIds.length} exact assignment(s):`,
+          removalPreview.assignmentIds.join('\n'),
+          removalPreview.channelLabels.length
+            ? `Channels released:\n${removalPreview.channelLabels.join('\n')}`
+            : 'No channel labels are available.',
+          'Commissioning forms and evidence remain retained.',
+        ].join('\n\n'),
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: next === 'UNMETERED' ? 'Confirm unmetered' : 'Set TBC',
+            style: next === 'UNMETERED' ? 'destructive' : 'default',
+            onPress: () => setMeteringKind(next),
+          },
+        ],
+      );
+      return;
+    }
+    setMeteringKind(next);
+  };
 
   return (
     <View>
@@ -360,32 +809,283 @@ export function SiteAssetForm({
       {type_code === 'OTHER' ? (
         <TextField label="Custom asset type" value={custom_type_name} onChangeText={setCustomTypeName} />
       ) : null}
-      <BoolRow label="Use custom display code" value={customCode} onChange={setCustomCode} />
+      <BoolRow
+        label="Use custom display code"
+        value={customCode}
+        onChange={setCustomCode}
+        accessibilityHint="Turning this off returns the asset to its generated display-code rule."
+      />
       {customCode ? <TextField label="Custom display code" value={display_code} onChangeText={setCode} /> : null}
       <SelectChips
-        label="Electrical source"
-        value={sourceKey}
-        options={[
-          ...gridSupplies.map((grid) => `GRID:${grid.id}`),
-          ...sourceBoards.map((board) => `BOARD:${board.id}`),
-          'TBC',
-        ]}
+        label="Electrical source type"
+        value={sourceKind}
+        options={['GRID', 'BOARD', 'TBC']}
         getLabel={(value) => {
-          if (value === 'TBC') return 'To be confirmed';
-          if (value.startsWith('GRID:')) {
+          if (value === 'GRID') return 'Grid supply';
+          if (value === 'BOARD') return 'Parent board';
+          return 'To be confirmed';
+        }}
+        onChange={(value) => setSourceKey(sourceKeyAfterKindSelection(value))}
+      />
+      {sourceKind === 'GRID' ? (
+        <SelectChips
+          label="Grid supply"
+          value={sourceKey}
+          options={gridSupplies.map((grid) => `GRID:${grid.id}`)}
+          getLabel={(value) => {
             const grid = gridSupplies.find((item) => `GRID:${item.id}` === value);
             return grid ? `${grid.name}${grid.isDefault ? ' · default' : ''}` : 'Grid supply';
-          }
-          const board = sourceBoards.find((item) => `BOARD:${item.id}` === value);
-          return board ? `${board.display_code} · ${board.asset_name}` : 'Board';
-        }}
-        onChange={setSourceKey}
-      />
+          }}
+          onChange={setSourceKey}
+        />
+      ) : null}
+      {sourceKind === 'BOARD' ? (
+        <View style={{ marginBottom: spacing.md }}>
+          <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Parent board</Text>
+          <SearchBar
+            value={sourceBoardSearch}
+            onChangeText={setSourceBoardSearch}
+            placeholder="Search code, name, type, or zone"
+          />
+          <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+            {sourceBoardResults.total > SOURCE_BOARD_RESULT_LIMIT
+              ? `Showing ${SOURCE_BOARD_RESULT_LIMIT} of ${sourceBoardResults.total} matches. Refine the search to choose another board.`
+              : `${sourceBoardResults.total} matching board${sourceBoardResults.total === 1 ? '' : 's'}.`}
+            {sourceBoardResults.selectedPinned ? ' The selected board remains pinned.' : ''}
+          </Text>
+          <View accessibilityRole="radiogroup" accessibilityLabel="Parent board">
+            {sourceBoardResults.visible.map((sourceBoard) => {
+              const value = `BOARD:${sourceBoard.id}`;
+              const selected = sourceKey === value;
+              const sourceZone = zones.find((item) => item.id === sourceBoard.zone_id);
+              return (
+                <Pressable
+                  key={sourceBoard.id}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  accessibilityLabel={`${sourceBoard.display_code}, ${sourceBoard.asset_name}, ${sourceBoard.asset_type}, ${sourceZone?.zone_name ?? 'unknown zone'}`}
+                  onPress={() => setSourceKey(value)}
+                  style={{
+                    minHeight: 54,
+                    justifyContent: 'center',
+                    borderWidth: 1,
+                    borderColor: selected ? colors.primary : colors.border,
+                    borderRadius: radii.md,
+                    paddingHorizontal: spacing.md,
+                    marginBottom: spacing.sm,
+                    backgroundColor: selected ? colors.muted : colors.card,
+                  }}
+                >
+                  <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                    {selected ? '✓ ' : ''}{sourceBoard.display_code} · {sourceBoard.asset_name}
+                  </Text>
+                  <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
+                    {sourceBoard.asset_type} · {sourceZone?.zone_name ?? 'Unknown zone'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!sourceBoardResults.total ? (
+            <Text style={{ color: colors.mutedForeground }}>No boards match this search.</Text>
+          ) : null}
+        </View>
+      ) : null}
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
-      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-        Metering: {meteringState.kind}. Confirm unmetered/TBC transitions and exact meter-channel mapping in Reconciliation.
-      </Text>
+      <Card style={{ marginBottom: spacing.md }}>
+        <SectionHeader title="Metering decision" />
+        <SelectChips
+          label="How is this asset measured?"
+          value={meteringKind}
+          options={['METERED', 'UNMETERED', 'TBC']}
+          getLabel={(value) => value === 'METERED' ? 'Metered' : value === 'UNMETERED' ? 'Unmetered' : 'To be confirmed'}
+          onChange={requestMeteringKind}
+        />
+        {meteringKind === 'METERED' ? (
+          <>
+            {!selectedSourceBoardId ? (
+              <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
+                Choose a board as the electrical source before selecting its upstream meter and channels.
+              </Text>
+            ) : (
+              <>
+                <SearchBar
+                  value={meterSearch}
+                  onChangeText={setMeterSearch}
+                  placeholder="Search eligible device or board"
+                />
+                <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+                  {eligibleMeterResults.total > ELIGIBLE_METER_RESULT_LIMIT
+                    ? `Showing ${ELIGIBLE_METER_RESULT_LIMIT} of ${eligibleMeterResults.total} matches. Refine the search to choose another device.`
+                    : `${eligibleMeterResults.total} matching device${eligibleMeterResults.total === 1 ? '' : 's'}.`}
+                  {eligibleMeterResults.selectedPinned ? ' The selected device remains pinned.' : ''}
+                </Text>
+                <View accessibilityRole="radiogroup" accessibilityLabel="Eligible meter device">
+                  {eligibleMeterResults.visible.map((meter) => {
+                    const selected = selectedMeterId === meter.id;
+                    const meterBoard = sourceBoards.find((item) => item.id === meter.installedOnBoardId);
+                    return (
+                      <Pressable
+                        key={meter.id}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: selected }}
+                        accessibilityLabel={`${meter.displayName.value}, ${meter.serialNumber}, installed on ${meterBoard?.display_code ?? 'board'}`}
+                        onPress={() => {
+                          setSelectedMeterId(meter.id);
+                          setSelectedChannelIds([]);
+                        }}
+                        style={{
+                          minHeight: 54,
+                          justifyContent: 'center',
+                          borderWidth: 1,
+                          borderColor: selected ? colors.primary : colors.border,
+                          borderRadius: radii.md,
+                          paddingHorizontal: spacing.md,
+                          marginBottom: spacing.sm,
+                          backgroundColor: selected ? colors.muted : colors.card,
+                        }}
+                      >
+                        <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                          {selected ? '✓ ' : ''}{meter.displayName.value}
+                        </Text>
+                        <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
+                          {meter.deviceModel} · {meter.serialNumber || 'No serial'} · {meterBoard?.display_code ?? 'Unknown board'}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {!eligibleMeterResults.visible.length ? (
+                  <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+                    No commissioned device is available on this asset’s source path.
+                  </Text>
+                ) : null}
+                {onAddDevice ? (
+                  <Button
+                    title="Commission a device on the source board"
+                    variant="secondary"
+                    onPress={() => {
+                      const nextDetour = {
+                        beforeMeterIds: meterDevices.map((item) => item.id),
+                        startReturnToken: deviceDetourReturnToken,
+                      };
+                      setDeviceDetour(nextDetour);
+                      setMeterAnnouncement('');
+                      void saveSiteAssetEditorDraft(
+                        draftScope,
+                        {
+                          installationId: draftInstallationId,
+                          assetId: draftAssetId,
+                          draft: currentDraftSnapshot(nextDetour),
+                        },
+                      )
+                        .then(() => onAddDevice(selectedSourceBoardId))
+                        .catch(() => Alert.alert(
+                          'Draft not protected',
+                          'The asset draft could not be saved on this device, so device commissioning was not opened.',
+                        ));
+                    }}
+                    style={{ marginBottom: spacing.md }}
+                  />
+                ) : null}
+                {meterAnnouncement ? (
+                  <Text
+                    accessibilityRole="summary"
+                    accessibilityLiveRegion="polite"
+                    style={{ color: colors.primary, marginBottom: spacing.md }}
+                  >
+                    {meterAnnouncement}
+                  </Text>
+                ) : null}
+              </>
+            )}
+            {selectedMeter ? (
+              <>
+                <SelectChips
+                  label="Phase mode"
+                  value={phaseMode}
+                  options={['SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
+                  getLabel={(value) => value === 'SINGLE_PHASE' ? 'Single phase (1)' : value === 'THREE_PHASE' ? 'Three phase (3)' : 'Other group'}
+                  onChange={setPhaseMode}
+                />
+                <SelectChips
+                  label="Direction"
+                  value={direction}
+                  options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
+                  getLabel={(value) => value === '' ? 'Choose direction' : value === 'BIDIRECTIONAL' ? 'Bidirectional' : value === 'GENERATION' ? 'Generation' : 'Consumption'}
+                  onChange={setDirection}
+                />
+                <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Channels</Text>
+                <Text
+                  accessibilityRole="summary"
+                  accessibilityLiveRegion="polite"
+                  style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}
+                >
+                  {phaseMode === 'SINGLE_PHASE'
+                    ? `Single phase requires exactly 1 channel; ${selectedChannelIds.length} selected.`
+                    : phaseMode === 'THREE_PHASE'
+                      ? `Three phase requires exactly 3 channels; ${selectedChannelIds.length} selected.`
+                      : `Other group requires at least 1 channel; ${selectedChannelIds.length} selected.`}
+                  {selectedGroupComplete ? ' Channel group complete.' : ' Complete the channel group before saving.'}
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md }}>
+                  {selectedMeter.channels.map((channel, channelIndex) => {
+                    const selected = selectedChannelIds.includes(channel.id);
+                    const assignedElsewhere = measurementAssignments.some((assignment) =>
+                      !ownAssignmentIds.has(assignment.id) &&
+                      assignment.target.kind !== 'TBC' &&
+                      assignment.channelIds.includes(channel.id));
+                    const disabled = channel.purpose !== 'SUB_CIRCUIT' || assignedElsewhere;
+                    return (
+                      <Pressable
+                        key={channel.id}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: selected, disabled }}
+                        accessibilityLabel={`Channel ${channel.ordinal}, ${channel.purpose}${assignedElsewhere ? ', assigned elsewhere' : ''}`}
+                        accessibilityHint={`${channelIndex + 1} of ${selectedMeter.channels.length}. ${disabled ? assignedElsewhere ? 'Unavailable because another confirmed assignment uses it.' : 'Unavailable because only sub-circuit channels can map to a site asset.' : 'Double tap to toggle this channel.'}`}
+                        disabled={disabled}
+                        onPress={() => setSelectedChannelIds((current) => selected
+                          ? current.filter((id) => id !== channel.id)
+                          : [...current, channel.id])}
+                        style={{
+                          minHeight: 48,
+                          minWidth: 92,
+                          justifyContent: 'center',
+                          borderWidth: 1,
+                          borderColor: selected ? colors.primary : colors.border,
+                          backgroundColor: selected ? colors.muted : colors.card,
+                          opacity: disabled ? 0.45 : 1,
+                          borderRadius: radii.md,
+                          paddingHorizontal: spacing.sm,
+                        }}
+                      >
+                        <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                          {selected ? '✓ ' : ''}Ch {channel.ordinal}
+                        </Text>
+                        <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>
+                          {assignedElsewhere ? 'In use' : channel.purpose.replace('_', ' ')}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <Text style={{ color: colors.mutedForeground, lineHeight: 20 }}>
+            {meteringKind === 'UNMETERED'
+              ? 'Confirmed: this asset is intentionally not metered.'
+              : 'Unresolved by design; reconciliation and installation completion will keep this visible.'}
+          </Text>
+        )}
+      </Card>
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
+      {draftPersistenceError ? (
+        <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={{ color: colors.destructive, marginBottom: spacing.md }}>
+          Draft protection failed: {draftPersistenceError}
+        </Text>
+      ) : null}
       <Button
         title={busy ? 'Saving…' : 'Save asset'}
         disabled={busy || !asset_name}
@@ -397,6 +1097,36 @@ export function SiteAssetForm({
               : sourceKey.startsWith('GRID:')
                 ? { kind: 'GRID', gridSupplyId: sourceKey.slice(5) }
                 : { kind: 'BOARD', boardId: sourceKey.slice(6) };
+            if (electrical_source.kind === 'BOARD' && !electrical_source.boardId) {
+              throw new Error('Choose a source board or mark the source TBC.');
+            }
+            if (electrical_source.kind === 'GRID' && !electrical_source.gridSupplyId) {
+              throw new Error('Choose a Grid supply or mark the source TBC.');
+            }
+            let meteringDraft: SiteAssetMeteringDraft;
+            if (meteringKind === 'METERED') {
+              if (!selectedSourceBoardId) throw new Error('Choose a source board for this metered asset.');
+              if (!selectedMeter || !eligibleMeters.some((item) => item.id === selectedMeter.id)) {
+                throw new Error('Choose an eligible commissioned device on the electrical source path.');
+              }
+              const channels = selectedChannelIds.map((id) =>
+                selectedMeter.channels.find((channel) => channel.id === id));
+              if (!channels.length || channels.some((channel) => !channel || channel.purpose !== 'SUB_CIRCUIT')) {
+                throw new Error('Choose one or more available sub-circuit channels.');
+              }
+              const expectedCount = phaseMode === 'SINGLE_PHASE' ? 1 : phaseMode === 'THREE_PHASE' ? 3 : null;
+              if ((expectedCount !== null && selectedChannelIds.length !== expectedCount) ||
+                  (expectedCount === null && !selectedChannelIds.length)) {
+                throw new Error('Selected channel count must match the phase mode.');
+              }
+              if (!direction) throw new Error('Choose the measurement direction explicitly.');
+              meteringDraft = {
+                kind: 'METERED', meterId: selectedMeter.id,
+                channelIds: selectedChannelIds, phaseMode, direction,
+              };
+            } else {
+              meteringDraft = { kind: meteringKind };
+            }
             await onSubmit({
               audit_id: initial?.audit_id ?? '',
               zone_id: initial?.zone_id ?? '',
@@ -416,16 +1146,50 @@ export function SiteAssetForm({
               electrical_source,
               electrical_board_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
               electrical_board_tbc: electrical_source.kind === 'TBC',
-              metering_state: meteringState,
-              meter_present: meteringState.kind === 'METERED',
+              metering_state: initial?.metering_state ?? { kind: 'TBC' },
+              meter_present: initial?.meter_present ?? false,
               meter_switchboard_id: initial?.meter_switchboard_id ?? null,
               meter_switchboard_tbc: initial?.meter_switchboard_tbc ?? false,
               meter_channels: initial?.meter_channels ?? [],
               comments,
-            });
+            }, meteringDraft);
+            try {
+              await clearSiteAssetEditorDraft(draftScope);
+              restoredDraft.current = false;
+            } catch {
+              Alert.alert(
+                'Asset saved; draft cleanup pending',
+                'The asset was saved, but its recovery draft could not be cleared. Discard the restored copy before making another edit.',
+              );
+            }
+          } catch (error) {
+            Alert.alert('Asset not saved', error instanceof Error ? error.message : 'The asset could not be saved.');
           } finally {
             setBusy(false);
           }
+        }}
+      />
+      <Button
+        title="Discard saved asset draft"
+        variant="danger"
+        style={{ marginTop: spacing.md }}
+        onPress={() => {
+          Alert.alert(
+            'Discard asset draft?',
+            'This clears the saved editor state, including a pending device-commissioning detour.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Discard draft',
+                style: 'destructive',
+                onPress: () => { void (async () => {
+                  await clearSiteAssetEditorDraft(draftScope);
+                  restoredDraft.current = false;
+                  onDiscardDraft?.();
+                })(); },
+              },
+            ],
+          );
         }}
       />
     </View>

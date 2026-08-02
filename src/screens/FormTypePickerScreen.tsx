@@ -1,19 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { FORM_DEFINITIONS } from '../forms/catalog';
 import {
   electricalAssetsRepo,
   formsRepo,
-  installationsRepo,
   siteAssetsRepo,
 } from '../repositories';
 import { useAuth, useTheme } from '../context/AppProviders';
-import { Badge, Button, Card, LoadingState } from '../components/ui';
+import { Badge, Button, Card, LoadingState, SearchBar } from '../components/ui';
 import { spacing, typography } from '../theme';
-import type { Installation, FormType } from '../types';
+import type { FormType } from '../types';
 import type { RootStackParamList } from '../navigation/types';
 import { createInitialFormAnswers } from '../forms/catalog';
+import { useInstallation } from '../hooks';
+import { ElectricalAssetForm, FormModal, SelectChips } from '../components/forms';
+import { SOURCE_BOARD_RESULT_LIMIT, searchSourceBoards } from '../domain/sourcePicker';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
@@ -21,14 +23,29 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
   const { installationId, boardId, meterId, siteAssetId, zoneId } = route.params;
   const { user } = useAuth();
   const { colors } = useTheme();
-  const [installation, setInstallation] = useState<Installation | null>(null);
+  const {
+    item: installation,
+    boards,
+    zones,
+    gridSupplies,
+    loading,
+  } = useInstallation(installationId);
   const [busy, setBusy] = useState<FormType | null>(null);
+  const [selectedBoardId, setSelectedBoardId] = useState(boardId ?? '');
+  const [boardSearch, setBoardSearch] = useState('');
+  const [newBoardOpen, setNewBoardOpen] = useState(false);
+  const [newBoardZoneId, setNewBoardZoneId] = useState(zoneId ?? '');
 
   useEffect(() => {
-    void installationsRepo.getById(installationId).then(setInstallation);
-  }, [installationId]);
+    if (!newBoardZoneId && zones.length) setNewBoardZoneId(zoneId ?? zones[0].id);
+  }, [newBoardZoneId, zoneId, zones]);
 
-  if (!installation || !user) return <LoadingState />;
+  const boardResults = useMemo(
+    () => searchSourceBoards(boards, zones, boardSearch, SOURCE_BOARD_RESULT_LIMIT, selectedBoardId),
+    [boardSearch, boards, selectedBoardId, zones],
+  );
+
+  if (loading || !installation || !user) return <LoadingState />;
 
   const allowed = FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
@@ -55,6 +72,70 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
       <Text style={{ color: colors.mutedForeground, marginTop: 6, marginBottom: spacing.lg }}>
         Choose the work record. Site and installer details will be prefilled.
       </Text>
+      {!boardId ? (
+        <Card style={{ marginBottom: spacing.lg }}>
+          <Text style={[typography.subheading, { color: colors.foreground }]}>WW switchboard</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 5, marginBottom: spacing.md, lineHeight: 20 }}>
+            A WW installation form belongs to one canonical switchboard. Select it now or add it without losing this screen.
+          </Text>
+          <SearchBar
+            value={boardSearch}
+            onChangeText={setBoardSearch}
+            placeholder="Search code, name, type, or zone"
+          />
+          <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+            {boardResults.total > SOURCE_BOARD_RESULT_LIMIT
+              ? `Showing ${SOURCE_BOARD_RESULT_LIMIT} of ${boardResults.total} matches. Refine the search to choose another board.`
+              : `${boardResults.total} matching switchboard${boardResults.total === 1 ? '' : 's'}.`}
+            {boardResults.selectedPinned ? ' The selected switchboard remains pinned.' : ''}
+          </Text>
+          <View accessibilityRole="radiogroup" accessibilityLabel="WW switchboard">
+            {boardResults.visible.map((board) => {
+              const selected = selectedBoardId === board.id;
+              const zone = zones.find((item) => item.id === board.zone_id);
+              return (
+                <Pressable
+                  key={board.id}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  accessibilityLabel={`${board.display_code}, ${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
+                  onPress={() => setSelectedBoardId(board.id)}
+                  style={[
+                    styles.boardChoice,
+                    {
+                      borderColor: selected ? colors.primary : colors.border,
+                      backgroundColor: selected ? colors.muted : colors.card,
+                    },
+                  ]}
+                >
+                  <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                    {selected ? '✓ ' : ''}{board.display_code} · {board.asset_name}
+                  </Text>
+                  <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                    {board.asset_type} · {zone?.zone_name ?? 'Unknown zone'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!boardResults.visible.length ? (
+            <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
+              No matching switchboards.
+            </Text>
+          ) : null}
+          <Button
+            title="Add a new switchboard"
+            variant="secondary"
+            disabled={!zones.length}
+            onPress={() => setNewBoardOpen(true)}
+          />
+          {!zones.length ? (
+            <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm }}>
+              Add a physical zone before creating its first switchboard.
+            </Text>
+          ) : null}
+        </Card>
+      ) : null}
       {allowed.map((definition) => (
         <Card key={definition.type} style={{ marginBottom: spacing.md }}>
           <View style={styles.row}>
@@ -69,15 +150,22 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
             <Badge label={`${definition.sections.length} sections`} />
           </View>
           <Button
-            title={busy === definition.type ? 'Creating…' : 'Start form'}
-            disabled={!!busy}
+            title={busy === definition.type
+              ? 'Creating…'
+              : definition.type === 'ww-installation' && !selectedBoardId
+                ? 'Select a switchboard to start'
+                : 'Start form'}
+            disabled={!!busy || (definition.type === 'ww-installation' && !selectedBoardId)}
             style={{ marginTop: spacing.md }}
             onPress={async () => {
               setBusy(definition.type);
               try {
+                const formBoardId = ['ww-installation', 'ace-switchboard'].includes(definition.type)
+                  ? selectedBoardId || boardId
+                  : boardId;
                 const answers = createInitialFormAnswers(installation, user);
-                if (boardId) {
-                  const board = await electricalAssetsRepo.getById(boardId);
+                if (formBoardId) {
+                  const board = await electricalAssetsRepo.getById(formBoardId);
                   if (board) {
                     answers['auditor.switchboard_name'] = board.asset_name;
                     answers['auditor.switchboard_location'] = board.location_description ?? '';
@@ -108,13 +196,20 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   form_type: definition.type,
                   schema_version: definition.schemaVersion,
                   installation_id: installationId,
-                  zone_id: zoneId,
-                  board_id: boardId,
+                  zone_id: formBoardId
+                    ? boards.find((item) => item.id === formBoardId)?.zone_id ?? zoneId
+                    : zoneId,
+                  board_id: formBoardId,
                   meter_id: meterId,
                   site_asset_id: siteAssetId,
                   answers,
                 });
                 navigation.replace('FormEditor', { formId: form.id });
+              } catch (error) {
+                Alert.alert(
+                  'Form not started',
+                  error instanceof Error ? error.message : 'The form could not be created.',
+                );
               } finally {
                 setBusy(null);
               }
@@ -122,6 +217,35 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
           />
         </Card>
       ))}
+      <FormModal
+        visible={newBoardOpen}
+        title="Add switchboard for WW form"
+        onClose={() => setNewBoardOpen(false)}
+      >
+        <SelectChips
+          label="Physical zone"
+          value={newBoardZoneId}
+          options={zones.map((item) => item.id)}
+          getLabel={(value) => zones.find((item) => item.id === value)?.zone_name ?? value}
+          onChange={setNewBoardZoneId}
+        />
+        <ElectricalAssetForm
+          initial={{ audit_id: installationId, zone_id: newBoardZoneId }}
+          sourceBoards={boards}
+          gridSupplies={gridSupplies}
+          zones={zones}
+          onSubmit={async (values) => {
+            if (!newBoardZoneId) throw new Error('Choose the physical zone.');
+            const created = await electricalAssetsRepo.create({
+              ...values,
+              audit_id: installationId,
+              zone_id: newBoardZoneId,
+            });
+            setSelectedBoardId(created.id);
+            setNewBoardOpen(false);
+          }}
+        />
+      </FormModal>
     </ScrollView>
   );
 }
@@ -129,4 +253,13 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
 const styles = StyleSheet.create({
   pad: { padding: spacing.lg, paddingBottom: 48 },
   row: { flexDirection: 'row', alignItems: 'flex-start' },
+  boardChoice: {
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 58,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
 });

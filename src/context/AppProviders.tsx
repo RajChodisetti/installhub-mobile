@@ -20,6 +20,7 @@ import {
   loginAndCacheCloudUser,
   type CloudLoginSource,
 } from '../services/authSession';
+import { clearSiteAssetEditorDraftsForUser } from '../services/siteAssetEditorDraft';
 
 const THEME_KEY = 'installhub.theme';
 
@@ -150,9 +151,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    if (user) await clearSiteAssetEditorDraftsForUser(user.id);
     setUser(null);
     await logoutFromCloud();
-  }, []);
+  }, [user]);
 
   const authValue = useMemo(
     () => ({

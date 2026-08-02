@@ -1,4 +1,8 @@
 import { sha256 } from 'js-sha256';
+import {
+  validIanaTimezone,
+  validateInstallationIdentity,
+} from './installationValidation';
 import type {
   AppDataStore,
   BoardType,
@@ -476,6 +480,7 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
   store.gridSupplies ??= [];
   store.meterDevices ??= [];
   store.measurementAssignments ??= [];
+  store.siteAssetEditorDrafts ??= [];
 
   for (const installation of store.installations) {
     ensureInstallationMetadata(installation);
@@ -664,8 +669,20 @@ export function boardSourceCandidates(
   installationId: string,
   boardId: string,
 ): ElectricalAsset[] {
+  return cycleSafeBoardCandidates(
+    store.electricalAssets.filter((item) => item.audit_id === installationId),
+    boardId,
+  );
+}
+
+/** Parent choices exclude the edited board and every descendant that it owns. */
+export function cycleSafeBoardCandidates(
+  boards: ElectricalAsset[],
+  boardId?: string,
+): ElectricalAsset[] {
+  if (!boardId) return [...boards];
   const children = new Map<string, string[]>();
-  for (const board of store.electricalAssets.filter((item) => item.audit_id === installationId)) {
+  for (const board of boards) {
     if (board.electrical_source?.kind !== 'BOARD') continue;
     const rows = children.get(board.electrical_source.boardId) ?? [];
     rows.push(board.id);
@@ -681,9 +698,7 @@ export function boardSourceCandidates(
       queue.push(child);
     }
   }
-  return store.electricalAssets.filter(
-    (item) => item.audit_id === installationId && !descendants.has(item.id),
-  );
+  return boards.filter((item) => !descendants.has(item.id));
 }
 
 export function boardIsOnAssetSupplyPath(
@@ -722,12 +737,16 @@ function sourceIssueCandidates(
   installationId: string,
   boardId?: string,
 ): string[] {
-  return boardId
-    ? boardSourceCandidates(store, installationId, boardId).slice(0, 25).map((item) => item.id)
-    : store.electricalAssets
-        .filter((item) => item.audit_id === installationId)
-        .slice(0, 25)
-        .map((item) => item.id);
+  const gridIds = store.gridSupplies
+    .filter((item) => item.installationId === installationId)
+    .map((item) => item.id);
+  const boardIds = (boardId
+    ? boardSourceCandidates(store, installationId, boardId)
+    : store.electricalAssets.filter((item) => item.audit_id === installationId))
+    .map((item) => item.id);
+  // Candidate IDs are a bounded API hint. Clients with the loaded tree compute
+  // and search the complete valid set instead of treating this as exhaustive.
+  return [...gridIds, ...boardIds].slice(0, 25);
 }
 
 function boardIsOnBoardSupplyPath(
@@ -825,21 +844,17 @@ export function installationReadiness(
   const boardById = new Map(boards.map((item) => [item.id, item]));
   const assetById = new Map(assets.map((item) => [item.id, item]));
   const meterById = new Map(meters.map((item) => [item.id, item]));
-  const timezoneValid = (() => {
-    const value = installation.timezone?.trim();
-    if (!value) return false;
-    try {
-      new Intl.DateTimeFormat('en-AU', { timeZone: value }).format(new Date(0));
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-
-  if (!timezoneValid) {
+  const timezoneValid = validIanaTimezone(installation.timezone ?? '');
+  for (const error of validateInstallationIdentity(installation)) {
     issue(issues, {
-      code: 'TIMEZONE_REQUIRED_FOR_EXPORT', severity: 'WARNING', entityType: 'installation',
-      entityId: installation.id, field: 'timezone', message: 'Choose a valid IANA installation timezone.',
+      code: error.field === 'timezone'
+        ? 'TIMEZONE_REQUIRED_FOR_EXPORT'
+        : 'INSTALLATION_FIELD_REQUIRED',
+      severity: 'ERROR',
+      entityType: 'installation',
+      entityId: installation.id,
+      field: error.field,
+      message: error.message,
     });
   }
   if (!installation.external_key?.trim()) {
@@ -926,10 +941,7 @@ export function installationReadiness(
     if (!source || source.kind === 'TBC') issue(issues, {
       code: 'SUPPLY_TBC', severity: 'ERROR', entityType: 'board', entityId: board.id,
       field: 'electricalSource', message: 'Choose the board electrical source.',
-      candidateIds: [
-        ...grids.map((item) => item.id),
-        ...sourceIssueCandidates(store, installationId, board.id),
-      ],
+      candidateIds: sourceIssueCandidates(store, installationId, board.id),
     });
     else if (source.kind === 'GRID' && !gridIds.has(source.gridSupplyId)) issue(issues, {
       code: 'SUPPLY_SOURCE_INVALID', severity: 'ERROR', entityType: 'board', entityId: board.id,
@@ -1089,10 +1101,10 @@ export function installationReadiness(
       entityId: assignment.id, field: 'channelIds', message: 'One assignment cannot mix channel purposes.',
     });
     const allMain = localIds.size > 0 && purposes.size === 1 && purposes.has('MAIN_SUPPLY');
-    if (allMain && !['BOARD', 'GRID_BOUNDARY'].includes(assignment.target.kind)) issue(issues, {
+    if (allMain && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) issue(issues, {
       code: 'CHANNEL_PURPOSE_CONFLICT', severity: 'ERROR', entityType: 'measurement_assignment',
       entityId: assignment.id, field: 'target',
-      message: 'Main-supply channels can only measure a board or Grid boundary.',
+      message: 'Main-supply channels can only measure a board, Grid boundary, or explicit TBC target.',
     });
     if (allMain && assignment.status === 'CONFIRMED') {
       const boundary = assignment.target.kind === 'BOARD'
@@ -1118,6 +1130,24 @@ export function installationReadiness(
       code: 'MEASUREMENT_TARGET_TBC', severity: 'ERROR', entityType: 'measurement_assignment',
       entityId: assignment.id, field: 'target', message: 'The assignment target board is unavailable.',
       candidateIds: boards.slice(0, 25).map((item) => item.id),
+    });
+    else if (
+      assignment.target.kind === 'BOARD' &&
+      allMain &&
+      assignment.target.boardId !== meter.installedOnBoardId
+    ) issue(issues, {
+      code: 'METER_BOARD_MISMATCH', severity: 'ERROR', entityType: 'measurement_assignment',
+      entityId: assignment.id, field: 'target',
+      message: 'Main-supply channels may identify only the meter’s installed-on board.',
+    });
+    else if (
+      assignment.target.kind === 'BOARD' &&
+      !allMain && purposes.size === 1 && purposes.has('SUB_CIRCUIT') &&
+      assignment.target.boardId === meter.installedOnBoardId
+    ) issue(issues, {
+      code: 'METER_BOARD_MISMATCH', severity: 'ERROR', entityType: 'measurement_assignment',
+      entityId: assignment.id, field: 'target',
+      message: 'Sub-circuit channels must target a downstream board or site asset.',
     });
     else if (
       assignment.target.kind === 'BOARD' &&
@@ -1154,6 +1184,20 @@ export function installationReadiness(
     }
   }
 
+  for (const meter of meters) {
+    for (const channel of meter.channels) {
+      if (channel.purpose === 'SPARE' || assignedChannels.has(channel.id)) continue;
+      issue(issues, {
+        code: 'CHANNEL_UNASSIGNED',
+        severity: 'ERROR',
+        entityType: 'channel',
+        entityId: channel.id,
+        field: 'measurementAssignments',
+        message: 'Every non-spare meter channel must belong to exactly one measurement assignment.',
+      });
+    }
+  }
+
   for (const totals of mainTotalsByBoundary.values()) {
     if (totals.length < 2) continue;
     for (const assignment of totals) issue(issues, {
@@ -1172,10 +1216,7 @@ export function installationReadiness(
     if (!source || source.kind === 'TBC') issue(issues, {
       code: 'SUPPLY_TBC', severity: 'ERROR', entityType: 'site_asset', entityId: asset.id,
       field: 'electricalSource', message: 'Choose the asset supply board.',
-      candidateIds: [
-        ...grids.map((item) => item.id),
-        ...sourceIssueCandidates(store, installationId),
-      ],
+      candidateIds: sourceIssueCandidates(store, installationId),
     });
     else if (source.kind === 'BOARD' && !boardById.has(source.boardId)) issue(issues, {
       code: 'SUPPLY_SOURCE_INVALID', severity: 'ERROR', entityType: 'site_asset', entityId: asset.id,
@@ -1439,22 +1480,11 @@ export function allAssetMeteringRows(store: AppDataStore, installationId: string
     if (asset.electrical_source?.kind === 'GRID') {
       return virtualByParent.get(asset.electrical_source.gridSupplyId);
     }
-    if (asset.electrical_source?.kind !== 'BOARD') return undefined;
-    const seen = new Set<string>();
-    let boardId: string | undefined = asset.electrical_source.boardId;
-    while (boardId && !seen.has(boardId)) {
-      const virtual = virtualByParent.get(boardId);
-      if (virtual) return virtual;
-      seen.add(boardId);
-      const board = boards.get(boardId);
-      if (board?.electrical_source?.kind === 'GRID') {
-        return virtualByParent.get(board.electrical_source.gridSupplyId);
-      }
-      boardId = board?.electrical_source?.kind === 'BOARD'
-        ? board.electrical_source.boardId
-        : undefined;
-    }
-    return undefined;
+    // Residuals describe only one electrical boundary. An asset under a child
+    // board must never inherit a residual from an ancestor board or Grid.
+    return asset.electrical_source?.kind === 'BOARD'
+      ? virtualByParent.get(asset.electrical_source.boardId)
+      : undefined;
   };
   return store.siteAssets
     .filter((item) => item.audit_id === installationId)
@@ -1559,17 +1589,257 @@ export function setAssetMeteringState(
 ): void {
   const asset = store.siteAssets.find((item) => item.id === assetId);
   if (!asset) throw new Error('Site asset not found');
-  store.measurementAssignments = store.measurementAssignments.filter(
+  const owned = store.measurementAssignments.filter(
+    (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === assetId,
+  );
+  let selected: MeasurementAssignment[] = [];
+  if (state.kind === 'METERED') {
+    const ids = new Set(state.measurementAssignmentIds);
+    selected = assignments.filter((assignment) => ids.has(assignment.id));
+    if (selected.length !== ids.size) {
+      throw new Error('Metered assets require every selected assignment.');
+    }
+    if (selected.some((assignment) =>
+      assignment.installationId !== asset.audit_id ||
+      assignment.target.kind !== 'SITE_ASSET' ||
+      assignment.target.siteAssetId !== asset.id)) {
+      throw new Error('Every selected assignment must target this site asset.');
+    }
+  }
+  let next = store.measurementAssignments.filter(
     (assignment) => !(assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === assetId),
   );
   if (state.kind === 'METERED') {
-    const ids = new Set(state.measurementAssignmentIds);
-    const selected = assignments.filter((assignment) => ids.has(assignment.id));
-    if (selected.length !== ids.size) throw new Error('Metered assets require every selected assignment.');
-    store.measurementAssignments.push(...selected);
+    const selectedChannelIds = new Set(selected.flatMap((assignment) => assignment.channelIds));
+    next = next.flatMap((assignment) => {
+      const overlap = assignment.channelIds.filter((channelId) => selectedChannelIds.has(channelId));
+      if (!overlap.length) return [assignment];
+      if (assignment.target.kind !== 'TBC') {
+        throw new Error('A selected channel is already assigned elsewhere.');
+      }
+      const remaining = assignment.channelIds.filter((channelId) => !selectedChannelIds.has(channelId));
+      if (!remaining.length) return [];
+      return [{
+        ...assignment,
+        channelIds: remaining,
+        phaseMode: remaining.length === 1
+          ? 'SINGLE_PHASE' as const
+          : remaining.length === 3
+            ? 'THREE_PHASE' as const
+            : 'OTHER' as const,
+      }];
+    });
+    const occupied = new Set(next.flatMap((assignment) => assignment.channelIds));
+    for (const assignment of selected) {
+      for (const channelId of assignment.channelIds) {
+        if (occupied.has(channelId)) throw new Error('A selected channel is already assigned elsewhere.');
+        occupied.add(channelId);
+      }
+    }
+    next.push(...selected);
+  } else {
+    const occupied = new Set(next.flatMap((assignment) => assignment.channelIds));
+    for (const assignment of owned) {
+      const meter = store.meterDevices.find((item) => item.id === assignment.meterId);
+      if (!meter) continue;
+      for (const channelId of assignment.channelIds) {
+        const channel = meter.channels.find((item) => item.id === channelId);
+        if (!channel || channel.purpose === 'SPARE' || occupied.has(channelId)) continue;
+        let assignmentId = `assignment_tbc_${sha256(`${meter.id}|${channel.id}`).slice(0, 16)}`;
+        if (next.some((item) => item.id === assignmentId)) {
+          assignmentId = `assignment_tbc_${sha256(`${meter.id}|${channel.id}|${asset.id}`).slice(0, 16)}`;
+        }
+        next.push({
+          id: assignmentId,
+          installationId: asset.audit_id,
+          meterId: meter.id,
+          channelIds: [channel.id],
+          phaseMode: 'SINGLE_PHASE',
+          target: { kind: 'TBC' },
+          direction: assignment.direction,
+          status: 'TBC',
+        });
+        occupied.add(channelId);
+      }
+    }
   }
+  store.measurementAssignments = next;
   asset.metering_state = state;
   projectCanonicalCompatibility(store, asset.audit_id);
+}
+
+function assignmentBoundaryKey(assignment: MeasurementAssignment): string | null {
+  if (assignment.target.kind === 'BOARD') return `BOARD:${assignment.target.boardId}`;
+  if (assignment.target.kind === 'GRID_BOUNDARY') {
+    return `GRID_BOUNDARY:${assignment.target.gridSupplyId}`;
+  }
+  return null;
+}
+
+/**
+ * Replaces every mapping owned by one meter as a single validated operation.
+ * This is the canonical write path used by the mobile assignment editor.
+ */
+export function replaceMeterMeasurementAssignments(
+  store: AppDataStore,
+  meterId: string,
+  incoming: MeasurementAssignment[],
+): void {
+  const meter = store.meterDevices.find((item) => item.id === meterId);
+  if (!meter) throw new Error('Meter device not found.');
+  const installationId = meter.installationId;
+  const channelById = new Map(meter.channels.map((channel) => [channel.id, channel]));
+  const boardById = new Map(
+    store.electricalAssets
+      .filter((board) => board.audit_id === installationId)
+      .map((board) => [board.id, board]),
+  );
+  const gridIds = new Set(
+    store.gridSupplies
+      .filter((grid) => grid.installationId === installationId)
+      .map((grid) => grid.id),
+  );
+  const assetById = new Map(
+    store.siteAssets
+      .filter((asset) => asset.audit_id === installationId)
+      .map((asset) => [asset.id, asset]),
+  );
+  const retained = store.measurementAssignments.filter((item) => item.meterId !== meterId);
+  const retainedIds = new Set(retained.map((item) => item.id));
+  const usedChannelIds = new Set(retained.flatMap((item) => item.channelIds));
+  const incomingIds = new Set<string>();
+  const selectedChannelIds = new Set<string>();
+  const mainBoundaries = new Set<string>();
+  const siteAssetTargets = new Set<string>();
+
+  for (const existing of retained) {
+    if (existing.target.kind === 'SITE_ASSET') {
+      if (siteAssetTargets.has(existing.target.siteAssetId)) {
+        throw new Error('A site asset can have only one direct measurement assignment.');
+      }
+      siteAssetTargets.add(existing.target.siteAssetId);
+    }
+    const existingMeter = store.meterDevices.find((item) => item.id === existing.meterId);
+    const purposes = new Set(
+      existing.channelIds
+        .map((id) => existingMeter?.channels.find((channel) => channel.id === id)?.purpose)
+        .filter(Boolean),
+    );
+    if (purposes.size === 1 && purposes.has('MAIN_SUPPLY')) {
+      const key = assignmentBoundaryKey(existing);
+      if (key && existing.status === 'CONFIRMED') mainBoundaries.add(key);
+    }
+  }
+
+  for (const assignment of incoming) {
+    if (!assignment.id.trim() || incomingIds.has(assignment.id) || retainedIds.has(assignment.id)) {
+      throw new Error('Every assignment needs a unique stable ID.');
+    }
+    incomingIds.add(assignment.id);
+    if (assignment.installationId !== installationId || assignment.meterId !== meterId) {
+      throw new Error('Assignment installation and meter links are immutable.');
+    }
+    const channelIds = [...new Set(assignment.channelIds)];
+    if (channelIds.length !== assignment.channelIds.length || !channelIds.length) {
+      throw new Error('Choose one or more unique channels for every assignment.');
+    }
+    const channels = channelIds.map((id) => channelById.get(id));
+    if (channels.some((channel) => !channel)) {
+      throw new Error('Every assigned channel must exist on this meter.');
+    }
+    for (const channelId of channelIds) {
+      if (usedChannelIds.has(channelId) || selectedChannelIds.has(channelId)) {
+        throw new Error('A meter channel can belong to only one measurement assignment.');
+      }
+      selectedChannelIds.add(channelId);
+    }
+    const purposes = new Set(channels.map((channel) => channel!.purpose));
+    if (purposes.size !== 1 || purposes.has('SPARE')) {
+      throw new Error('An assignment needs channels with one shared, non-spare purpose.');
+    }
+    const expectedCount = assignment.phaseMode === 'SINGLE_PHASE'
+      ? 1
+      : assignment.phaseMode === 'THREE_PHASE'
+        ? 3
+        : null;
+    if ((expectedCount !== null && channelIds.length !== expectedCount) ||
+        (expectedCount === null && channelIds.length < 1)) {
+      throw new Error('Assignment channel count must match its phase mode.');
+    }
+    const isMain = purposes.has('MAIN_SUPPLY');
+    if (isMain && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) {
+      throw new Error('Main-supply channels can measure a board, Grid boundary, or explicit TBC target.');
+    }
+    if (!isMain && assignment.target.kind === 'GRID_BOUNDARY') {
+      throw new Error('Only main-supply channels can measure a Grid boundary.');
+    }
+    if ((assignment.status === 'TBC') !== (assignment.target.kind === 'TBC')) {
+      throw new Error('TBC status and TBC target must be selected together.');
+    }
+    if (assignment.target.kind === 'BOARD') {
+      const target = boardById.get(assignment.target.boardId);
+      if (!target) throw new Error('The selected target board is unavailable.');
+      if (isMain && target.id !== meter.installedOnBoardId) {
+        throw new Error('Main-supply channels may identify only their installed-on board; use sub-circuit channels for downstream boards.');
+      }
+      if (!isMain && target.id === meter.installedOnBoardId) {
+        throw new Error('Sub-circuit channels must target a downstream board or site asset.');
+      }
+      if (!boardIsOnBoardSupplyPath(boardById, target.id, meter.installedOnBoardId)) {
+        throw new Error('The meter board must be on the target board’s upstream supply path.');
+      }
+    } else if (assignment.target.kind === 'GRID_BOUNDARY') {
+      if (!gridIds.has(assignment.target.gridSupplyId)) {
+        throw new Error('The selected Grid boundary is unavailable.');
+      }
+      if (!meterBoardReachesGrid(boardById, meter.installedOnBoardId, assignment.target.gridSupplyId)) {
+        throw new Error('The meter board is not connected to this Grid boundary.');
+      }
+    } else if (assignment.target.kind === 'SITE_ASSET') {
+      const asset = assetById.get(assignment.target.siteAssetId);
+      if (!asset) throw new Error('The selected site asset is unavailable.');
+      if (siteAssetTargets.has(assignment.target.siteAssetId)) {
+        throw new Error('A site asset can have only one direct measurement assignment.');
+      }
+      siteAssetTargets.add(assignment.target.siteAssetId);
+      if (!boardIsOnAssetSupplyPath(store, asset, meter.installedOnBoardId)) {
+        throw new Error('The meter board must be on the asset’s upstream supply path.');
+      }
+    }
+    if (isMain && assignment.status === 'CONFIRMED') {
+      const key = assignmentBoundaryKey(assignment);
+      if (key && mainBoundaries.has(key)) {
+        throw new Error('A board or Grid boundary can have only one confirmed main-supply total.');
+      }
+      if (key) mainBoundaries.add(key);
+    }
+  }
+
+  for (const channel of meter.channels) {
+    if (channel.purpose !== 'SPARE' && !selectedChannelIds.has(channel.id)) {
+      throw new Error('Every non-spare meter channel must belong to exactly one measurement assignment.');
+    }
+  }
+
+  store.measurementAssignments = [...retained, ...incoming.map((item) => ({
+    ...item,
+    channelIds: [...item.channelIds],
+    target: { ...item.target },
+  }))];
+  for (const asset of assetById.values()) {
+    const assignmentIds = store.measurementAssignments
+      .filter((assignment) =>
+        assignment.target.kind === 'SITE_ASSET' &&
+        assignment.target.siteAssetId === asset.id)
+      .map((assignment) => assignment.id)
+      .sort();
+    if (assignmentIds.length) {
+      asset.metering_state = { kind: 'METERED', measurementAssignmentIds: assignmentIds };
+    } else if (asset.metering_state?.kind === 'METERED') {
+      asset.metering_state = { kind: 'TBC' };
+    }
+  }
+  projectCanonicalCompatibility(store, installationId);
 }
 
 export function createMeasurementAssignment(input: {
@@ -1578,7 +1848,7 @@ export function createMeasurementAssignment(input: {
   meter: MeterDevice;
   channelIds: string[];
   phaseMode: MeasurementAssignment['phaseMode'];
-  direction?: MeasurementDirection;
+  direction: MeasurementDirection;
 }): MeasurementAssignment {
   const normalizedIds = [...new Set(input.channelIds)];
   const selectedChannels = normalizedIds.map((id) =>
@@ -1608,7 +1878,7 @@ export function createMeasurementAssignment(input: {
     channelIds: normalizedIds,
     phaseMode: input.phaseMode,
     target: { kind: 'SITE_ASSET', siteAssetId: input.assetId },
-    direction: input.direction ?? 'CONSUMPTION',
+    direction: input.direction,
     status: 'CONFIRMED',
   };
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   Image,
   Pressable,
@@ -21,7 +22,6 @@ import {
   answersAfterChange,
   isFieldVisible,
   isSectionVisible,
-  meterAfterCommsReplacement,
   optionsForField,
   validateForm,
   type FormFieldDefinition,
@@ -33,6 +33,7 @@ import {
   getInstallationBackupTree,
   getInstallationSyncMetadata,
   installationsRepo,
+  zonesRepo,
 } from '../repositories';
 import {
   FORM_PDF_TIERS,
@@ -55,10 +56,14 @@ import {
   shareFormPdf,
   waitForReportJob,
 } from '../services';
-import type { FormAttachment, FormSubmission, FormValue, Meter } from '../types';
+import type {
+  ElectricalAsset,
+  FormAttachment,
+  FormSubmission,
+  FormValue,
+} from '../types';
 import { Badge, Button, Card, LoadingState, SectionHeader, TextArea, TextField } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
-import { createId } from '../utils';
 import { radii, spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { cachedThumbnailUri } from '../repositories/cloudSyncRepository';
@@ -68,6 +73,7 @@ import {
   createDraftAutosaveCoordinator,
   type DraftAutosaveCoordinator,
 } from '../services/draftAutosave';
+import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
@@ -129,16 +135,21 @@ export function FormEditorScreen({ navigation, route }: Props) {
   const [form, setForm] = useState<FormSubmission | null>(null);
   const [answers, setAnswers] = useState<Record<string, FormValue>>({});
   const [attachments, setAttachments] = useState<FormAttachment[]>([]);
+  const [canonicalBoard, setCanonicalBoard] = useState<ElectricalAsset | null>(null);
+  const [canonicalZoneName, setCanonicalZoneName] = useState('');
   const [saving, setSaving] = useState(false);
   const [addingSlot, setAddingSlot] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfStatus, setPdfStatus] = useState('');
+  const [completionErrors, setCompletionErrors] = useState<string[]>([]);
   const [hasPendingSave, setHasPendingSave] = useState(false);
   const [releasedNavigationAction, setReleasedNavigationAction] =
     useState<NavigationAction | null>(null);
   const initialized = useRef(false);
   const mounted = useRef(true);
   const navigationFlushRunning = useRef(false);
+  const scrollRef = useRef<ScrollView | null>(null);
+  const sectionOffsets = useRef(new Map<string, number>());
   const autosaveRef = useRef<
     DraftAutosaveCoordinator<DraftSnapshot, FormSubmission> | null
   >(null);
@@ -174,13 +185,24 @@ export function FormEditorScreen({ navigation, route }: Props) {
   useEffect(() => {
     let active = true;
     initialized.current = false;
-    void formsRepo.getById(formId).then((item) => {
+    void (async () => {
+      const item = await formsRepo.getById(formId);
+      const board = item?.board_id
+        ? await electricalAssetsRepo.getById(item.board_id)
+        : null;
+      const zone = board ? await zonesRepo.getById(board.zone_id) : null;
       if (!active || !mounted.current) return;
+      const initialAnswers = item && board && item.status === 'Draft' &&
+        ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(item.form_type)
+        ? answersWithCanonicalBoardContext(item.answers, board)
+        : item?.answers ?? {};
       setForm(item);
-      setAnswers(item?.answers ?? {});
+      setCanonicalBoard(board);
+      setCanonicalZoneName(zone?.zone_name ?? 'Unknown zone');
+      setAnswers(initialAnswers);
       setAttachments(item?.attachments ?? []);
       initialized.current = true;
-    });
+    })();
     return () => {
       active = false;
     };
@@ -252,6 +274,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
   };
 
   const change = (key: string, value: string) => {
+    setCompletionErrors([]);
     setAnswers((current) => answersAfterChange(definition, current, key, value));
 
     const channelLoad = /^channel\.(\d+)\.load$/.exec(key);
@@ -301,15 +324,38 @@ export function FormEditorScreen({ navigation, route }: Props) {
     ]);
   };
 
-  const renderField = (field: FormFieldDefinition) => {
+  const renderField = (field: FormFieldDefinition, sectionTitle: string) => {
     if (!isFieldVisible(field, answers)) return null;
     const label = `${field.label}${field.required ? ' *' : ''}`;
     const value = String(answers[field.key] ?? '');
+    const fieldError = completionErrors.find((error) =>
+      error.startsWith(`${sectionTitle}: ${field.label}`));
+    const canonicalBoardField = [
+      'auditor.switchboard_name',
+      'auditor.switchboard_location',
+      'auditor.switchboard_type',
+      'auditor.site_nmi',
+    ].includes(field.key) && [
+      'ww-installation',
+      'a3rm-installation',
+      'a6m-installation',
+    ].includes(form.form_type);
+
+    if (canonicalBoardField) {
+      return (
+        <View key={field.key} style={styles.readOnlyField}>
+          <Text style={[styles.label, { color: colors.mutedForeground }]}>{label}</Text>
+          <Text accessibilityRole="text" style={{ color: colors.foreground, lineHeight: 21 }}>
+            {value || 'Not recorded'}
+          </Text>
+        </View>
+      );
+    }
 
     if (field.kind === 'yesno') {
       return (
         <View key={field.key} style={styles.fieldBlock}>
-          <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
+          <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ChoiceRow
             label={field.label}
             value={value}
@@ -323,13 +369,14 @@ export function FormEditorScreen({ navigation, route }: Props) {
                 : []),
             ]}
           />
+          {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
       );
     }
     if (field.kind === 'select') {
       return (
         <View key={field.key} style={styles.fieldBlock}>
-          <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
+          <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ChoiceRow
             label={field.label}
             value={value}
@@ -340,6 +387,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
               value: option,
             }))}
           />
+          {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
       );
     }
@@ -347,7 +395,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
       const items = attachments.filter((item) => item.slot === field.key);
       return (
         <View key={field.key} style={styles.fieldBlock}>
-          <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
+          <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -429,20 +477,23 @@ export function FormEditorScreen({ navigation, route }: Props) {
               />
             </View>
           ) : null}
+          {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
       );
     }
     if (field.scanModes?.length) {
       return (
-        <BarcodeScanField
-          key={field.key}
-          label={label}
-          value={value}
-          onChangeText={(next) => change(field.key, next)}
-          placeholder={field.placeholder}
-          modes={field.scanModes}
-          editable={!readOnly}
-        />
+        <View key={field.key}>
+          <BarcodeScanField
+            label={label}
+            value={value}
+            onChangeText={(next) => change(field.key, next)}
+            placeholder={field.placeholder}
+            modes={field.scanModes}
+            editable={!readOnly}
+          />
+          {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
+        </View>
       );
     }
     const Input = field.kind === 'multiline' ? TextArea : TextField;
@@ -453,63 +504,11 @@ export function FormEditorScreen({ navigation, route }: Props) {
         value={value}
         editable={!readOnly}
         keyboardType={field.kind === 'number' ? 'numbers-and-punctuation' : 'default'}
-        placeholder={field.placeholder}
-        onChangeText={(next) => change(field.key, next)}
+      placeholder={field.placeholder}
+      error={fieldError}
+      onChangeText={(next) => change(field.key, next)}
       />
     );
-  };
-
-  const syncOperationalMeter = async (completed: FormSubmission) => {
-    if (!completed.board_id) return;
-    const board = await electricalAssetsRepo.getById(completed.board_id);
-    if (!board) return;
-    if (completed.form_type === 'comms-fault' && completed.meter_id) {
-      if (completed.answers['works.replace_device'] !== 'yes') return;
-      const meters = board.meters.map((meter) =>
-        meter.id === completed.meter_id
-          ? meterAfterCommsReplacement(meter, completed.answers)
-          : meter,
-      );
-      await electricalAssetsRepo.update(board.id, { meters });
-      return;
-    }
-    if (
-      !['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(
-        completed.form_type,
-      )
-    ) return;
-    const deviceType =
-      completed.form_type === 'ww-installation'
-        ? String(completed.answers['device.type']) as Meter['device_type']
-        : completed.form_type === 'a3rm-installation'
-          ? 'A3RM'
-          : 'A6M';
-    const deviceId = String(
-      completed.answers[
-        completed.form_type === 'ww-installation' ? 'device.id' : 'auditor.serial_number'
-      ] ?? '',
-    );
-    const deviceNumber = String(completed.answers['device.number'] ?? '');
-    const channelCount = deviceType === 'A3RM' ? 3 : 6;
-    const meter: Meter = {
-      id: completed.meter_id ?? createId('meter'),
-      device_name: `${deviceType} Auditor`,
-      device_type: deviceType,
-      device_id: deviceId,
-      device_number: deviceNumber,
-      ww_channels: Array.from({ length: channelCount }, (_, i) => ({
-        load_type: String(completed.answers[`channel.${i + 1}.load`] ?? ''),
-        description: String(completed.answers[`channel.${i + 1}.description`] ?? ''),
-        ...(deviceType === 'A3RM'
-          ? { rogowski_size: String(completed.answers[`channel.${i + 1}.rating`] ?? '') }
-          : { ct_ratio: String(completed.answers[`channel.${i + 1}.rating`] ?? '') }),
-      })),
-    };
-    const existing = board.meters.findIndex((item) => item.id === meter.id);
-    const meters = [...board.meters];
-    if (existing >= 0) meters[existing] = { ...meters[existing], ...meter };
-    else meters.push(meter);
-    await electricalAssetsRepo.update(board.id, { meters, meter_present: true });
   };
 
   const confirmCloudBackupOptIn = (): Promise<boolean> =>
@@ -710,6 +709,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
       keyboardShouldPersistTaps="handled"
@@ -738,6 +738,50 @@ export function FormEditorScreen({ navigation, route }: Props) {
           ]}
         />
       </View>
+      {completionErrors.length ? (
+        <Card accessibilityRole="alert" style={{ marginBottom: spacing.md, borderColor: colors.destructive }}>
+          <Text style={[typography.subheading, { color: colors.destructive }]}>Required items need attention</Text>
+          {completionErrors.slice(0, 8).map((error) => (
+            <Text key={error} style={{ color: colors.foreground, marginTop: spacing.xs, lineHeight: 20 }}>• {error}</Text>
+          ))}
+          {completionErrors.length > 8 ? (
+            <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs }}>…and {completionErrors.length - 8} more</Text>
+          ) : null}
+          <Button
+            title="Jump to first required item"
+            variant="secondary"
+            style={{ marginTop: spacing.md }}
+            onPress={() => {
+              const sectionTitle = completionErrors[0]?.split(':')[0] ?? '';
+              scrollRef.current?.scrollTo({
+                y: Math.max(0, (sectionOffsets.current.get(sectionTitle) ?? 0) - spacing.md),
+                animated: true,
+              });
+              void AccessibilityInfo.announceForAccessibility(completionErrors[0] ?? 'Required item');
+            }}
+          />
+        </Card>
+      ) : null}
+      {canonicalBoard && [
+        'ww-installation',
+        'a3rm-installation',
+        'a6m-installation',
+      ].includes(form.form_type) ? (
+        <Card style={{ marginBottom: spacing.md }}>
+          <SectionHeader title="Canonical switchboard context" />
+          <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+            {canonicalBoard.display_code} · {canonicalBoard.asset_name}
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 6, lineHeight: 20 }}>
+            {canonicalBoard.asset_type} · {canonicalZoneName}{'\n'}
+            {canonicalBoard.location_description || 'Location not recorded'}{'\n'}
+            NMI: {canonicalBoard.site_nmi || 'Not recorded'}
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, fontSize: 12 }}>
+            This identity comes from the switchboard record. Edit the switchboard itself to change it before completion.
+          </Text>
+        </Card>
+      ) : null}
       {!readOnly ? (
         <Button
           title="Use Current Location"
@@ -762,10 +806,15 @@ export function FormEditorScreen({ navigation, route }: Props) {
       {definition.sections
         .filter((section) => isSectionVisible(section, answers))
         .map((section, index) => (
-          <Card key={section.title} style={{ marginBottom: spacing.md }}>
-            <SectionHeader title={`${index + 1}. ${section.title}`} />
-            {section.fields.map(renderField)}
-          </Card>
+          <View
+            key={section.title}
+            onLayout={(event) => sectionOffsets.current.set(section.title, event.nativeEvent.layout.y)}
+          >
+            <Card style={{ marginBottom: spacing.md }}>
+              <SectionHeader title={`${index + 1}. ${section.title}`} />
+              {section.fields.map((field) => renderField(field, section.title))}
+            </Card>
+          </View>
         ))}
 
       {readOnly ? (
@@ -804,17 +853,42 @@ export function FormEditorScreen({ navigation, route }: Props) {
               }
               const errors = validateForm(latest);
               if (errors.length) {
-                Alert.alert(
-                  'Required items missing',
-                  `${errors.slice(0, 8).join('\n')}${errors.length > 8 ? `\n…and ${errors.length - 8} more` : ''}`,
+                setCompletionErrors(errors);
+                const firstSection = errors[0]?.split(':')[0] ?? '';
+                scrollRef.current?.scrollTo({
+                  y: Math.max(0, (sectionOffsets.current.get(firstSection) ?? 0) - spacing.md),
+                  animated: true,
+                });
+                void AccessibilityInfo.announceForAccessibility(
+                  `${errors.length} required items need attention. ${errors[0]}`,
                 );
                 return;
               }
               await autosave.cancelPending();
-              const completed = await formsRepo.complete(form.id);
-              await syncOperationalMeter(completed);
-              setForm(completed);
-              Alert.alert('Form completed', 'This record is now read-only and ready for PDF export.');
+              try {
+                const completed = await formsRepo.complete(form.id);
+                setForm(completed);
+                setAnswers(completed.answers);
+                const commissionsMeter = ['ww-installation', 'a3rm-installation', 'a6m-installation']
+                  .includes(completed.form_type);
+                if (commissionsMeter && completed.board_id && completed.meter_id) {
+                  navigation.replace('MeterForm', {
+                    boardId: completed.board_id,
+                    meterId: completed.meter_id,
+                    finishChannelMapping: true,
+                  });
+                } else {
+                  Alert.alert('Form completed', 'This record is now read-only and ready for PDF export.');
+                }
+              } catch (error) {
+                setCompletionErrors([
+                  error instanceof Error ? error.message : 'The form could not be completed.',
+                ]);
+                Alert.alert(
+                  'Form not completed',
+                  error instanceof Error ? error.message : 'The form could not be completed.',
+                );
+              }
             }}
           />
           <Button
@@ -859,6 +933,7 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', borderRadius: radii.full },
   fieldBlock: { marginBottom: spacing.lg },
+  readOnlyField: { marginBottom: spacing.lg, paddingVertical: spacing.xs },
   label: { fontSize: 15, lineHeight: 21, fontWeight: '600', marginBottom: spacing.sm },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   choice: {

@@ -8,7 +8,12 @@ export type RootStackParamList = {
   ZoneWorkspace: { zoneId: string; installationId: string };
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };
-  MeterForm: { boardId: string; meterId?: string; deviceType?: 'A3RM' | 'A6M' | 'Other' };
+  MeterForm: {
+    boardId: string;
+    meterId?: string;
+    deviceType?: 'A3RM' | 'A6M' | 'Other';
+    finishChannelMapping?: boolean;
+  };
   DataView: { installationId: string };
   MeteringTable: { installationId: string };
   InstallationReport: { installationId: string };

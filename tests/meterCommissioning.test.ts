@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  answersWithCanonicalBoardContext,
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
+  meterFromInstallationForm,
+  siteAssetTargetIdsOwnedByOtherMeters,
 } from '../src/domain/meterCommissioning';
+import type { ElectricalAsset, FormSubmission } from '../src/types';
 
 test('switching a fixed meter to Other never defaults the custom definition to three', () => {
   const a3 = Array.from({ length: 3 }, (_, index) => ({ ordinal: index + 1 }));
@@ -44,4 +48,59 @@ test('choosing SPARE clears incompatible load and sensor details', () => {
       description: undefined,
     },
   );
+});
+
+test('site asset target candidates exclude other meter owners but retain this meter owner', () => {
+  const unavailable = siteAssetTargetIdsOwnedByOtherMeters([
+    { meterId: 'meter-current', target: { kind: 'SITE_ASSET', siteAssetId: 'asset-current' } },
+    { meterId: 'meter-other', target: { kind: 'SITE_ASSET', siteAssetId: 'asset-other' } },
+    { meterId: 'meter-other', target: { kind: 'BOARD', boardId: 'board-1' } },
+  ], 'meter-current');
+
+  assert.equal(unavailable.has('asset-current'), false);
+  assert.equal(unavailable.has('asset-other'), true);
+  assert.equal(unavailable.size, 1);
+});
+
+test('WW completion projects read-only canonical board context and one stable meter', () => {
+  const timestamp = '2026-08-02T00:00:00.000Z';
+  const board: ElectricalAsset = {
+    id: 'board-1', audit_id: 'installation-1', zone_id: 'zone-1',
+    asset_name: 'Canonical Main Board', display_code: 'SITE-MSB-001', asset_type: 'MSB',
+    location_description: 'Plant room', site_nmi: 'NMI-1', meter_present: false,
+    meters: [], created_at: timestamp, updated_at: timestamp,
+  };
+  const form: FormSubmission = {
+    id: 'form-1', form_type: 'ww-installation', schema_version: 2, status: 'Draft',
+    installation_id: 'installation-1', board_id: board.id,
+    answers: {
+      'auditor.switchboard_name': 'Stale editable copy',
+      'device.type': 'A3RM', 'device.id': 'SERIAL-1', 'device.number': 'D-1',
+      'channel.1.load': 'Mains Supply', 'channel.1.rating': '3000A - 9cm',
+      'channel.2.load': 'HVAC', 'channel.2.rating': '3000A - 9cm',
+      'channel.3.load': 'Not Used', 'channel.3.rating': '',
+    },
+    attachments: [], created_at: timestamp, updated_at: timestamp,
+  };
+  const answers = answersWithCanonicalBoardContext(form.answers, board);
+  assert.equal(answers['auditor.switchboard_name'], 'Canonical Main Board');
+  assert.equal(answers['auditor.switchboard_location'], 'Plant room');
+  assert.equal(answers['auditor.switchboard_type'], 'MSB');
+  assert.equal(answers['auditor.site_nmi'], 'NMI-1');
+
+  const first = meterFromInstallationForm({ ...form, answers }, board, 'stable-meter');
+  board.meters = [first];
+  const amended = meterFromInstallationForm({
+    ...form,
+    meter_id: first.id,
+    answers: { ...answers, 'device.number': 'D-2' },
+  }, board, first.id);
+  assert.equal(amended.id, 'stable-meter');
+  assert.equal(amended.device_number, 'D-2');
+  assert.deepEqual(amended.ww_channels?.map((channel) => channel.purpose), [
+    'MAIN_SUPPLY', 'SUB_CIRCUIT', 'SPARE',
+  ]);
+  assert.deepEqual(amended.ww_channels?.map((channel) => channel.id), [
+    'stable-meter:1', 'stable-meter:2', 'stable-meter:3',
+  ]);
 });

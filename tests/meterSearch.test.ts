@@ -27,4 +27,8 @@ test('eligible meter search deterministically caps a 1k-site result set', () => 
   assert.equal(first.visible.length, 100);
   assert.deepEqual(first.visible.map((item) => item.id), reordered.visible.map((item) => item.id));
   assert.equal(searchEligibleMeters(meters, 'serial-777', 100).visible[0]?.id, 'meter-0777');
+  const pinned = searchEligibleMeters(meters, '', 100, 'meter-0000');
+  assert.equal(pinned.visible.length, 100);
+  assert.equal(pinned.visible[0]?.id, 'meter-0000');
+  assert.equal(pinned.selectedPinned, true);
 });

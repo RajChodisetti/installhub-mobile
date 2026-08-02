@@ -9,10 +9,12 @@ import {
 } from '../repositories';
 import {
   createMeasurementAssignment,
+  cycleSafeBoardCandidates,
   type AllAssetMeteringRow,
   type ElectricalTreeRow,
 } from '../domain/installationV2';
 import type {
+  ElectricalAsset,
   MeasurementAssignment,
   MeasurementDirection,
   MeterDevice,
@@ -32,13 +34,26 @@ import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { searchEligibleMeters } from '../domain/meterSearch';
+import {
+  readinessIssueKey,
+  reconciliationProgress,
+} from '../domain/reconciliationWorkflow';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DataView'>;
 type ViewMode = 'RECONCILIATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
 const METER_RESULT_LIMIT = 100;
+type DataViewResumeState = {
+  mode: ViewMode;
+  search: string;
+  zoneId: string;
+  issueCode: string;
+  baselineIssueKeys: string[];
+};
+const dataViewResumeByInstallation = new Map<string, DataViewResumeState>();
 
 export function DataViewScreen({ navigation, route }: Props) {
   const { installationId } = route.params;
+  const resumeState = dataViewResumeByInstallation.get(installationId);
   const { colors } = useTheme();
   const {
     item,
@@ -52,8 +67,8 @@ export function DataViewScreen({ navigation, route }: Props) {
     loading,
     refresh,
   } = useInstallation(installationId);
-  const [mode, setMode] = useState<ViewMode>('RECONCILIATION');
-  const [search, setSearch] = useState('');
+  const [mode, setMode] = useState<ViewMode>(resumeState?.mode ?? 'RECONCILIATION');
+  const [search, setSearch] = useState(resumeState?.search ?? '');
   const [treeRows, setTreeRows] = useState<ElectricalTreeRow[]>([]);
   const [meteringRows, setMeteringRows] = useState<AllAssetMeteringRow[]>([]);
   const [sourceIssue, setSourceIssue] = useState<ReadinessIssue | null>(null);
@@ -64,7 +79,13 @@ export function DataViewScreen({ navigation, route }: Props) {
   const [selectedMeterId, setSelectedMeterId] = useState('');
   const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
   const [phaseMode, setPhaseMode] = useState<MeasurementAssignment['phaseMode']>('SINGLE_PHASE');
-  const [direction, setDirection] = useState<MeasurementDirection>('CONSUMPTION');
+  const [direction, setDirection] = useState<MeasurementDirection | ''>('');
+  const [reconcileZoneId, setReconcileZoneId] = useState(resumeState?.zoneId ?? 'ALL');
+  const [reconcileIssueCode, setReconcileIssueCode] = useState(resumeState?.issueCode ?? 'ALL');
+  const [baselineIssueKeys, setBaselineIssueKeys] = useState<string[] | null>(
+    resumeState?.baselineIssueKeys ?? null,
+  );
+  const [collapsedElectricalIds, setCollapsedElectricalIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!item) return;
@@ -77,11 +98,103 @@ export function DataViewScreen({ navigation, route }: Props) {
     });
   }, [installationId, item?.tree_revision]);
 
+  const currentIssueKeys = useMemo(
+    () => (readiness?.issues ?? []).map(readinessIssueKey),
+    [readiness?.issues],
+  );
+  const issueCodes = useMemo(
+    () => [...new Set((readiness?.issues ?? []).map((issue) => issue.code))].sort(),
+    [readiness?.issues],
+  );
+  useEffect(() => {
+    if (readiness && baselineIssueKeys === null) setBaselineIssueKeys(currentIssueKeys);
+  }, [baselineIssueKeys, currentIssueKeys, readiness]);
+  useEffect(() => {
+    if (baselineIssueKeys === null) return;
+    dataViewResumeByInstallation.set(installationId, {
+      mode,
+      search,
+      zoneId: reconcileZoneId,
+      issueCode: reconcileIssueCode,
+      baselineIssueKeys,
+    });
+  }, [baselineIssueKeys, installationId, mode, reconcileIssueCode, reconcileZoneId, search]);
+  const reconcileProgress = reconciliationProgress(
+    baselineIssueKeys ?? currentIssueKeys,
+    currentIssueKeys,
+  );
+
+  const issueContext = (issue: ReadinessIssue) => {
+    const board = issue.entityType === 'board'
+      ? boards.find((candidate) => candidate.id === issue.entityId)
+      : undefined;
+    const asset = issue.entityType === 'site_asset'
+      ? siteAssets.find((candidate) => candidate.id === issue.entityId)
+      : undefined;
+    const directMeter = issue.entityType === 'meter'
+      ? meterDevices.find((candidate) => candidate.id === issue.entityId)
+      : undefined;
+    const channelMeter = issue.entityType === 'channel'
+      ? meterDevices.find((candidate) => candidate.channels.some((channel) => channel.id === issue.entityId))
+      : undefined;
+    const assignment = issue.entityType === 'measurement_assignment'
+      ? measurementAssignments.find((candidate) => candidate.id === issue.entityId)
+      : undefined;
+    const assignmentMeter = assignment
+      ? meterDevices.find((candidate) => candidate.id === assignment.meterId)
+      : undefined;
+    const meter = directMeter ?? channelMeter ?? assignmentMeter;
+    const meterBoard = meter ? boards.find((candidate) => candidate.id === meter.installedOnBoardId) : undefined;
+    const grid = issue.entityType === 'grid_supply'
+      ? gridSupplies.find((candidate) => candidate.id === issue.entityId)
+      : undefined;
+    const zoneId = board?.zone_id ?? asset?.zone_id ?? meterBoard?.zone_id;
+    const zone = zones.find((candidate) => candidate.id === zoneId);
+    const title = board
+      ? `${board.display_code} · ${board.asset_name}`
+      : asset
+        ? `${asset.display_code ?? asset.id} · ${asset.asset_name}`
+        : meter
+          ? `${meter.displayName.value} · ${meter.deviceModel}`
+          : grid
+            ? grid.name
+            : issue.entityType === 'installation'
+              ? item?.site_name ?? issue.entityId
+              : issue.entityType === 'form'
+                ? 'Field form'
+                : issue.entityId;
+    const detail = [
+      issue.entityType.replace('_', ' '),
+      zone?.zone_name,
+      meterBoard ? `installed on ${meterBoard.display_code}` : undefined,
+      issue.field ? `field: ${issue.field}` : undefined,
+    ].filter(Boolean).join(' · ');
+    return { board, asset, meter, meterBoard, assignment, zoneId, zone, title, detail };
+  };
+
   const query = search.trim().toLocaleLowerCase();
   const visibleIssues = useMemo(
-    () => (readiness?.issues ?? []).filter((issue) =>
-      !query || `${issue.code} ${issue.message} ${issue.entityId}`.toLocaleLowerCase().includes(query)),
-    [query, readiness?.issues],
+    () => (readiness?.issues ?? []).filter((issue) => {
+      const context = issueContext(issue);
+      const zoneMatches = reconcileZoneId === 'ALL' || context.zoneId === reconcileZoneId;
+      const issueTypeMatches = reconcileIssueCode === 'ALL' || issue.code === reconcileIssueCode;
+      const searchMatches = !query || `${issue.code} ${issue.message} ${issue.entityId} ${context.title} ${context.detail}`
+        .toLocaleLowerCase().includes(query);
+      return zoneMatches && issueTypeMatches && searchMatches;
+    }),
+    [
+      boards,
+      gridSupplies,
+      item?.site_name,
+      measurementAssignments,
+      meterDevices,
+      query,
+      readiness?.issues,
+      reconcileIssueCode,
+      reconcileZoneId,
+      siteAssets,
+      zones,
+    ],
   );
   const visibleMetering = useMemo(
     () => meteringRows.filter((row) =>
@@ -89,34 +202,51 @@ export function DataViewScreen({ navigation, route }: Props) {
     [meteringRows, query],
   );
   const visibleTree = useMemo(
-    () => treeRows.filter((row) => !query || row.label.toLocaleLowerCase().includes(query)),
-    [query, treeRows],
+    () => treeRows.filter((row) => {
+      if (query && !row.label.toLocaleLowerCase().includes(query)) return false;
+      const seen = new Set<string>();
+      let sourceId = row.sourceId;
+      while (sourceId && !seen.has(sourceId)) {
+        if (collapsedElectricalIds.has(sourceId)) return false;
+        seen.add(sourceId);
+        sourceId = treeRows.find((candidate) => candidate.id === sourceId)?.sourceId;
+      }
+      return true;
+    }),
+    [collapsedElectricalIds, query, treeRows],
   );
   const visibleZones = useMemo(
     () => zones.filter((zone) =>
-      !query || `${zone.zone_name} ${zone.zone_description}`.toLocaleLowerCase().includes(query)),
-    [query, zones],
+      !query || [
+        zone.zone_name,
+        zone.zone_description,
+        ...boards.filter((board) => board.zone_id === zone.id).flatMap((board) => [board.display_code, board.asset_name, board.asset_type]),
+        ...siteAssets.filter((asset) => asset.zone_id === zone.id).flatMap((asset) => [asset.display_code, asset.asset_name, asset.asset_type]),
+      ].join(' ').toLocaleLowerCase().includes(query)),
+    [boards, query, siteAssets, zones],
   );
 
   const sourceCandidates = useMemo(() => {
     if (!sourceIssue) return [];
-    const allowed = new Set(sourceIssue.candidateIds ?? []);
+    const validBoards = sourceIssue.entityType === 'board'
+      ? cycleSafeBoardCandidates(boards, sourceIssue.entityId)
+      : boards;
     const candidates = [
-      ...gridSupplies.filter((grid) => allowed.has(grid.id)).map((grid) => ({
+      ...gridSupplies.map((grid) => ({
         id: grid.id,
         kind: 'GRID' as const,
         label: `${grid.name}${grid.isDefault ? ' · default' : ''}${grid.nmi ? ` · ${grid.nmi}` : ''}`,
       })),
-      ...boards.filter((board) => allowed.has(board.id)).map((board) => ({
+      ...validBoards.map((board) => ({
         id: board.id,
         kind: 'BOARD' as const,
-        label: `${board.display_code} · ${board.asset_name}`,
+        label: `${board.display_code} · ${board.asset_name} · ${board.asset_type} · ${zones.find((zone) => zone.id === board.zone_id)?.zone_name ?? 'Unknown zone'}`,
       })),
     ];
     const candidateQuery = candidateSearch.trim().toLocaleLowerCase();
     return candidates.filter((candidate) =>
       !candidateQuery || candidate.label.toLocaleLowerCase().includes(candidateQuery));
-  }, [boards, candidateSearch, gridSupplies, sourceIssue]);
+  }, [boards, candidateSearch, gridSupplies, sourceIssue, zones]);
 
   const selectedMeter = eligibleMeters.find((meter) => meter.id === selectedMeterId);
   const eligibleMeterSearch = useMemo(
@@ -132,7 +262,7 @@ export function DataViewScreen({ navigation, route }: Props) {
     );
     return new Set(
       measurementAssignments
-        .filter((assignment) => !currentIds.has(assignment.id))
+        .filter((assignment) => !currentIds.has(assignment.id) && assignment.target.kind !== 'TBC')
         .flatMap((assignment) => assignment.channelIds),
     );
   }, [mappingAsset, measurementAssignments]);
@@ -177,22 +307,70 @@ export function DataViewScreen({ navigation, route }: Props) {
       </View>
       <SearchBar value={search} onChangeText={setSearch} placeholder={`Search ${mode.toLocaleLowerCase()}…`} />
       {mode === 'RECONCILIATION' ? (
-        <Card style={{ marginBottom: spacing.md }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={[typography.subheading, { color: colors.foreground }]}>Readiness</Text>
-              <Text
-                accessibilityRole={readiness.readyToComplete ? 'summary' : 'alert'}
-                accessibilityLiveRegion={readiness.readyToComplete ? 'polite' : 'assertive'}
-                style={{ color: colors.mutedForeground, marginTop: 4 }}
-              >
-                {readiness.readyToComplete
-                  ? 'Locally ready. Cloud validation is still required to complete.'
-                  : `${readiness.issues.filter((issue) => issue.severity === 'ERROR').length} blocking issue(s)`}
-              </Text>
+        <>
+          <SelectChips
+            label="Filter reconciliation by physical zone"
+            value={reconcileZoneId}
+            options={['ALL', ...zones.map((zone) => zone.id)]}
+            getLabel={(value) => value === 'ALL'
+              ? 'All zones'
+              : zones.find((zone) => zone.id === value)?.zone_name ?? value}
+            onChange={setReconcileZoneId}
+          />
+          <SelectChips
+            label="Filter by issue type"
+            value={reconcileIssueCode}
+            options={['ALL', ...issueCodes]}
+            getLabel={(value) => value === 'ALL' ? 'All issue types' : value.replaceAll('_', ' ')}
+            onChange={setReconcileIssueCode}
+          />
+          <Card style={{ marginBottom: spacing.md }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[typography.subheading, { color: colors.foreground }]}>Readiness workflow</Text>
+                <Text
+                  accessibilityRole={readiness.readyToComplete ? 'summary' : 'alert'}
+                  accessibilityLiveRegion={readiness.readyToComplete ? 'polite' : 'assertive'}
+                  style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}
+                >
+                  {readiness.readyToComplete
+                    ? 'Locally ready. Cloud validation is still required to complete.'
+                    : `${readiness.issues.filter((issue) => issue.severity === 'ERROR').length} blocking · ${readiness.issues.filter((issue) => issue.severity === 'WARNING').length} warning · showing ${visibleIssues.length}`}
+                </Text>
+                <Text
+                  accessibilityRole="progressbar"
+                  accessibilityValue={{
+                    min: 0,
+                    max: reconcileProgress.total,
+                    now: reconcileProgress.resolved,
+                    text: `${reconcileProgress.resolved} resolved, ${reconcileProgress.remaining} remaining`,
+                  }}
+                  style={{ color: colors.mutedForeground, marginTop: 6, lineHeight: 20 }}
+                >
+                  Reconciliation progress · {reconcileProgress.resolved} resolved of {reconcileProgress.total} · {reconcileProgress.remaining} remaining
+                </Text>
+                {resumeState ? (
+                  <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12 }}>
+                    Your previous reconciliation filters and progress are restored for this session.
+                  </Text>
+                ) : null}
+              </View>
+              <Badge label={readiness.readyToComplete ? 'READY' : 'RECONCILE'} tone={readiness.readyToComplete ? 'success' : 'tbc'} />
             </View>
-            <Badge label={readiness.readyToComplete ? 'READY' : 'RECONCILE'} tone={readiness.readyToComplete ? 'success' : 'tbc'} />
-          </View>
+            <Button
+              title="Reset progress baseline"
+              variant="ghost"
+              style={{ marginTop: spacing.sm }}
+              onPress={() => setBaselineIssueKeys(currentIssueKeys)}
+            />
+          </Card>
+        </>
+      ) : mode === 'PHYSICAL' ? (
+        <Card style={{ marginBottom: spacing.md }}>
+          <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Physical inventory</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
+            1 installation · {zones.length} zones · {boards.length} switchboards · {siteAssets.length} site assets
+          </Text>
         </Card>
       ) : null}
     </View>
@@ -223,7 +401,7 @@ export function DataViewScreen({ navigation, route }: Props) {
     setSelectedMeterId('');
     setSelectedChannelIds([]);
     setPhaseMode('SINGLE_PHASE');
-    setDirection('CONSUMPTION');
+    setDirection('');
   };
 
   const confirmMeteringTransition = (
@@ -252,18 +430,56 @@ export function DataViewScreen({ navigation, route }: Props) {
     );
   };
 
-  const issueRow = ({ item: issue }: { item: ReadinessIssue }) => (
+  const issueRow = ({ item: issue }: { item: ReadinessIssue }) => {
+    const context = issueContext(issue);
+    const openRecord = () => {
+      if (context.board) {
+        navigation.navigate('BoardDetail', {
+          boardId: context.board.id,
+          installationId,
+          zoneId: context.board.zone_id,
+        });
+      } else if (context.asset) {
+        navigation.navigate('SiteAssetDetail', {
+          assetId: context.asset.id,
+          installationId,
+          zoneId: context.asset.zone_id,
+        });
+      } else if (context.meter && context.meterBoard) {
+        navigation.navigate('MeterForm', {
+          boardId: context.meterBoard.id,
+          meterId: context.meter.id,
+        });
+      } else if (issue.entityType === 'installation') {
+        navigation.navigate('InstallationForm', { installationId });
+      } else if (issue.entityType === 'form') {
+        navigation.navigate('FormsList', { installationId });
+      }
+    };
+    const canOpen = Boolean(
+      context.board || context.asset || (context.meter && context.meterBoard) ||
+      issue.entityType === 'installation' || issue.entityType === 'form',
+    );
+    return (
     <Card style={{ marginBottom: 8 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
         <View style={{ flex: 1 }}>
-          <Text style={{ color: colors.foreground, fontWeight: '800' }}>{issue.code}</Text>
-          <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{issue.message}</Text>
-          <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12 }}>
-            {issue.entityType} · {issue.entityId}
+          <Text style={{ color: colors.foreground, fontWeight: '800' }}>{context.title}</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>{issue.message}</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 5, fontSize: 12 }}>
+            {issue.code} · {context.detail || issue.entityId}
           </Text>
         </View>
         <Badge label={issue.severity} tone={issue.severity === 'ERROR' ? 'danger' : 'default'} />
       </View>
+      {canOpen ? (
+        <Button
+          title="Open affected record"
+          variant="ghost"
+          style={{ marginTop: 10 }}
+          onPress={openRecord}
+        />
+      ) : null}
       {(issue.code === 'SUPPLY_TBC' || issue.code === 'SUPPLY_SOURCE_INVALID') &&
       (issue.entityType === 'board' || issue.entityType === 'site_asset') ? (
         <Button
@@ -290,7 +506,8 @@ export function DataViewScreen({ navigation, route }: Props) {
         />
       ) : null}
     </Card>
-  );
+    );
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -335,14 +552,125 @@ export function DataViewScreen({ navigation, route }: Props) {
           data={visibleTree}
           keyExtractor={(row) => row.id}
           ListHeaderComponent={header}
-          renderItem={({ item: row }) => (
+          renderItem={({ item: row }) => {
+            const hasChildren = treeRows.some((candidate) => candidate.sourceId === row.id);
+            const expanded = !collapsedElectricalIds.has(row.id);
+            const boardRow = row.kind === 'BOARD' ? boards.find((board) => board.id === row.id) : undefined;
+            const assetRow = row.kind === 'SITE_ASSET' ? siteAssets.find((asset) => asset.id === row.id) : undefined;
+            return (
             <Card style={{ marginBottom: 8, marginLeft: Math.min(row.depth, 6) * 12 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
-                <Text style={{ color: colors.foreground, fontWeight: '700', flex: 1 }}>{row.label}</Text>
+                <Pressable
+                  accessibilityRole={hasChildren ? 'button' : 'text'}
+                  accessibilityLabel={`${row.label}, ${row.kind}${hasChildren ? `, ${expanded ? 'expanded' : 'collapsed'}` : ''}`}
+                  accessibilityState={hasChildren ? { expanded } : undefined}
+                  accessibilityHint={hasChildren ? 'Double tap to expand or collapse electrical children.' : undefined}
+                  disabled={!hasChildren}
+                  onPress={() => setCollapsedElectricalIds((current) => {
+                    const next = new Set(current);
+                    if (next.has(row.id)) next.delete(row.id); else next.add(row.id);
+                    return next;
+                  })}
+                  style={{ minHeight: 44, flex: 1, justifyContent: 'center' }}
+                >
+                  <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                    {hasChildren ? `${expanded ? '▾' : '▸'} ` : ''}{row.label}
+                  </Text>
+                </Pressable>
                 <Badge label={row.unresolved ? 'TBC' : row.kind} tone={row.unresolved ? 'tbc' : 'default'} />
               </View>
+              <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12 }}>
+                {row.kind === 'GRID'
+                  ? 'Electrical origin'
+                  : row.kind === 'UNRESOLVED'
+                    ? 'Records below have unresolved FED_FROM links'
+                    : `FED_FROM ${treeRows.find((candidate) => candidate.id === row.sourceId)?.label ?? 'TBC'}`}
+              </Text>
               {row.depth > 6 ? <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>Electrical depth {row.depth}</Text> : null}
+              {boardRow ? (
+                <Button
+                  title="Open switchboard"
+                  variant="ghost"
+                  style={{ marginTop: spacing.sm }}
+                  onPress={() => navigation.navigate('BoardDetail', {
+                    boardId: boardRow.id,
+                    installationId,
+                    zoneId: boardRow.zone_id,
+                  })}
+                />
+              ) : assetRow ? (
+                <Button
+                  title="Open site asset"
+                  variant="ghost"
+                  style={{ marginTop: spacing.sm }}
+                  onPress={() => navigation.navigate('SiteAssetDetail', {
+                    assetId: assetRow.id,
+                    installationId,
+                    zoneId: assetRow.zone_id,
+                  })}
+                />
+              ) : null}
+              {row.unresolved ? (
+                <Button
+                  title="Resolve topology"
+                  variant="secondary"
+                  style={{ marginTop: spacing.sm }}
+                  onPress={() => {
+                    setMode('RECONCILIATION');
+                    setReconcileIssueCode('ALL');
+                    setSearch(row.id.startsWith('unresolved:') ? '' : row.id);
+                  }}
+                />
+              ) : null}
             </Card>
+            );
+          }}
+          ListFooterComponent={(
+            <View style={{ marginTop: spacing.lg }}>
+              <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.sm }]}>MEASURES overlay</Text>
+              <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
+                FED_FROM describes power flow. These records separately describe what each meter channel measures.
+              </Text>
+              {measurementAssignments
+                .filter((assignment) => {
+                  if (!query) return true;
+                  const meter = meterDevices.find((item) => item.id === assignment.meterId);
+                  return `${assignment.id} ${meter?.displayName.value ?? ''} ${assignment.target.kind}`
+                    .toLocaleLowerCase().includes(query);
+                })
+                .map((assignment) => {
+                  const meter = meterDevices.find((item) => item.id === assignment.meterId);
+                  const channelLabels = assignment.channelIds.map((id) =>
+                    `Ch ${meter?.channels.find((channel) => channel.id === id)?.ordinal ?? id}`);
+                  let target = 'TBC';
+                  if (assignment.target.kind === 'BOARD') {
+                    const targetId = assignment.target.boardId;
+                    target = boards.find((board) => board.id === targetId)?.display_code ?? targetId;
+                  } else if (assignment.target.kind === 'SITE_ASSET') {
+                    const targetId = assignment.target.siteAssetId;
+                    target = siteAssets.find((asset) => asset.id === targetId)?.display_code ?? targetId;
+                  } else if (assignment.target.kind === 'GRID_BOUNDARY') {
+                    const targetId = assignment.target.gridSupplyId;
+                    target = gridSupplies.find((grid) => grid.id === targetId)?.name ?? targetId;
+                  }
+                  return (
+                    <Card key={assignment.id} style={{ marginBottom: spacing.sm }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
+                        <Text style={{ color: colors.foreground, fontWeight: '700', flex: 1 }}>
+                          {meter?.displayName.value ?? assignment.meterId} · {channelLabels.join(', ')}
+                        </Text>
+                        <Badge label={assignment.status} tone={assignment.status === 'TBC' ? 'tbc' : 'success'} />
+                      </View>
+                      <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                        MEASURES {target} · {assignment.phaseMode.replace('_', ' ')} · {assignment.direction.toLocaleLowerCase()}
+                      </Text>
+                    </Card>
+                  );
+                })}
+              {!measurementAssignments.length ? (
+                <EmptyState title="No measurement assignments" subtitle="Commission a meter and map its active channels." />
+              ) : null}
+            </View>
           )}
           ListEmptyComponent={<EmptyState title="No electrical nodes" />}
           contentContainerStyle={styles.pad}
@@ -352,15 +680,77 @@ export function DataViewScreen({ navigation, route }: Props) {
           data={visibleZones}
           keyExtractor={(zone) => zone.id}
           ListHeaderComponent={header}
-          renderItem={({ item: zone }) => (
-            <Card style={{ marginBottom: 8 }}>
-              <Text style={[typography.subheading, { color: colors.foreground }]}>{zone.zone_name}</Text>
-              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-                {boards.filter((board) => board.zone_id === zone.id).length} boards ·{' '}
-                {siteAssets.filter((asset) => asset.zone_id === zone.id).length} assets
-              </Text>
-            </Card>
-          )}
+          renderItem={({ item: zone }) => {
+            const zoneBoards = boards.filter((board) => board.zone_id === zone.id);
+            const zoneAssets = siteAssets.filter((asset) => asset.zone_id === zone.id);
+            const sourceLabel = (source: ElectricalAsset['electrical_source'] | SiteAsset['electrical_source']) => {
+              if (!source || source.kind === 'TBC') return 'Supply TBC';
+              if (source.kind === 'GRID') {
+                return `Grid: ${gridSupplies.find((grid) => grid.id === source.gridSupplyId)?.name ?? source.gridSupplyId}`;
+              }
+              const parent = boards.find((board) => board.id === source.boardId);
+              return `Fed from ${parent?.display_code ?? source.boardId}`;
+            };
+            const zoneIds = new Set([...zoneBoards.map((board) => board.id), ...zoneAssets.map((asset) => asset.id)]);
+            const issueCount = readiness.issues.filter((issue) => zoneIds.has(issue.entityId)).length;
+            return (
+              <Card style={{ marginBottom: spacing.md }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing.sm }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[typography.subheading, { color: colors.foreground }]}>{zone.zone_name}</Text>
+                    <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                      Physical home for {zoneBoards.length} board{zoneBoards.length === 1 ? '' : 's'} and {zoneAssets.length} asset{zoneAssets.length === 1 ? '' : 's'} · {issueCount} direct issue{issueCount === 1 ? '' : 's'}
+                    </Text>
+                  </View>
+                  <Button
+                    title="Open zone"
+                    variant="ghost"
+                    onPress={() => navigation.navigate('ZoneWorkspace', { zoneId: zone.id, installationId })}
+                  />
+                </View>
+                <Text style={[styles.groupLabel, { color: colors.mutedForeground }]}>Switchboards</Text>
+                {zoneBoards.length ? zoneBoards.map((board) => (
+                  <Pressable
+                    key={board.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open switchboard ${board.display_code}, ${board.asset_name}`}
+                    onPress={() => navigation.navigate('BoardDetail', {
+                      boardId: board.id,
+                      installationId,
+                      zoneId: zone.id,
+                    })}
+                    style={[styles.physicalRow, { borderColor: colors.border }]}
+                  >
+                    <Text style={{ color: colors.foreground, fontWeight: '700' }}>{board.display_code} · {board.asset_name}</Text>
+                    <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
+                      {board.asset_type} · {sourceLabel(board.electrical_source)} · {board.meters.length} device{board.meters.length === 1 ? '' : 's'}
+                    </Text>
+                  </Pressable>
+                )) : <Text style={{ color: colors.mutedForeground }}>No switchboards in this zone.</Text>}
+                <Text style={[styles.groupLabel, { color: colors.mutedForeground }]}>Site assets</Text>
+                {zoneAssets.length ? zoneAssets.map((asset) => (
+                  <Pressable
+                    key={asset.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open site asset ${asset.display_code ?? asset.asset_name}`}
+                    onPress={() => navigation.navigate('SiteAssetDetail', {
+                      assetId: asset.id,
+                      installationId,
+                      zoneId: zone.id,
+                    })}
+                    style={[styles.physicalRow, { borderColor: colors.border }]}
+                  >
+                    <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                      {asset.display_code ?? asset.id} · {asset.asset_name}
+                    </Text>
+                    <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
+                      {asset.asset_type} · {sourceLabel(asset.electrical_source)} · Metering {asset.metering_state?.kind ?? 'TBC'}
+                    </Text>
+                  </Pressable>
+                )) : <Text style={{ color: colors.mutedForeground }}>No site assets in this zone.</Text>}
+              </Card>
+            );
+          }}
           ListEmptyComponent={<EmptyState title="No physical zones" />}
           contentContainerStyle={styles.pad}
         />
@@ -485,8 +875,8 @@ export function DataViewScreen({ navigation, route }: Props) {
               <SelectChips
                 label="Measurement direction"
                 value={direction}
-                options={['CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
-                getLabel={(value) => value.charAt(0) + value.slice(1).toLocaleLowerCase()}
+                options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
+                getLabel={(value) => value === '' ? 'Choose direction' : value.charAt(0) + value.slice(1).toLocaleLowerCase()}
                 onChange={setDirection}
               />
               <Button
@@ -496,6 +886,7 @@ export function DataViewScreen({ navigation, route }: Props) {
                 onPress={async () => {
                   if (!mappingAsset) return;
                   try {
+                    if (!direction) throw new Error('Choose the measurement direction explicitly.');
                     const assignment = createMeasurementAssignment({
                       installationId,
                       assetId: mappingAsset.id,
@@ -536,4 +927,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   mappingList: { padding: spacing.lg, paddingBottom: 40 },
+  groupLabel: { fontSize: 12, fontWeight: '800', textTransform: 'uppercase', marginTop: spacing.lg, marginBottom: spacing.sm },
+  physicalRow: { minHeight: 54, justifyContent: 'center', borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: spacing.sm },
 });

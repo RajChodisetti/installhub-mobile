@@ -108,7 +108,7 @@ export function TextField({
   );
 }
 
-export function TextArea(props: TextInputProps & { label?: string }) {
+export function TextArea(props: TextInputProps & { label?: string; error?: string }) {
   return (
     <TextField
       {...props}

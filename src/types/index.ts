@@ -493,6 +493,38 @@ export interface SiteAsset {
   updated_at: string;
 }
 
+export interface SiteAssetEditorDraftRecord {
+  scope: string;
+  userId: string;
+  installationId: string;
+  assetId?: string;
+  baseTreeRevision: number;
+  baseAssetUpdatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  payload: {
+    version: 1;
+    assetName: string;
+    typeCode: SiteAssetTypeCode;
+    customTypeName: string;
+    displayCode: string;
+    customCode: boolean;
+    locationDescription: string;
+    sourceKey: string;
+    sourceBoardSearch: string;
+    meteringKind: 'METERED' | 'UNMETERED' | 'TBC';
+    selectedMeterId: string;
+    selectedChannelIds: string[];
+    phaseMode: MeasurementAssignment['phaseMode'];
+    direction: MeasurementDirection | '';
+    meterSearch: string;
+    comments: string;
+    deviceDetour: { beforeMeterIds: string[]; startReturnToken: number } | null;
+  };
+  checksum: string;
+}
+
 export interface AppDataStore {
   schemaVersion?: 3;
   user: User;
@@ -504,6 +536,8 @@ export interface AppDataStore {
   meterDevices: MeterDevice[];
   measurementAssignments: MeasurementAssignment[];
   formSubmissions: FormSubmission[];
+  /** Encrypted, local-only recovery state; never included in canonical API trees. */
+  siteAssetEditorDrafts?: SiteAssetEditorDraftRecord[];
   cloudSync: CloudSyncState;
 }
 
