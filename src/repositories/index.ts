@@ -33,6 +33,7 @@ import {
   electricalTreeRows,
   installationReadiness,
   isValidInstallationSiteCode,
+  meteringInventorySummary,
   nextDisplayCode,
   normalizeCanonicalStore,
   primaryGridSupplyId,
@@ -43,6 +44,7 @@ import {
   siteAssetTypeCode,
   type AllAssetMeteringRow,
   type ElectricalTreeRow,
+  type MeteringInventorySummary,
 } from '../domain/installationV2';
 
 export * from './cloudSyncRepository';
@@ -146,6 +148,7 @@ export interface CanonicalInstallationRepository {
   readiness(installationId: string): Promise<InstallationReadiness>;
   electricalTree(installationId: string): Promise<ElectricalTreeRow[]>;
   allAssetMetering(installationId: string): Promise<AllAssetMeteringRow[]>;
+  meteringInventory(installationId: string): Promise<MeteringInventorySummary>;
   meterDevices(installationId: string): Promise<MeterDevice[]>;
   measurementAssignments(installationId: string): Promise<MeasurementAssignment[]>;
   gridSupplies(installationId: string): Promise<GridSupply[]>;
@@ -732,6 +735,10 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
   async allAssetMetering(installationId) {
     await initStore();
     return allAssetMeteringRows(getStore(), installationId);
+  },
+  async meteringInventory(installationId) {
+    await initStore();
+    return meteringInventorySummary(getStore(), installationId);
   },
   async meterDevices(installationId) {
     await initStore();

@@ -41,6 +41,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     boards,
     siteAssets,
     gridSupplies,
+    meterDevices,
+    measurementAssignments,
     readiness,
     loading,
     refresh,
@@ -71,6 +73,28 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const assetCount = (zoneId: string) => siteAssets.filter((a) => a.zone_id === zoneId).length;
   const authoritativeCompleted = item.status === 'Completed' && Boolean(item.record_version_number);
   const readOnly = authoritativeCompleted;
+  const meteringCounts = {
+    metered: siteAssets.filter((asset) => asset.metering_state?.kind === 'METERED').length,
+    unmetered: siteAssets.filter((asset) => asset.metering_state?.kind === 'UNMETERED').length,
+    tbc: siteAssets.filter((asset) => !asset.metering_state || asset.metering_state.kind === 'TBC').length,
+  };
+  const unassignedActiveChannels = meterDevices.flatMap((meter) => (
+    (() => {
+      const assignedChannelIds = new Set(
+        measurementAssignments
+          .filter((assignment) => assignment.meterId === meter.id)
+          .flatMap((assignment) => assignment.channelIds),
+      );
+      return meter.channels.filter((channel) => channel.purpose !== 'SPARE' && !assignedChannelIds.has(channel.id));
+    })()
+  )).length;
+  const brokenAssetMappings = new Set(
+    readiness?.issues.filter((issue) => (
+      (issue.entityType === 'site_asset'
+        && (issue.code === 'METERING_STATE_INVALID' || issue.code === 'METER_PRESENT_MISMATCH'))
+      || issue.entityType === 'measurement_assignment'
+    )).map((issue) => `${issue.entityType}:${issue.entityId}`) ?? [],
+  ).size;
 
   async function completeInstallation() {
     if (!item) return;
@@ -353,6 +377,29 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Badge label="Reconciliation required" tone="tbc" />
         </View>
       ) : null}
+      <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '700' }}>Asset metering status</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm }}>
+          <Badge label={`${meteringCounts.metered} declared metered`} tone="success" />
+          <Badge label={`${meteringCounts.unmetered} confirmed unmetered`} />
+          <Badge label={`${meteringCounts.tbc} metering TBC`} tone={meteringCounts.tbc ? 'tbc' : 'default'} />
+          {brokenAssetMappings ? <Badge label={`${brokenAssetMappings} mapping issue${brokenAssetMappings === 1 ? '' : 's'}`} tone="danger" /> : null}
+        </View>
+        <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+          Confirmed unmetered assets have no direct device/channel connection. They remain in the full asset register, and that metering state alone does not block completion.
+        </Text>
+        {unassignedActiveChannels ? (
+          <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: spacing.sm }}>
+            {unassignedActiveChannels} active meter channel{unassignedActiveChannels === 1 ? ' is' : 's are'} still unassigned and must be mapped or marked Spare / unused.
+          </Text>
+        ) : null}
+        <Button
+          title="Review metering inventory"
+          variant="ghost"
+          style={{ marginTop: spacing.sm }}
+          onPress={() => navigation.navigate('MeteringTable', { installationId })}
+        />
+      </Card>
       {item.backup_conflict?.kind === 'CONFLICT' ? (
         <Card
           accessibilityRole="alert"

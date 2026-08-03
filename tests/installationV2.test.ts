@@ -13,6 +13,7 @@ import {
   installationDisplayCodePrefix,
   installationSiteCodeForNewCopy,
   isValidInstallationSiteCode,
+  meteringInventorySummary,
   normalizeCanonicalStore,
   normalizedSiteCode,
   primaryGridSupplyId,
@@ -240,6 +241,86 @@ test('direct-to-Grid site assets remain resolved while canonical export stays se
     () => buildInstallationMappingExport(store, installation.id),
     /server-owned/,
   );
+});
+
+test('metering inventory keeps confirmed unmetered non-blocking and exposes broken or unassigned mappings', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const asset = store.siteAssets[0]!;
+  const board = store.electricalAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: board.id };
+  asset.electrical_board_id = board.id;
+  asset.electrical_board_tbc = false;
+  asset.metering_state = { kind: 'UNMETERED' };
+  asset.meter_present = false;
+  store.measurementAssignments = [];
+  store.meterDevices = [{
+    id: 'meter-inventory',
+    installationId: 'installation',
+    installedOnBoardId: board.id,
+    deviceFamily: 'OTHER',
+    deviceModel: 'OTHER',
+    customManufacturerName: 'Example',
+    customModelName: 'Inventory meter',
+    serialNumber: 'inventory-serial',
+    displayName: {
+      value: 'ESS-METER-INVENTORY',
+      generatedValue: 'ESS-METER-INVENTORY',
+      isOverridden: false,
+      ruleVersion: 1,
+    },
+    channels: [
+      { id: 'active-unassigned', ordinal: 1, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
+      { id: 'explicit-spare', ordinal: 2, purpose: 'SPARE', capabilities: { current: true } },
+    ],
+  }];
+
+  const valid = meteringInventorySummary(store, 'installation');
+  assert.equal(valid.assets.confirmedUnmetered, 1);
+  assert.equal(valid.assets.brokenMappings, 0);
+  assert.equal(valid.channels.unassignedActive, 1);
+  assert.equal(valid.channels.spare, 1);
+  assert.equal(valid.meters.withUnassignedActiveChannels, 1);
+
+  asset.metering_state = { kind: 'METERED', measurementAssignmentIds: ['missing-assignment'] };
+  assert.equal(allAssetMeteringRows(store, 'installation')[0]?.state, 'MAPPING_ISSUE');
+  const broken = meteringInventorySummary(store, 'installation');
+  assert.equal(broken.assets.confirmedUnmetered, 0);
+  assert.equal(broken.assets.brokenMappings, 1);
+
+  store.measurementAssignments = [{
+    id: 'invalid-direct-assignment',
+    installationId: 'installation',
+    meterId: 'meter-inventory',
+    channelIds: ['missing-channel'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: asset.id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  asset.meter_present = true;
+  asset.metering_state = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['invalid-direct-assignment'],
+  };
+  const invalidDirect = allAssetMeteringRows(store, 'installation')[0];
+  assert.equal(invalidDirect?.state, 'MAPPING_ISSUE');
+  assert.ok(invalidDirect?.meteringIssueCodes.includes('CHANNEL_NOT_FOUND'));
+
+  store.measurementAssignments = [{
+    id: 'wrong-meter-assignment',
+    installationId: 'installation',
+    meterId: 'missing-meter',
+    channelIds: ['active-unassigned'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+  asset.meter_present = false;
+  asset.metering_state = { kind: 'UNMETERED' };
+  const wrongMeter = meteringInventorySummary(store, 'installation');
+  assert.equal(wrongMeter.channels.assignedActive, 0);
+  assert.equal(wrongMeter.channels.unassignedActive, 1);
 });
 
 test('display-code readiness matches server case-and-all-whitespace normalization', () => {

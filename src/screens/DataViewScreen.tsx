@@ -531,12 +531,17 @@ export function DataViewScreen({ navigation, route }: Props) {
               <Text style={[typography.subheading, { color: colors.foreground }]}>{row.displayCode} · {row.name}</Text>
               <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{row.typeLabel} · Fed from {row.supplyLabel}</Text>
               <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-                {row.state}{row.virtualPreview ? ' · advisory preview until sync' : ''}
+                {row.state === 'UNMETERED' ? 'CONFIRMED UNMETERED' : row.state.replace('_', ' ')}{row.virtualPreview ? ' · advisory preview until sync' : ''}
                 {row.state === 'VIRTUAL' && row.virtualMeterId
                   ? ` · shared/unallocated residual · boundary ${row.virtualMeterId}`
                   : ''}
                 {row.channelLabels.length ? ` · ${row.channelLabels.join(', ')}` : ''}
               </Text>
+              {row.state === 'UNMETERED' ? (
+                <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>No direct device/channel connection; this metering state alone is non-blocking.</Text>
+              ) : row.state === 'MAPPING_ISSUE' ? (
+                <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: 4 }}>Declared metering and exact assignments disagree. Resolve before completion.</Text>
+              ) : null}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                 <Button title="Map meter/channels" variant="secondary" onPress={() => { void openMapping(row.id); }} />
                 <Button title="Set unmetered" variant="ghost" onPress={() => confirmMeteringTransition(row.id, 'UNMETERED')} />

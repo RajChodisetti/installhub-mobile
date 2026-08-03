@@ -721,6 +721,15 @@ it?” Measurement assignments answer “what does this exact meter channel meas
 separate relationships. A virtual meter is only an immediate-boundary residual (one total minus
 directly measured immediate children); it never propagates through an already measured child board.
 
+`UNMETERED` is an explicit, valid asset classification, not an orphan or an incomplete record. A
+confirmed-unmetered asset stays in All-asset metering, and that metering state alone does not block installation completion;
+it may also show `VIRTUAL` coverage when an immediate-boundary residual exists. `TBC`, a declared
+`METERED` asset whose exact assignment is missing or contradictory, and every non-spare channel
+without a target remain blocking reconciliation states. A device with every channel explicitly
+marked `SPARE` has no active measurements and does not create an unassigned-channel error. Web and
+iOS status surfaces must keep these cohorts visibly separate and must use “Confirmed unmetered,”
+“Mapping issue,” and “Unassigned active channel” rather than the ambiguous label “orphan.”
+
 ### Cloud Backup contract changes
 
 Preserve the local repository interfaces. Update `backupMedia.ts`, `syncService.ts`,

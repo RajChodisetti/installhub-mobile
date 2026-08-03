@@ -86,6 +86,7 @@ export function SiteAssetCard({
   onPress?: () => void;
 }) {
   const { colors } = useTheme();
+  const meteringState = item.metering_state?.kind ?? 'TBC';
   return (
     <Card style={{ marginBottom: 8 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
@@ -97,10 +98,17 @@ export function SiteAssetCard({
           </Text>
         </View>
         <View style={{ gap: 6, alignItems: 'flex-end' }}>
-          {item.electrical_board_tbc || item.meter_switchboard_tbc ? (
-            <Badge label="TBC" tone="tbc" />
+          {item.electrical_source?.kind === 'TBC' || item.electrical_board_tbc ? (
+            <Badge label="Supply TBC" tone="tbc" />
           ) : null}
-          {item.meter_present ? <Badge label="Metered" tone="success" /> : null}
+          <Badge
+            label={meteringState === 'UNMETERED'
+              ? 'Declared unmetered'
+              : meteringState === 'METERED'
+                ? 'Declared metered'
+                : 'Metering TBC'}
+            tone={meteringState === 'TBC' ? 'tbc' : 'default'}
+          />
         </View>
       </View>
       {onPress ? (

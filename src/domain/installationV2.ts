@@ -1187,13 +1187,15 @@ export function installationReadiness(
     const purposes = new Set<MeterChannelPurpose>();
     for (const channelId of assignment.channelIds) {
       const channel = channelById.get(channelId);
-      if (!channel || localIds.has(channelId)) issue(issues, {
+      const duplicateInAssignment = localIds.has(channelId);
+      if (!channel || duplicateInAssignment) issue(issues, {
         code: 'CHANNEL_NOT_FOUND', severity: 'ERROR', entityType: 'measurement_assignment',
         entityId: assignment.id, field: 'channelIds', message: 'An assigned channel is missing or duplicated.',
         candidateIds: meter.channels.map((item) => item.id),
       });
       localIds.add(channelId);
-      if (channel) purposes.add(channel.purpose);
+      if (!channel || duplicateInAssignment) continue;
+      purposes.add(channel.purpose);
       const current = assignedChannels.get(channelId);
       if (current && current !== assignment.id) issue(issues, {
         code: 'CHANNEL_DUPLICATE_ASSIGNMENT', severity: 'ERROR', entityType: 'channel',
@@ -1494,11 +1496,12 @@ export interface AllAssetMeteringRow {
   name: string;
   typeLabel: string;
   supplyLabel: string;
-  state: 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC';
+  state: 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC' | 'MAPPING_ISSUE';
   virtualMeterId?: string;
   virtualPreview?: boolean;
   meterLabels: string[];
   channelLabels: string[];
+  meteringIssueCodes: string[];
 }
 
 export function deriveVirtualMeters(
@@ -1588,6 +1591,9 @@ export function allAssetMeteringRows(store: AppDataStore, installationId: string
   const assignments = new Map(
     store.measurementAssignments.filter((item) => item.installationId === installationId).map((item) => [item.id, item]),
   );
+  const readinessIssues = installation
+    ? installationReadiness(store, installationId).issues.filter((item) => item.severity === 'ERROR')
+    : [];
   const serverDerived = installation?.server_derived;
   const serverVirtuals = serverDerived && serverDerived.treeRevision === installation?.server_tree_revision
     ? serverDerived.virtualMeterDefinitions
@@ -1610,18 +1616,52 @@ export function allAssetMeteringRows(store: AppDataStore, installationId: string
     .map((asset) => {
       const persistedState = asset.metering_state ?? { kind: 'TBC' as const };
       const linked = [...assignments.values()].filter((assignment) =>
-        assignment.status === 'CONFIRMED' && assignment.target.kind === 'SITE_ASSET' &&
-        assignment.target.siteAssetId === asset.id);
-      const virtual = !linked.length && persistedState.kind !== 'TBC'
+        assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === asset.id);
+      const declaredIds = persistedState.kind === 'METERED'
+        ? new Set(persistedState.measurementAssignmentIds)
+        : new Set<string>();
+      const actualIds = new Set(linked.map((assignment) => assignment.id));
+      const assignmentIds = new Set(linked.map((assignment) => assignment.id));
+      const meterIds = new Set(linked.map((assignment) => assignment.meterId));
+      const channelIds = new Set(linked.flatMap((assignment) => assignment.channelIds));
+      const meteringIssues = readinessIssues.filter((item) => {
+        if (
+          item.entityType === 'site_asset'
+          && item.entityId === asset.id
+          && persistedState.kind !== 'TBC'
+          && (item.code === 'METERING_STATE_INVALID' || item.code === 'METER_PRESENT_MISMATCH')
+        ) return true;
+        if (item.entityType === 'measurement_assignment' && assignmentIds.has(item.entityId)) return true;
+        if (
+          item.entityType === 'channel'
+          && channelIds.has(item.entityId)
+          && ['CHANNEL_NOT_FOUND', 'CHANNEL_DUPLICATE_ASSIGNMENT', 'CHANNEL_PURPOSE_CONFLICT', 'METER_CAPABILITY_REQUIRED'].includes(item.code)
+        ) return true;
+        return item.entityType === 'meter'
+          && meterIds.has(item.entityId)
+          && ['METER_BOARD_MISMATCH', 'CHANNEL_NOT_FOUND', 'METER_CAPABILITY_REQUIRED'].includes(item.code);
+      });
+      const validDirect = persistedState.kind === 'METERED'
+        && declaredIds.size === 1
+        && actualIds.size === 1
+        && [...declaredIds].every((id) => actualIds.has(id))
+        && linked[0]?.status === 'CONFIRMED'
+        && asset.meter_present;
+      const invalidMapping = persistedState.kind === 'METERED'
+        ? !validDirect || meteringIssues.length > 0
+        : linked.length > 0 || asset.meter_present || meteringIssues.length > 0;
+      const virtual = !invalidMapping && persistedState.kind === 'UNMETERED'
         ? virtualForAsset(asset)
         : undefined;
-      const state: AllAssetMeteringRow['state'] = linked.length
-        ? 'DIRECT'
-        : persistedState.kind === 'TBC'
-          ? 'TBC'
-          : virtual
-            ? 'VIRTUAL'
-            : 'UNMETERED';
+      const state: AllAssetMeteringRow['state'] = invalidMapping
+        ? 'MAPPING_ISSUE'
+        : validDirect
+          ? 'DIRECT'
+          : persistedState.kind === 'TBC'
+            ? 'TBC'
+            : virtual
+              ? 'VIRTUAL'
+              : 'UNMETERED';
       const linkedMeters = linked.map((item) => meters.get(item.meterId)).filter((item): item is MeterDevice => Boolean(item));
       const source = asset.electrical_source?.kind === 'BOARD'
         ? boards.get(asset.electrical_source.boardId)
@@ -1643,9 +1683,92 @@ export function allAssetMeteringRows(store: AppDataStore, installationId: string
           const channel = meter?.channels.find((item) => item.id === id);
           return `${meter?.displayName.value ?? assignment.meterId} · Ch ${channel?.ordinal ?? id}`;
         })),
+        meteringIssueCodes: [...new Set(meteringIssues.map((item) => item.code))].sort(),
       };
     })
     .sort((a, b) => a.displayCode.localeCompare(b.displayCode));
+}
+
+export interface MeteringInventorySummary {
+  assets: {
+    total: number;
+    directlyMetered: number;
+    confirmedUnmetered: number;
+    toBeConfirmed: number;
+    brokenMappings: number;
+  };
+  meters: {
+    total: number;
+    withoutAssignments: number;
+    allChannelsSpare: number;
+    withUnassignedActiveChannels: number;
+  };
+  channels: {
+    active: number;
+    assignedActive: number;
+    unassignedActive: number;
+    spare: number;
+  };
+}
+
+export function meteringInventorySummary(
+  store: AppDataStore,
+  installationId: string,
+): MeteringInventorySummary {
+  const rows = allAssetMeteringRows(store, installationId);
+  const assignments = store.measurementAssignments.filter(
+    (assignment) => assignment.installationId === installationId,
+  );
+  const meters = store.meterDevices.filter((meter) => meter.installationId === installationId);
+  const meterById = new Map(meters.map((meter) => [meter.id, meter]));
+  const assignedChannelIdsByMeter = new Map<string, Set<string>>();
+  for (const assignment of assignments) {
+    const meter = meterById.get(assignment.meterId);
+    if (!meter) continue;
+    const validChannelIds = new Set(meter.channels.map((channel) => channel.id));
+    const assigned = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    assignment.channelIds.forEach((channelId) => {
+      if (validChannelIds.has(channelId)) assigned.add(channelId);
+    });
+    assignedChannelIdsByMeter.set(meter.id, assigned);
+  }
+  const deviceStats = meters.map((meter) => {
+    const assignedChannelIds = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    const activeChannels = meter.channels.filter((channel) => channel.purpose !== 'SPARE');
+    const assignedActive = activeChannels.filter((channel) => assignedChannelIds.has(channel.id)).length;
+    const spare = meter.channels.filter((channel) => channel.purpose === 'SPARE').length;
+    return {
+      assignmentCount: assignments.filter((assignment) => assignment.meterId === meter.id).length,
+      active: activeChannels.length,
+      assignedActive,
+      unassignedActive: activeChannels.length - assignedActive,
+      spare,
+      allChannelsSpare: meter.channels.length > 0 && spare === meter.channels.length,
+    };
+  });
+  const active = deviceStats.reduce((total, meter) => total + meter.active, 0);
+  const assignedActive = deviceStats.reduce((total, meter) => total + meter.assignedActive, 0);
+  return {
+    assets: {
+      total: rows.length,
+      directlyMetered: rows.filter((row) => row.state === 'DIRECT').length,
+      confirmedUnmetered: rows.filter((row) => row.state === 'UNMETERED' || row.state === 'VIRTUAL').length,
+      toBeConfirmed: rows.filter((row) => row.state === 'TBC').length,
+      brokenMappings: rows.filter((row) => row.state === 'MAPPING_ISSUE').length,
+    },
+    meters: {
+      total: meters.length,
+      withoutAssignments: deviceStats.filter((meter) => meter.assignmentCount === 0).length,
+      allChannelsSpare: deviceStats.filter((meter) => meter.allChannelsSpare).length,
+      withUnassignedActiveChannels: deviceStats.filter((meter) => meter.unassignedActive > 0).length,
+    },
+    channels: {
+      active,
+      assignedActive,
+      unassignedActive: active - assignedActive,
+      spare: deviceStats.reduce((total, meter) => total + meter.spare, 0),
+    },
+  };
 }
 
 export interface InstallationMappingExportV1 {

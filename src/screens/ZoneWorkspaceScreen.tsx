@@ -141,7 +141,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Zone mapping summary</Text>
         <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 21 }}>
           {boards.length} switchboard{boards.length === 1 ? '' : 's'} · {siteAssets.length} site asset{siteAssets.length === 1 ? '' : 's'}{'\n'}
-          Metered {meteringCounts.metered} · Unmetered {meteringCounts.unmetered} · TBC {meteringCounts.tbc}{'\n'}
+          Declared metered {meteringCounts.metered} · Declared unmetered {meteringCounts.unmetered} · TBC {meteringCounts.tbc}{'\n'}
           Unresolved supply links {unresolvedSupplyCount} · Readiness issues {zoneIssueCount}
         </Text>
       </Card>
