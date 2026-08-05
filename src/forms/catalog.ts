@@ -526,7 +526,7 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
             ...photo('commissioning.energy_screenshot', 'Energy page screenshot'),
             showWhen: { key: 'works.replace_device', equals: 'yes' },
           },
-          photo('commissioning.completed_photos', 'Final completed-work photos'),
+          photo('commissioning.completed_photos', 'Final completed-work photos (include the antenna)'),
           { ...text('commissioning.final_comments', 'Final comments'), kind: 'multiline' },
         ],
       },

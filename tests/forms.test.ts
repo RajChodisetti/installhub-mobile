@@ -71,7 +71,7 @@ test('the full mobile catalog matches the audited portal contract fingerprint', 
   assert.equal(fieldCount, 387);
   assert.equal(
     fingerprint,
-    '49097638a6ef9bd16bf7d869d315b30f8e57af3910839333aeacd65d7fa3aee9',
+    '2e4f4ee4756a717a75b3b9ba646606ef5e293e1ddaf11ce2fbb6274de8857568',
   );
 });
 
