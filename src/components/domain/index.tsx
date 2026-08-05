@@ -57,7 +57,7 @@ export function ElectricalAssetCard({
         <View style={{ flex: 1 }}>
           <Text style={[typography.subheading, { color: colors.foreground }]}>{item.asset_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-            {item.display_code} · {item.asset_type}
+            {item.asset_type}
             {item.amperage_rating ? ` · ${item.amperage_rating}` : ''}
           </Text>
           {item.location_description ? (
@@ -94,7 +94,6 @@ export function SiteAssetCard({
           <Text style={[typography.subheading, { color: colors.foreground }]}>{item.asset_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
             {item.asset_type}
-            {item.display_code ? ` · ${item.display_code}` : ''}
           </Text>
         </View>
         <View style={{ gap: 6, alignItems: 'flex-end' }}>

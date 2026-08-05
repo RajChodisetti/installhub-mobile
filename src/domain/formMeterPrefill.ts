@@ -1,9 +1,25 @@
 import type {
+  FormType,
   FormValue,
   MeterChannelPurpose,
   MeterDevice,
   SiteAssetTypeCode,
 } from '../types';
+
+const CANONICAL_BOARD_ANSWER_KEYS = new Set([
+  'auditor.switchboard_name',
+  'auditor.switchboard_location',
+  'auditor.switchboard_type',
+  'auditor.site_nmi',
+]);
+
+/** These report answers are projections of the selected switchboard. The form
+ * keeps them for PDF compatibility but must not ask the installer to re-enter
+ * them when the canonical board is available. */
+export function isCanonicalBoardAnswerKey(formType: FormType, key: string): boolean {
+  return ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(formType)
+    && CANONICAL_BOARD_ANSWER_KEYS.has(key);
+}
 
 export const WW_CHANNEL_PURPOSE_FORM_OPTIONS = [
   'Main board supply',
@@ -73,7 +89,7 @@ export function installationFormAnswersForMeter(
 ): Record<string, FormValue> {
   const answers: Record<string, FormValue> = {
     'device.id': meter.serialNumber,
-    'device.number': meter.deviceNumber ?? '',
+    'device.number': meter.serialNumber,
   };
   if (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M') {
     answers['device.type'] = meter.deviceModel;

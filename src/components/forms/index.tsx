@@ -42,8 +42,10 @@ import {
 } from '../../domain/assetMeteringWorkflow';
 import {
   SOURCE_BOARD_RESULT_LIMIT,
+  inheritedSourceForQuickSwitchboard,
   searchSourceBoards,
   sourceKeyAfterKindSelection,
+  type QuickSwitchboardDetails,
 } from '../../domain/sourcePicker';
 import {
   clearSiteAssetEditorDraft,
@@ -244,8 +246,8 @@ export function ElectricalAssetForm({
 }) {
   const { colors } = useTheme();
   const [asset_name, setName] = useState(initial?.asset_name ?? '');
-  const [display_code, setCode] = useState(initial?.display_code ?? '');
-  const [customCode, setCustomCode] = useState(Boolean(initial?.display_code_meta?.isOverridden));
+  const display_code = initial?.display_code ?? '';
+  const customCode = Boolean(initial?.display_code_meta?.isOverridden);
   const [type_code, setTypeCode] = useState<BoardTypeCode>(
     initial?.type_code ?? boardTypeCode(initial?.asset_type ?? 'DB'),
   );
@@ -270,9 +272,6 @@ export function ElectricalAssetForm({
   );
   const [comments, setComments] = useState(initial?.comments ?? '');
   const [parentSearch, setParentSearch] = useState('');
-  const [meterDecision, setMeterDecision] = useState<'YES' | 'NO'>(
-    (initial?.meters?.length ?? 0) > 0 ? 'YES' : 'NO',
-  );
   const [busy, setBusy] = useState(false);
   const parentCandidateResults = useMemo(() => {
     const safe = cycleSafeBoardCandidates(sourceBoards, initial?.id);
@@ -304,19 +303,6 @@ export function ElectricalAssetForm({
       {type_code === 'OTHER' ? (
         <TextField label="Custom board type" value={custom_type_name} onChangeText={setCustomTypeName} />
       ) : null}
-      <BoolRow
-        label="Use custom display code"
-        value={customCode}
-        onChange={setCustomCode}
-        accessibilityHint="Turning this off returns the board to its generated display-code rule."
-      />
-      {customCode ? (
-        <TextField label="Custom display code" value={display_code} onChangeText={setCode} />
-      ) : (
-        <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-          A provisional site/type/sequence code will be generated automatically.
-        </Text>
-      )}
       <SelectChips
         label="Electrical source type"
         value={sourceKind}
@@ -346,7 +332,7 @@ export function ElectricalAssetForm({
           <SearchBar
             value={parentSearch}
             onChangeText={setParentSearch}
-            placeholder="Search code, name, type, or zone"
+            placeholder="Search name, type, or zone"
           />
           <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
             {parentCandidateResults.total > SOURCE_BOARD_RESULT_LIMIT
@@ -364,7 +350,7 @@ export function ElectricalAssetForm({
                   key={board.id}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: selected }}
-                  accessibilityLabel={`${board.display_code}, ${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
+                  accessibilityLabel={`${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
                   onPress={() => setSourceKey(value)}
                   style={{
                     minHeight: 54,
@@ -378,7 +364,7 @@ export function ElectricalAssetForm({
                   }}
                 >
                   <Text style={{ color: colors.foreground, fontWeight: '700' }}>
-                    {selected ? '✓ ' : ''}{board.display_code} · {board.asset_name}
+                    {selected ? '✓ ' : ''}{board.asset_name}
                   </Text>
                   <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
                     {board.asset_type} · {zone?.zone_name ?? 'Unknown zone'}
@@ -396,20 +382,6 @@ export function ElectricalAssetForm({
       <TextField label="Phase" value={phase} onChangeText={setPhase} />
       <TextField label="Amperage" value={amperage_rating} onChangeText={setAmps} />
       <TextField label="Site NMI" value={site_nmi} onChangeText={setNmi} />
-      <SelectChips
-        label={initial?.id ? 'Are meter devices installed on this switchboard?' : 'Install a meter on this switchboard now?'}
-        value={meterDecision}
-        options={['YES', 'NO']}
-        getLabel={(value) => value === 'YES'
-          ? initial?.id ? 'Yes — keep devices' : 'Yes — commission next'
-          : initial?.id ? 'No — remove devices' : 'No — board only'}
-        onChange={setMeterDecision}
-      />
-      {initial?.id && meterDecision === 'NO' && (initial.meters?.length ?? 0) > 0 ? (
-        <Text accessibilityRole="alert" style={{ color: colors.destructive, marginBottom: spacing.md, lineHeight: 20 }}>
-          Saving No removes {initial.meters?.length} installed meter device{initial.meters?.length === 1 ? '' : 's'} and their active channel assignments. You will review the exact impact before it is applied.
-        </Text>
-      ) : null}
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
       <Button
         title={busy ? 'Saving…' : 'Save board'}
@@ -459,13 +431,68 @@ export function ElectricalAssetForm({
               comments,
               meters: initial?.meters,
             }, {
-              commissionMeter: meterDecision === 'YES',
-              removeMeters: Boolean(initial?.id && meterDecision === 'NO' && (initial.meters?.length ?? 0) > 0),
+              commissionMeter: false,
+              removeMeters: false,
             });
           } finally {
             setBusy(false);
           }
         }}
+      />
+    </View>
+  );
+}
+
+export function QuickSwitchboardForm({
+  inheritedSource,
+  sourceBoards = [],
+  gridSupplies = [],
+  onSubmit,
+}: {
+  inheritedSource: ElectricalSource;
+  sourceBoards?: ElectricalAsset[];
+  gridSupplies?: GridSupply[];
+  onSubmit: (details: QuickSwitchboardDetails) => Promise<void> | void;
+}) {
+  const { colors } = useTheme();
+  const [name, setName] = useState('');
+  const [typeCode, setTypeCode] = useState<BoardTypeCode>('DB');
+  const [customTypeName, setCustomTypeName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const inheritedLabel = inheritedSource.kind === 'GRID'
+    ? gridSupplies.find((grid) => grid.id === inheritedSource.gridSupplyId)?.name ?? 'Incoming grid connection'
+    : inheritedSource.kind === 'BOARD'
+      ? sourceBoards.find((board) => board.id === inheritedSource.boardId)?.asset_name ?? 'Upstream switchboard'
+      : 'To be confirmed';
+  const valid = Boolean(name.trim()) && (typeCode !== 'OTHER' || Boolean(customTypeName.trim()));
+
+  return (
+    <View>
+      <TextField label="Switchboard name" value={name} onChangeText={setName} />
+      <SelectChips
+        label="Switchboard type"
+        value={typeCode}
+        options={BOARD_TYPE_CODES}
+        getLabel={(value) => BOARD_TYPE_LABELS[value]}
+        onChange={setTypeCode}
+      />
+      {typeCode === 'OTHER' ? (
+        <TextField label="Custom switchboard type" value={customTypeName} onChangeText={setCustomTypeName} />
+      ) : null}
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
+        Upstream source inherited from the asset: {inheritedLabel}.
+      </Text>
+      <Button
+        title={busy ? 'Adding…' : 'Add and select switchboard'}
+        disabled={busy || !valid}
+        onPress={() => { void (async () => {
+          setBusy(true);
+          try {
+            await onSubmit({ name, typeCode, customTypeName });
+          } finally {
+            setBusy(false);
+          }
+        })(); }}
       />
     </View>
   );
@@ -509,6 +536,9 @@ export function SiteAssetForm({
   meterDevices = [],
   measurementAssignments = [],
   active = false,
+  onAddSourceBoard,
+  sourceBoardReturnToken = 0,
+  newSourceBoardId,
   onAddDevice,
   deviceDetourReturnToken = 0,
   onDraftRestored,
@@ -522,6 +552,9 @@ export function SiteAssetForm({
   meterDevices?: MeterDevice[];
   measurementAssignments?: MeasurementAssignment[];
   active?: boolean;
+  onAddSourceBoard?: (inheritedSource: ElectricalSource) => void;
+  sourceBoardReturnToken?: number;
+  newSourceBoardId?: string;
   onAddDevice?: (boardId: string) => void;
   deviceDetourReturnToken?: number;
   onDraftRestored?: () => void;
@@ -577,6 +610,7 @@ export function SiteAssetForm({
   const [draftHydrated, setDraftHydrated] = useState(false);
   const [draftPersistenceError, setDraftPersistenceError] = useState('');
   const restoredDraft = useRef(false);
+  const previousSourceBoardReturnToken = useRef(sourceBoardReturnToken);
   const draftScope = useMemo(() => siteAssetEditorDraftScope({
     assetId: initial?.id,
     installationId: initial?.audit_id,
@@ -616,7 +650,7 @@ export function SiteAssetForm({
       selectedMeterId,
       (meter) => {
         const meterBoard = sourceBoards.find((item) => item.id === meter.installedOnBoardId);
-        return [meter.deviceNumber, meterBoard?.display_code, meterBoard?.asset_name];
+        return [meter.deviceNumber, meterBoard?.asset_name];
       },
     ),
     [eligibleMeters, meterSearch, selectedMeterId, sourceBoards],
@@ -743,6 +777,17 @@ export function SiteAssetForm({
   }, [draftHydrated, initialAssignment, selectedMeterId]);
 
   useEffect(() => {
+    if (previousSourceBoardReturnToken.current === sourceBoardReturnToken) return;
+    previousSourceBoardReturnToken.current = sourceBoardReturnToken;
+    if (!newSourceBoardId) return;
+    setSourceKey(`BOARD:${newSourceBoardId}`);
+    setSourceBoardSearch('');
+    setSelectedMeterId('');
+    setSelectedChannelIds([]);
+    setMeterAnnouncement('The new switchboard is selected as this asset’s electrical source.');
+  }, [newSourceBoardId, sourceBoardReturnToken]);
+
+  useEffect(() => {
     if (!deviceDetour || deviceDetourReturnToken === deviceDetour.startReturnToken) return;
     const addedEligibleIds = eligibleMeters
       .map((item) => item.id)
@@ -766,7 +811,7 @@ export function SiteAssetForm({
     setDeviceDetour(null);
   }, [deviceDetour, deviceDetourReturnToken, eligibleMeters]);
 
-  const requestMeteringKind = (next: SiteAssetMeteringDraft['kind']) => {
+  const requestMeteringKind = (next: 'METERED' | 'UNMETERED') => {
     if (
       initial?.metering_state?.kind === 'METERED' &&
       next !== 'METERED' &&
@@ -809,13 +854,6 @@ export function SiteAssetForm({
       {type_code === 'OTHER' ? (
         <TextField label="Custom asset type" value={custom_type_name} onChangeText={setCustomTypeName} />
       ) : null}
-      <BoolRow
-        label="Use custom display code"
-        value={customCode}
-        onChange={setCustomCode}
-        accessibilityHint="Turning this off returns the asset to its generated display-code rule."
-      />
-      {customCode ? <TextField label="Custom display code" value={display_code} onChangeText={setCode} /> : null}
       <SelectChips
         label="Electrical source type"
         value={sourceKind}
@@ -845,7 +883,7 @@ export function SiteAssetForm({
           <SearchBar
             value={sourceBoardSearch}
             onChangeText={setSourceBoardSearch}
-            placeholder="Search code, name, type, or zone"
+            placeholder="Search name, type, or zone"
           />
           <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
             {sourceBoardResults.total > SOURCE_BOARD_RESULT_LIMIT
@@ -863,7 +901,7 @@ export function SiteAssetForm({
                   key={sourceBoard.id}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: selected }}
-                  accessibilityLabel={`${sourceBoard.display_code}, ${sourceBoard.asset_name}, ${sourceBoard.asset_type}, ${sourceZone?.zone_name ?? 'unknown zone'}`}
+                  accessibilityLabel={`${sourceBoard.asset_name}, ${sourceBoard.asset_type}, ${sourceZone?.zone_name ?? 'unknown zone'}`}
                   onPress={() => setSourceKey(value)}
                   style={{
                     minHeight: 54,
@@ -877,7 +915,7 @@ export function SiteAssetForm({
                   }}
                 >
                   <Text style={{ color: colors.foreground, fontWeight: '700' }}>
-                    {selected ? '✓ ' : ''}{sourceBoard.display_code} · {sourceBoard.asset_name}
+                    {selected ? '✓ ' : ''}{sourceBoard.asset_name}
                   </Text>
                   <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
                     {sourceBoard.asset_type} · {sourceZone?.zone_name ?? 'Unknown zone'}
@@ -889,18 +927,51 @@ export function SiteAssetForm({
           {!sourceBoardResults.total ? (
             <Text style={{ color: colors.mutedForeground }}>No boards match this search.</Text>
           ) : null}
+          {onAddSourceBoard ? (
+            <Button
+              title="Add a new switchboard, then return here"
+              variant="secondary"
+              style={{ marginTop: spacing.sm }}
+              onPress={() => {
+                void saveSiteAssetEditorDraft(draftScope, {
+                  installationId: draftInstallationId,
+                  assetId: draftAssetId,
+                  draft: currentDraftSnapshot(),
+                })
+                  .then(() => onAddSourceBoard(inheritedSourceForQuickSwitchboard(
+                    sourceKey,
+                    initialSource,
+                    gridSupplies,
+                  )))
+                  .catch(() => Alert.alert(
+                    'Draft not protected',
+                    'The asset draft could not be saved, so switchboard creation was not opened.',
+                  ));
+              }}
+            />
+          ) : null}
         </View>
       ) : null}
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
       <Card style={{ marginBottom: spacing.md }}>
-        <SectionHeader title="Metering decision" />
-        <SelectChips
-          label="How is this asset measured?"
+        <SectionHeader title="How this asset is measured" />
+        <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
+          Choose the observed state. Metered assets must be linked to the exact physical device and channels; confirmed-unmetered assets need no device link.
+        </Text>
+        <SelectChips<SiteAssetMeteringDraft['kind']>
+          label="Metering state"
           value={meteringKind}
-          options={['METERED', 'UNMETERED', 'TBC']}
-          getLabel={(value) => value === 'METERED' ? 'Metered' : value === 'UNMETERED' ? 'Unmetered' : 'To be confirmed'}
-          onChange={requestMeteringKind}
+          options={['METERED', 'UNMETERED']}
+          getLabel={(value) => value === 'METERED' ? 'Metered' : 'Confirmed unmetered'}
+          onChange={(value) => {
+            if (value !== 'TBC') requestMeteringKind(value);
+          }}
         />
+        {meteringKind === 'TBC' ? (
+          <Text accessibilityRole="alert" style={{ color: colors.destructive, marginBottom: spacing.md, lineHeight: 20 }}>
+            This older record has an unresolved metering state. Choose Metered or Confirmed unmetered before saving.
+          </Text>
+        ) : null}
         {meteringKind === 'METERED' ? (
           <>
             {!selectedSourceBoardId ? (
@@ -912,8 +983,14 @@ export function SiteAssetForm({
                 <SearchBar
                   value={meterSearch}
                   onChangeText={setMeterSearch}
-                  placeholder="Search eligible device or board"
+                  placeholder="Search device ID, name, type, or board"
                 />
+                <Text style={{ color: colors.foreground, fontWeight: '700', marginBottom: spacing.xs }}>
+                  Exact metering device
+                </Text>
+                <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
+                  Choose the physical device whose channels measure this asset. Only devices on the confirmed supply path are shown.
+                </Text>
                 <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
                   {eligibleMeterResults.total > ELIGIBLE_METER_RESULT_LIMIT
                     ? `Showing ${ELIGIBLE_METER_RESULT_LIMIT} of ${eligibleMeterResults.total} matches. Refine the search to choose another device.`
@@ -929,7 +1006,7 @@ export function SiteAssetForm({
                         key={meter.id}
                         accessibilityRole="radio"
                         accessibilityState={{ checked: selected }}
-                        accessibilityLabel={`${meter.displayName.value}, ${meter.serialNumber}, installed on ${meterBoard?.display_code ?? 'board'}`}
+                        accessibilityLabel={`${meter.displayName.value}, ${meter.serialNumber}, installed on ${meterBoard?.asset_name ?? 'switchboard'}`}
                         onPress={() => {
                           setSelectedMeterId(meter.id);
                           setSelectedChannelIds([]);
@@ -949,7 +1026,7 @@ export function SiteAssetForm({
                           {selected ? '✓ ' : ''}{meter.displayName.value}
                         </Text>
                         <Text style={{ color: colors.mutedForeground, marginTop: 3 }}>
-                          {meter.deviceModel} · {meter.serialNumber || 'No serial'} · {meterBoard?.display_code ?? 'Unknown board'}
+                          {meter.deviceModel} · {meter.serialNumber || 'No serial'} · {meterBoard?.asset_name ?? 'Unknown switchboard'}
                         </Text>
                       </Pressable>
                     );
@@ -962,7 +1039,7 @@ export function SiteAssetForm({
                 ) : null}
                 {onAddDevice ? (
                   <Button
-                    title="Commission a device on the source board"
+                    title="Commission a new device, then return here"
                     variant="secondary"
                     onPress={() => {
                       const nextDetour = {
@@ -1002,20 +1079,23 @@ export function SiteAssetForm({
             {selectedMeter ? (
               <>
                 <SelectChips
-                  label="Phase mode"
+                  label="Electrical phase grouping"
                   value={phaseMode}
                   options={['SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
                   getLabel={(value) => value === 'SINGLE_PHASE' ? 'Single phase (1)' : value === 'THREE_PHASE' ? 'Three phase (3)' : 'Other group'}
                   onChange={setPhaseMode}
                 />
                 <SelectChips
-                  label="Direction"
+                  label="Energy flow direction"
                   value={direction}
                   options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
                   getLabel={(value) => value === '' ? 'Choose direction' : value === 'BIDIRECTIONAL' ? 'Bidirectional' : value === 'GENERATION' ? 'Generation' : 'Consumption'}
                   onChange={setDirection}
                 />
-                <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Channels</Text>
+                <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Measured channels</Text>
+                <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
+                  Select the exact one- or three-phase channel group. Consumption uses energy; generation exports it; bidirectional can do both.
+                </Text>
                 <Text
                   accessibilityRole="summary"
                   accessibilityLiveRegion="polite"
@@ -1072,13 +1152,11 @@ export function SiteAssetForm({
               </>
             ) : null}
           </>
-        ) : (
+        ) : meteringKind === 'UNMETERED' ? (
           <Text style={{ color: colors.mutedForeground, lineHeight: 20 }}>
-            {meteringKind === 'UNMETERED'
-              ? 'Confirmed: this asset is intentionally not metered.'
-              : 'Unresolved by design; reconciliation and installation completion will keep this visible.'}
+            Confirmed: this asset is intentionally not directly metered.
           </Text>
-        )}
+        ) : null}
       </Card>
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
       {draftPersistenceError ? (
@@ -1124,8 +1202,10 @@ export function SiteAssetForm({
                 kind: 'METERED', meterId: selectedMeter.id,
                 channelIds: selectedChannelIds, phaseMode, direction,
               };
+            } else if (meteringKind === 'UNMETERED') {
+              meteringDraft = { kind: 'UNMETERED' };
             } else {
-              meteringDraft = { kind: meteringKind };
+              throw new Error('Choose Metered or Confirmed unmetered before saving this asset.');
             }
             await onSubmit({
               audit_id: initial?.audit_id ?? '',
@@ -1266,15 +1346,9 @@ export function WattwatcherForm({
           onChangeText={(v) => onChange({ ...data, device_name: v })}
         />
         <BarcodeScanField
-          label="Device number"
-          value={data.device_number ?? ''}
-          onChangeText={(v) => onChange({ ...data, device_number: v })}
-          placeholder="e.g. D001"
-        />
-        <BarcodeScanField
           label="Device ID / serial"
           value={data.device_id ?? ''}
-          onChangeText={(v) => onChange({ ...data, device_id: v })}
+          onChangeText={(v) => onChange({ ...data, device_id: v, device_number: v })}
           placeholder="e.g. DD03710160579"
         />
         <SelectChips

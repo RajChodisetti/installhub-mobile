@@ -111,7 +111,11 @@ test('WW completion atomically pins canonical board and one stable operational m
     ...wwForm('board', 'meter-stable'),
     id: 'amendment',
     supersedes_id: 'form',
-    answers: { ...wwForm('board').answers, 'device.number': 'D-2' },
+    answers: {
+      ...wwForm('board').answers,
+      'device.id': 'D-2',
+      'device.number': 'D-2',
+    },
   });
   completeFormSubmissionInStore(
     store,

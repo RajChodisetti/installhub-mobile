@@ -24,6 +24,7 @@ import {
   isSectionVisible,
   optionsForField,
   validateForm,
+  withMirroredDeviceIdentityAnswers,
   type FormFieldDefinition,
 } from '../forms/catalog';
 import { BarcodeScanField } from '../components/BarcodeScanField';
@@ -74,6 +75,7 @@ import {
   type DraftAutosaveCoordinator,
 } from '../services/draftAutosave';
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
+import { isCanonicalBoardAnswerKey } from '../domain/formMeterPrefill';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
@@ -194,8 +196,11 @@ export function FormEditorScreen({ navigation, route }: Props) {
       if (!active || !mounted.current) return;
       const initialAnswers = item && board && item.status === 'Draft' &&
         ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(item.form_type)
-        ? answersWithCanonicalBoardContext(item.answers, board)
-        : item?.answers ?? {};
+        ? answersWithCanonicalBoardContext(
+            withMirroredDeviceIdentityAnswers(item.answers),
+            board,
+          )
+        : withMirroredDeviceIdentityAnswers(item?.answers ?? {});
       setForm(item);
       setCanonicalBoard(board);
       setCanonicalZoneName(zone?.zone_name ?? 'Unknown zone');
@@ -330,27 +335,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
     const value = String(answers[field.key] ?? '');
     const fieldError = completionErrors.find((error) =>
       error.startsWith(`${sectionTitle}: ${field.label}`));
-    const canonicalBoardField = [
-      'auditor.switchboard_name',
-      'auditor.switchboard_location',
-      'auditor.switchboard_type',
-      'auditor.site_nmi',
-    ].includes(field.key) && [
-      'ww-installation',
-      'a3rm-installation',
-      'a6m-installation',
-    ].includes(form.form_type);
-
-    if (canonicalBoardField) {
-      return (
-        <View key={field.key} style={styles.readOnlyField}>
-          <Text style={[styles.label, { color: colors.mutedForeground }]}>{label}</Text>
-          <Text accessibilityRole="text" style={{ color: colors.foreground, lineHeight: 21 }}>
-            {value || 'Not recorded'}
-          </Text>
-        </View>
-      );
-    }
+    if (canonicalBoard && isCanonicalBoardAnswerKey(form.form_type, field.key)) return null;
 
     if (field.kind === 'yesno') {
       return (
@@ -463,13 +448,17 @@ export function FormEditorScreen({ navigation, route }: Props) {
           {!readOnly ? (
             <View style={styles.photoActions}>
               <Button
-                title={addingSlot === field.key ? 'Opening…' : 'Take photo'}
+                title={addingSlot === field.key
+                  ? 'Opening…'
+                  : items.length
+                    ? 'Take another photo'
+                    : 'Take photo'}
                 disabled={!!addingSlot}
                 onPress={() => void addPhoto(field, 'camera')}
                 style={{ flex: 1 }}
               />
               <Button
-                title="Choose photo"
+                title={items.length ? 'Choose another photo' : 'Choose photo'}
                 variant="secondary"
                 disabled={!!addingSlot}
                 onPress={() => void addPhoto(field, 'library')}
@@ -768,9 +757,9 @@ export function FormEditorScreen({ navigation, route }: Props) {
         'a6m-installation',
       ].includes(form.form_type) ? (
         <Card style={{ marginBottom: spacing.md }}>
-          <SectionHeader title="Canonical switchboard context" />
+          <SectionHeader title="Switchboard for this device" />
           <Text style={{ color: colors.foreground, fontWeight: '700' }}>
-            {canonicalBoard.display_code} · {canonicalBoard.asset_name}
+            {canonicalBoard.asset_name}
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 6, lineHeight: 20 }}>
             {canonicalBoard.asset_type} · {canonicalZoneName}{'\n'}
@@ -778,7 +767,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
             NMI: {canonicalBoard.site_nmi || 'Not recorded'}
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, fontSize: 12 }}>
-            This identity comes from the switchboard record. Edit the switchboard itself to change it before completion.
+            These details come from the switchboard record. Edit that record to change them before completion.
           </Text>
         </Card>
       ) : null}
@@ -933,7 +922,6 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', borderRadius: radii.full },
   fieldBlock: { marginBottom: spacing.lg },
-  readOnlyField: { marginBottom: spacing.lg, paddingVertical: spacing.xs },
   label: { fontSize: 15, lineHeight: 21, fontWeight: '600', marginBottom: spacing.sm },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   choice: {

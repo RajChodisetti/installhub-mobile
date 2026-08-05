@@ -68,9 +68,17 @@ function cloneFixtures(): AppDataStore {
 
 function normalizeFormSubmission(form: FormSubmission): FormSubmission {
   const answers = { ...form.answers };
+  if (['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(form.form_type)) {
+    answers['device.id'] ??= answers['device.number'];
+    answers['device.number'] = answers['device.id'] ?? answers['device.number'];
+  }
   if (form.form_type === 'comms-fault') {
-    answers['existing.device_id'] ??= answers['existing.serial_number'];
-    answers['works.new_device_id'] ??= answers['works.new_serial'];
+    answers['existing.device_id'] ??= answers['existing.device_number'] ?? answers['existing.serial_number'];
+    answers['existing.device_number'] = answers['existing.device_id'] ?? answers['existing.device_number'];
+    answers['works.new_device_id'] ??= answers['works.new_device_number'] ?? answers['works.new_serial'];
+    if (answers['works.new_device_id']) {
+      answers['works.new_device_number'] = answers['works.new_device_id'];
+    }
   }
   return {
     ...form,

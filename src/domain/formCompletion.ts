@@ -2,6 +2,7 @@ import type { AppDataStore, FormSubmission } from '../types';
 import { meterAfterCommsReplacement } from '../forms/catalog';
 import {
   answersWithCanonicalBoardContext,
+  deviceLabelPrefix,
   meterFromInstallationForm,
 } from './meterCommissioning';
 import {
@@ -56,7 +57,17 @@ export function completeFormSubmissionInStore(
     }
     meterId ??= createMeterId();
     answers = answersWithCanonicalBoardContext(answers, board);
-    const meter = meterFromInstallationForm({ ...current, answers }, board, meterId);
+    const zone = store.zones.find((item) => item.id === board.zone_id);
+    const labelPrefix = deviceLabelPrefix(
+      installation.site_name,
+      zone?.zone_name ?? '',
+    );
+    const meter = meterFromInstallationForm(
+      { ...current, answers },
+      board,
+      meterId,
+      labelPrefix,
+    );
     const meters = board.meters.some((item) => item.id === meterId)
       ? board.meters.map((item) => item.id === meterId ? meter : item)
       : [...board.meters, meter];
@@ -74,7 +85,12 @@ export function completeFormSubmissionInStore(
     );
     const existing = board?.meters.find((item) => item.id === meterId);
     if (!board || !existing) throw new Error('The linked meter is no longer available.');
-    const replacement = meterAfterCommsReplacement(existing, current.answers);
+    const zone = store.zones.find((item) => item.id === board.zone_id);
+    const replacement = meterAfterCommsReplacement(
+      existing,
+      current.answers,
+      deviceLabelPrefix(installation.site_name, zone?.zone_name ?? ''),
+    );
     replaceBoardMetersFromLegacy(
       store,
       board,

@@ -50,7 +50,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <Text style={[typography.title, { color: colors.foreground }]}>{board.asset_name}</Text>
       <Text style={{ color: colors.mutedForeground, marginTop: 6 }}>
-        {board.display_code} · {board.asset_type}
+        {board.asset_type}
       </Text>
       {board.electrical_parent_tbc ? (
         <View style={{ marginTop: 8 }}>
@@ -61,10 +61,15 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.lg, flexWrap: 'wrap' }}>
         <Button title="Edit board" variant="secondary" disabled={readOnly} onPress={() => setEditOpen(true)} />
         <Button
-          title="New Installation Form"
+          title="Commission new device"
           disabled={readOnly}
           onPress={() =>
-            navigation.navigate('FormTypePicker', { installationId, zoneId, boardId })
+            navigation.navigate('FormTypePicker', {
+              installationId,
+              zoneId,
+              boardId,
+              formType: 'ww-installation',
+            })
           }
         />
       </View>
@@ -89,20 +94,6 @@ export function BoardDetailScreen({ navigation, route }: Props) {
                   boardId,
                   meterId: m.id,
                   deviceType: m.device_type,
-                })
-              }
-            />
-            <Button
-              title="Start Comms Fault"
-              variant="secondary"
-              disabled={readOnly}
-              style={{ marginTop: 8 }}
-              onPress={() =>
-                navigation.navigate('FormTypePicker', {
-                  installationId,
-                  zoneId,
-                  boardId,
-                  meterId: m.id,
                 })
               }
             />
@@ -158,7 +149,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
                   [
                     `${board.meters.length} meter device(s):\n${board.meters.map((meter) => `${meter.device_name || meter.id} (${meter.id})`).join('\n')}`,
                     `${affectedAssignments.length} active assignment(s):${affectedAssignments.length ? `\n${affectedAssignments.map((assignment) => assignment.id).join('\n')}` : ' none'}`,
-                    `${affectedAssetIds.size} affected asset(s) become TBC:${affectedAssetIds.size ? `\n${siteAssets.filter((asset) => affectedAssetIds.has(asset.id)).map((asset) => `${asset.display_code ?? asset.id} · ${asset.asset_name}`).join('\n')}` : ' none'}`,
+                    `${affectedAssetIds.size} affected asset(s) become TBC:${affectedAssetIds.size ? `\n${siteAssets.filter((asset) => affectedAssetIds.has(asset.id)).map((asset) => `${asset.asset_name} · ${asset.asset_type}`).join('\n')}` : ' none'}`,
                     `${linkedForms.length} linked form record(s) and ${linkedForms.reduce((count, form) => count + form.attachments.length, 0)} evidence attachment(s) remain retained for history.`,
                   ].join('\n\n'),
                   [

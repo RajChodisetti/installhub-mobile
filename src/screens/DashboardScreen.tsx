@@ -41,8 +41,14 @@ export function DashboardScreen({ navigation }: Props) {
         style={{ marginBottom: spacing.md }}
       />
       <Button
-        title="Browse Cloud Backups"
+        title="Search Devices"
         variant="secondary"
+        onPress={() => navigation.navigate('DeviceSearch')}
+        style={{ marginBottom: spacing.md }}
+      />
+      <Button
+        title="Browse Cloud Backups"
+        variant="ghost"
         onPress={() => navigation.navigate('RemoteInstallations')}
         style={{ marginBottom: spacing.md }}
       />

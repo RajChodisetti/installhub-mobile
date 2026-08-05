@@ -1,8 +1,67 @@
-import type { ElectricalAsset, GridSupply, Zone } from '../types';
+import type {
+  BoardTypeCode,
+  ElectricalAsset,
+  ElectricalSource,
+  GridSupply,
+  Zone,
+} from '../types';
+import { boardTypeFromCode } from './installationV2';
 
 export const SOURCE_BOARD_RESULT_LIMIT = 100;
 
 export type ElectricalSourceKindChoice = 'GRID' | 'BOARD' | 'TBC';
+
+export interface QuickSwitchboardDetails {
+  name: string;
+  typeCode: BoardTypeCode;
+  customTypeName?: string;
+}
+
+/** Resolve the source inherited by a board inserted into an asset's supply
+ * path. Prefer the current concrete selection, then the persisted source, then
+ * the installation's default incoming grid. */
+export function inheritedSourceForQuickSwitchboard(
+  sourceKey: string,
+  persistedSource: ElectricalSource,
+  grids: GridSupply[],
+): ElectricalSource {
+  if (sourceKey.startsWith('BOARD:') && sourceKey.slice(6)) {
+    return { kind: 'BOARD', boardId: sourceKey.slice(6) };
+  }
+  if (sourceKey.startsWith('GRID:') && sourceKey.slice(5)) {
+    return { kind: 'GRID', gridSupplyId: sourceKey.slice(5) };
+  }
+  if (persistedSource.kind !== 'TBC') return persistedSource;
+  const grid = grids.find((candidate) => candidate.isDefault) ?? grids[0];
+  return grid ? { kind: 'GRID', gridSupplyId: grid.id } : { kind: 'TBC' };
+}
+
+export function quickSwitchboardCreateValues({
+  installationId,
+  zoneId,
+  inheritedSource,
+  details,
+}: {
+  installationId: string;
+  zoneId: string;
+  inheritedSource: ElectricalSource;
+  details: QuickSwitchboardDetails;
+}) {
+  return {
+    audit_id: installationId,
+    zone_id: zoneId,
+    asset_name: details.name.trim(),
+    display_code: '',
+    asset_type: boardTypeFromCode(details.typeCode),
+    type_code: details.typeCode,
+    custom_type_name: details.typeCode === 'OTHER'
+      ? details.customTypeName?.trim()
+      : undefined,
+    electrical_source: inheritedSource,
+    electrical_parent_id: inheritedSource.kind === 'BOARD' ? inheritedSource.boardId : null,
+    electrical_parent_tbc: inheritedSource.kind === 'TBC',
+  };
+}
 
 export function boundedPickerResults<T>(
   matches: T[],
@@ -77,8 +136,6 @@ export function searchSourceBoards(
   const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
   const needle = query.trim().toLocaleLowerCase();
   const matches = boards.filter((board) => !needle || [
-    board.display_code_meta?.value,
-    board.display_code,
     board.asset_name,
     board.asset_type,
     board.type_code,

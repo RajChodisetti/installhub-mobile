@@ -73,7 +73,7 @@ form behavior. Barcode and QR autofocus/recognition must also be exercised on a
 physical iPhone or iPad:
 
 1. allow camera permission;
-2. scan the Installation and Comms Device Number and Device ID fields;
+2. scan the single Device ID/serial field in Installation and Comms replacement forms;
 3. scan ACE and Captis standard barcode fields;
 4. scan the Honeywell Q400 serial barcode;
 5. test both QR and barcode modes on every SUMS ingestion field;

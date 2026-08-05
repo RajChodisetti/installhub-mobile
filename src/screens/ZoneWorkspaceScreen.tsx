@@ -16,12 +16,22 @@ import {
   TextArea,
   TextField,
 } from '../components/ui';
-import { ElectricalAssetForm, FormModal, SiteAssetForm } from '../components/forms';
+import {
+  ElectricalAssetForm,
+  FormModal,
+  QuickSwitchboardForm,
+  SiteAssetForm,
+} from '../components/forms';
 import { pickLocalPhoto, sendZoneSummaryStub, takeLocalPhoto } from '../services';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
-import { pagedPickerResults } from '../domain/sourcePicker';
+import {
+  pagedPickerResults,
+  quickSwitchboardCreateValues,
+} from '../domain/sourcePicker';
+import type { ElectricalSource } from '../types';
+import { wwCommissioningPickerParams } from '../domain/formPickerContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ZoneWorkspace'>;
 const ZONE_PAGE_SIZE = 100;
@@ -84,6 +94,10 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
     tbc: siteAssets.filter((item) => !item.metering_state || item.metering_state.kind === 'TBC').length,
   };
   const [boardModal, setBoardModal] = useState(false);
+  const [boardDetourForAsset, setBoardDetourForAsset] = useState(false);
+  const [sourceBoardInheritedSource, setSourceBoardInheritedSource] = useState<ElectricalSource>({ kind: 'TBC' });
+  const [newSourceBoardId, setNewSourceBoardId] = useState<string | undefined>();
+  const [sourceBoardReturnToken, setSourceBoardReturnToken] = useState(0);
   const [assetModal, setAssetModal] = useState(false);
   const [assetFormKey, setAssetFormKey] = useState(0);
   const [editZone, setEditZone] = useState(false);
@@ -222,7 +236,14 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         placeholder="Search this zone's boards and assets"
       />
 
-      <SectionHeader title="Electrical boards" actionLabel={readOnly ? undefined : '+ Add'} onAction={readOnly ? undefined : () => setBoardModal(true)} />
+      <SectionHeader
+        title="Electrical boards"
+        actionLabel={readOnly ? undefined : '+ Add'}
+        onAction={readOnly ? undefined : () => {
+          setBoardDetourForAsset(false);
+          setBoardModal(true);
+        }}
+      />
       <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
         {boardResults.total === 0
           ? 'Showing 0 matching boards.'
@@ -302,34 +323,58 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         </View>
       ) : null}
 
-      <FormModal visible={boardModal} title="Add board" onClose={() => setBoardModal(false)}>
-        <ElectricalAssetForm
-          initial={{ audit_id: installationId, zone_id: zoneId }}
-          sourceBoards={installationBoards}
-          gridSupplies={gridSupplies}
-          zones={zones}
-          onSubmit={async (values, options) => {
-            const created = await electricalAssetsRepo.create({
-              ...values,
-              audit_id: installationId,
-              zone_id: zoneId,
-            });
-            setBoardModal(false);
-            if (options.commissionMeter) {
-              navigation.navigate('FormTypePicker', {
+      <FormModal
+        visible={boardModal}
+        title={boardDetourForAsset ? 'Add source switchboard' : 'Add board'}
+        onClose={() => {
+          setBoardModal(false);
+          if (boardDetourForAsset) {
+            setBoardDetourForAsset(false);
+            setAssetModal(true);
+          }
+        }}
+      >
+        {boardDetourForAsset ? (
+          <QuickSwitchboardForm
+            inheritedSource={sourceBoardInheritedSource}
+            sourceBoards={installationBoards}
+            gridSupplies={gridSupplies}
+            onSubmit={async (details) => {
+              const created = await electricalAssetsRepo.create(quickSwitchboardCreateValues({
                 installationId,
                 zoneId,
-                boardId: created.id,
+                inheritedSource: sourceBoardInheritedSource,
+                details,
+              }));
+              setBoardModal(false);
+              setBoardDetourForAsset(false);
+              await Promise.all([refresh(), refreshInstallation()]);
+              setNewSourceBoardId(created.id);
+              setSourceBoardReturnToken((current) => current + 1);
+              setAssetModal(true);
+            }}
+          />
+        ) : (
+          <ElectricalAssetForm
+            initial={{ audit_id: installationId, zone_id: zoneId }}
+            sourceBoards={installationBoards}
+            gridSupplies={gridSupplies}
+            zones={zones}
+            onSubmit={async (values) => {
+              const created = await electricalAssetsRepo.create({
+                ...values,
+                audit_id: installationId,
+                zone_id: zoneId,
               });
-            } else {
+              setBoardModal(false);
               navigation.navigate('BoardDetail', {
                 boardId: created.id,
                 installationId,
                 zoneId,
               });
-            }
-          }}
-        />
+            }}
+          />
+        )}
       </FormModal>
 
       <FormModal visible={assetModal} title="Add site asset" onClose={() => setAssetModal(false)}>
@@ -342,6 +387,14 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           zones={zones}
           meterDevices={meterDevices}
           measurementAssignments={measurementAssignments}
+          onAddSourceBoard={(inheritedSource) => {
+            setSourceBoardInheritedSource(inheritedSource);
+            setBoardDetourForAsset(true);
+            setAssetModal(false);
+            setBoardModal(true);
+          }}
+          newSourceBoardId={newSourceBoardId}
+          sourceBoardReturnToken={sourceBoardReturnToken}
           deviceDetourReturnToken={deviceDetourReturnToken}
           onDraftRestored={() => {
             if (!readOnly) setAssetModal(true);
@@ -354,11 +407,11 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
             deviceDetourActive.current = true;
             setAssetModal(false);
             const sourceBoard = installationBoards.find((item) => item.id === sourceBoardId);
-            navigation.navigate('FormTypePicker', {
+            navigation.navigate('FormTypePicker', wwCommissioningPickerParams({
               installationId,
               zoneId: sourceBoard?.zone_id ?? zoneId,
               boardId: sourceBoardId,
-            });
+            }));
           }}
           onSubmit={async (values, metering) => {
             const created = await siteAssetsRepo.saveEditor(null, {

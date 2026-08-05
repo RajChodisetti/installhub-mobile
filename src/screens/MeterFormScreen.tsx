@@ -221,7 +221,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
             : boardIsUpstreamOf(boards, board.id, item.id))
         .map((item) => ({
           key: item.id,
-          label: `${item.display_code} · ${item.asset_name}`,
+          label: `${item.asset_name} · ${item.asset_type}`,
           subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}`,
           target: { kind: 'BOARD' as const, boardId: item.id },
         })));
@@ -243,7 +243,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
           !siteAssetIdsOwnedByOtherMeters.has(item.id))
         .map((item) => ({
           key: item.id,
-          label: `${item.display_code ?? item.id} · ${item.asset_name}`,
+          label: `${item.asset_name} · ${item.asset_type}`,
           subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}`,
           target: { kind: 'SITE_ASSET' as const, siteAssetId: item.id },
         })));

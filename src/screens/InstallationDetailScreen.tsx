@@ -27,6 +27,7 @@ import { sha256 } from 'js-sha256';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { recordCompletionRejection } from '../services/operationalDiagnostics';
+import { summarizeReadinessIssues } from '../domain/reconciliationWorkflow';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
@@ -60,6 +61,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [gridNmi, setGridNmi] = useState('');
   const [gridExternalKey, setGridExternalKey] = useState('');
   const [gridDefault, setGridDefault] = useState(false);
+  const [secondaryOpen, setSecondaryOpen] = useState(false);
+  const [finalizedNamesOpen, setFinalizedNamesOpen] = useState(false);
 
   if (loading || !item) {
     return (
@@ -73,6 +76,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const assetCount = (zoneId: string) => siteAssets.filter((a) => a.zone_id === zoneId).length;
   const authoritativeCompleted = item.status === 'Completed' && Boolean(item.record_version_number);
   const readOnly = authoritativeCompleted;
+  const readinessSummary = summarizeReadinessIssues(readiness?.issues ?? []);
+  const readinessIssueCount = readinessSummary.reduce((count, group) => count + group.count, 0);
   const meteringCounts = {
     metered: siteAssets.filter((asset) => asset.metering_state?.kind === 'METERED').length,
     unmetered: siteAssets.filter((asset) => asset.metering_state?.kind === 'UNMETERED').length,
@@ -121,7 +126,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       recordRejection('CLOUD_BACKUP_DISABLED');
       Alert.alert(
         'Cloud Backup must be enabled first',
-        'Authoritative completion requires your prior, explicit Cloud Backup opt-in. Enable it in the Cloud Backup section, then complete again.',
+        'Authoritative completion requires your prior, explicit Cloud Backup opt-in. Open More tools & reports, enable Cloud Backup, then complete again.',
       );
       return;
     }
@@ -141,7 +146,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         );
         Alert.alert(
           'Cloud validation found issues',
-          serverReadiness.issues.slice(0, 8).map((issue) => `${issue.code}: ${issue.message}`).join('\n'),
+          summarizeReadinessIssues(serverReadiness.issues)
+            .map((group) => `${group.label}: ${group.count}`)
+            .join('\n'),
         );
         return;
       }
@@ -377,6 +384,32 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Badge label="Reconciliation required" tone="tbc" />
         </View>
       ) : null}
+      {item.status === 'Draft' && readinessIssueCount ? (
+        <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+          <Text style={{ color: colors.foreground, fontWeight: '700' }}>Before completion</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 5, lineHeight: 20 }}>
+            {readinessIssueCount} check{readinessIssueCount === 1 ? '' : 's'} need attention across {readinessSummary.length} area{readinessSummary.length === 1 ? '' : 's'}.
+          </Text>
+          {readinessSummary.map((group) => (
+            <View
+              key={group.id}
+              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm }}
+            >
+              <Text style={{ color: colors.foreground, flex: 1 }}>{group.label}</Text>
+              <Badge
+                label={`${group.count}`}
+                tone={group.blocking ? 'danger' : 'tbc'}
+              />
+            </View>
+          ))}
+          <Button
+            title="Review details"
+            variant="ghost"
+            style={{ marginTop: spacing.sm }}
+            onPress={() => navigation.navigate('DataView', { installationId })}
+          />
+        </Card>
+      ) : null}
       <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
         <Text style={{ color: colors.foreground, fontWeight: '700' }}>Asset metering status</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm }}>
@@ -385,20 +418,19 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Badge label={`${meteringCounts.tbc} metering TBC`} tone={meteringCounts.tbc ? 'tbc' : 'default'} />
           {brokenAssetMappings ? <Badge label={`${brokenAssetMappings} mapping issue${brokenAssetMappings === 1 ? '' : 's'}`} tone="danger" /> : null}
         </View>
-        <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
-          Confirmed unmetered assets have no direct device/channel connection. They remain in the full asset register, and that metering state alone does not block completion.
-        </Text>
         {unassignedActiveChannels ? (
           <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: spacing.sm }}>
             {unassignedActiveChannels} active meter channel{unassignedActiveChannels === 1 ? ' is' : 's are'} still unassigned and must be mapped or marked Spare / unused.
           </Text>
         ) : null}
-        <Button
-          title="Review metering inventory"
-          variant="ghost"
-          style={{ marginTop: spacing.sm }}
-          onPress={() => navigation.navigate('MeteringTable', { installationId })}
-        />
+        {meteringCounts.tbc || brokenAssetMappings || unassignedActiveChannels ? (
+          <Button
+            title="Resolve metering issues"
+            variant="ghost"
+            style={{ marginTop: spacing.sm }}
+            onPress={() => navigation.navigate('DataView', { installationId })}
+          />
+        ) : null}
       </Card>
       {item.backup_conflict?.kind === 'CONFLICT' ? (
         <Card
@@ -439,18 +471,38 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       {item.resolved_display_code_changes?.length ? (
         <Card style={{ marginTop: spacing.md }}>
           <Text style={{ color: colors.foreground, fontWeight: '700' }}>
-            Display codes finalized by Cloud Backup
+            Names finalized by Cloud Backup
           </Text>
-          {item.resolved_display_code_changes.map((change) => (
+          <Text style={{ color: colors.mutedForeground, marginTop: 5 }}>
+            {item.resolved_display_code_changes.length} switchboard, asset, or device name{item.resolved_display_code_changes.length === 1 ? '' : 's'} were confirmed during backup.
+          </Text>
+          {finalizedNamesOpen ? item.resolved_display_code_changes.map((change) => (
             <Text key={`${change.entityType}:${change.entityId}`} style={{ color: colors.mutedForeground, marginTop: 6 }}>
-              {change.previousValue || 'Unassigned'} → {change.resolvedValue}
+              {change.entityType === 'board'
+                ? 'Switchboard'
+                : change.entityType === 'site_asset'
+                  ? 'Asset'
+                  : 'Device'}: {change.previousValue || 'Unassigned'} → {change.resolvedValue}
             </Text>
-          ))}
+          )) : null}
+          <Button
+            title={finalizedNamesOpen ? 'Hide finalized names' : 'Show finalized names'}
+            variant="ghost"
+            style={{ marginTop: spacing.sm }}
+            accessibilityState={{ expanded: finalizedNamesOpen }}
+            onPress={() => setFinalizedNamesOpen((current) => !current)}
+          />
         </Card>
       ) : null}
 
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: spacing.lg }}>
         <Button title="Edit" variant="secondary" disabled={readOnly} onPress={() => navigation.navigate('InstallationForm', { installationId })} style={{ flexGrow: 1 }} />
+        <Button
+          title="Search devices"
+          variant="secondary"
+          onPress={() => navigation.navigate('DeviceSearch')}
+          style={{ flexGrow: 1 }}
+        />
         <Button
           title={authoritativeCompleted ? 'Reopen installation' : completionBusy ? 'Completing…' : 'Complete installation'}
           disabled={completionBusy}
@@ -475,6 +527,24 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             : 'Installation remains a Draft.'}
       </Text>
 
+      <Button
+        title={secondaryOpen ? 'Hide tools & reports' : 'More tools & reports'}
+        variant="secondary"
+        style={{ marginTop: spacing.lg }}
+        accessibilityState={{ expanded: secondaryOpen }}
+        onPress={() => setSecondaryOpen((current) => !current)}
+      />
+      {!secondaryOpen ? (
+        <Card style={{ marginTop: spacing.sm }}>
+          <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+            {item.cloud_backup_enabled ? 'Cloud Backup enabled' : 'Local-only installation'}
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+            Open for Cloud Backup, incoming grid connection, forms, reports, metering, and administrator tools.
+          </Text>
+        </Card>
+      ) : (
+        <View>
       <SectionHeader title="Cloud Backup" />
       <Card>
         <Text style={{ color: colors.foreground, fontWeight: '600' }}>
@@ -533,10 +603,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       </Card>
 
       <SectionHeader
-        title={`Grid supplies (${gridSupplies.length})`}
+        title={`Incoming grid connections (${gridSupplies.length})`}
         actionLabel={readOnly ? undefined : '+ Add'}
         onAction={readOnly ? undefined : () => openGridEditor()}
       />
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
+        The default incoming grid connection is the electrical starting point for this installation. Keep it unless the site genuinely has another incoming supply.
+      </Text>
       {gridSupplies.map((grid) => (
         <Card key={grid.id} style={{ marginBottom: 8 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
@@ -561,11 +634,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
                   }}
                 />
               ) : null}
-              <Button
-                title="Remove"
-                variant="danger"
-                disabled={grid.isDefault || gridSupplies.length < 2}
-                onPress={() => { void (async () => {
+              {!grid.isDefault && gridSupplies.length > 1 ? (
+                <Button
+                  title="Remove"
+                  variant="danger"
+                  onPress={() => { void (async () => {
                   const impact = await gridSuppliesRepo.previewRemove(grid.id);
                   Alert.alert(
                     'Remove Grid supply?',
@@ -582,8 +655,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
                       },
                     ],
                   );
-                })(); }}
-              />
+                  })(); }}
+                />
+              ) : null}
             </View>
           ) : null}
         </Card>
@@ -595,9 +669,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <Button title="Data View / TBC" variant="secondary" onPress={() => navigation.navigate('DataView', { installationId })} />
         <Button title="Metering Table" variant="secondary" onPress={() => navigation.navigate('MeteringTable', { installationId })} />
         <Button title="Full Installation Report" variant="secondary" onPress={() => navigation.navigate('InstallationReport', { installationId })} />
-        <Button title="Client Report" variant="ghost" onPress={() => navigation.navigate('ClientReport', { installationId })} />
-        <Button title="Photo Preview" variant="ghost" onPress={() => navigation.navigate('PhotoPreview', { installationId })} />
       </View>
+        </View>
+      )}
 
       <SectionHeader
         title="Zones"
@@ -679,7 +753,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         />
       </FormModal>
 
-      <FormModal visible={gridModal} title={editingGridId ? 'Edit Grid supply' : 'Add Grid supply'} onClose={() => setGridModal(false)}>
+      <FormModal visible={gridModal} title={editingGridId ? 'Edit incoming grid connection' : 'Add incoming grid connection'} onClose={() => setGridModal(false)}>
         <TextField label="Supply name" value={gridName} onChangeText={setGridName} />
         <TextField label="NMI (optional)" value={gridNmi} onChangeText={setGridNmi} />
         <TextField label="External key (optional)" value={gridExternalKey} onChangeText={setGridExternalKey} />
@@ -691,7 +765,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           onPress={() => setGridDefault(true)}
         />
         <Button
-          title="Save Grid supply"
+          title="Save incoming grid connection"
           disabled={!gridName.trim()}
           style={{ marginTop: spacing.md }}
           onPress={async () => {

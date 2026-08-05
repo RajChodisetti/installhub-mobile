@@ -22,7 +22,7 @@ import { installationFormAnswersForMeter } from '../domain/formMeterPrefill';
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
 export function FormTypePickerScreen({ navigation, route }: Props) {
-  const { installationId, boardId, meterId, siteAssetId, zoneId } = route.params;
+  const { installationId, boardId, meterId, siteAssetId, zoneId, formType } = route.params;
   const { user } = useAuth();
   const { colors } = useTheme();
   const {
@@ -52,6 +52,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
 
   const allowed = FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
+    if (formType && definition.type !== formType) return false;
     return isFormTypeAvailableForContext(definition.type, { boardId, meterId, siteAssetId });
   });
 
@@ -73,7 +74,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
           <SearchBar
             value={boardSearch}
             onChangeText={setBoardSearch}
-            placeholder="Search code, name, type, or zone"
+            placeholder="Search name, type, or zone"
           />
           <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
             {boardResults.total > SOURCE_BOARD_RESULT_LIMIT
@@ -90,7 +91,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   key={board.id}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: selected }}
-                  accessibilityLabel={`${board.display_code}, ${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
+                  accessibilityLabel={`${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
                   onPress={() => setSelectedBoardId(board.id)}
                   style={[
                     styles.boardChoice,
@@ -101,7 +102,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   ]}
                 >
                   <Text style={{ color: colors.foreground, fontWeight: '700' }}>
-                    {selected ? '✓ ' : ''}{board.display_code} · {board.asset_name}
+                    {selected ? '✓ ' : ''}{board.asset_name}
                   </Text>
                   <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
                     {board.asset_type} · {zone?.zone_name ?? 'Unknown zone'}
@@ -171,7 +172,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                       : undefined;
                     if (meter) {
                       answers['existing.device_id'] = meter.device_id;
-                      answers['existing.device_number'] = meter.device_number ?? '';
+                      answers['existing.device_number'] = meter.device_id;
                       answers['existing.device_type'] = meter.device_type;
                     }
                   }

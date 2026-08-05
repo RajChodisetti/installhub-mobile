@@ -31,10 +31,10 @@ export function PhotoPreviewScreen({ navigation, route }: Props) {
     boards.forEach((b) => {
       const uris = [b.photo, ...(b.extra_photos ?? [])].filter(Boolean) as string[];
       if (uris.length === 0) {
-        items.push({ id: `board-${b.id}`, label: `Board · ${b.display_code} (no photos)` });
+        items.push({ id: `board-${b.id}`, label: `Board · ${b.asset_name} (no photos)` });
       } else {
         uris.forEach((uri, idx) => {
-          items.push({ id: `board-${b.id}-${idx}`, label: `Board · ${b.display_code}`, uri });
+          items.push({ id: `board-${b.id}-${idx}`, label: `Board · ${b.asset_name}`, uri });
         });
       }
     });

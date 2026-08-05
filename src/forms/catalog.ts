@@ -8,6 +8,7 @@ import type {
 } from '../types';
 import type { ScanMode } from '../components/BarcodeScanField';
 import { WW_CHANNEL_PURPOSE_FORM_OPTIONS } from '../domain/formMeterPrefill';
+import { humanDeviceLabel } from '../domain/meterCommissioning';
 
 export type FormFieldKind = 'text' | 'multiline' | 'number' | 'yesno' | 'select' | 'photo';
 
@@ -331,7 +332,7 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
             ];
           }).flat(),
           photo('commissioning.energy_screenshot', 'Energy page screenshot'),
-          photo('commissioning.completed_photos', 'Completed installation photos'),
+          photo('commissioning.completed_photos', 'Completed installation photos (include the antenna)'),
           { ...text('commissioning.final_comments', 'Final comments'), kind: 'multiline' },
         ],
       },
@@ -361,7 +362,6 @@ function wattwatcherInstallationDefinition(): FormDefinition {
           photo('auditor.sensor_before', 'CT / Rogowski coil location photos'),
           photo('auditor.cb_before', 'Circuit breaker location photos'),
           deviceTypeField('device.type'),
-          scan('device.number', 'Device Number'),
           scan('device.id', 'Device ID / serial'),
         ],
       },
@@ -429,7 +429,7 @@ function wattwatcherInstallationDefinition(): FormDefinition {
             ];
           }).flat(),
           photo('commissioning.energy_screenshot', 'Energy page screenshot'),
-          photo('commissioning.completed_photos', 'Completed installation photos'),
+          photo('commissioning.completed_photos', 'Completed installation photos (include the antenna)'),
           { ...text('commissioning.final_comments', 'Final comments'), kind: 'multiline' },
         ],
       },
@@ -459,7 +459,6 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           text('existing.site_nmi', 'Site NMI'),
           photo('existing.switchboard_photos', 'Whole switchboard photos'),
           deviceTypeField('existing.device_type', 'Existing Meter / Device Type'),
-          scan('existing.device_number', 'Existing Device Number'),
           scan('existing.device_id', 'Existing Device ID / serial'),
           sensorField(
             'existing.sensor_rating',
@@ -481,10 +480,6 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           yes('works.replace_device', 'Does the device need replacement?'),
           {
             ...deviceTypeField('works.new_device_type', 'New Meter / Device Type'),
-            showWhen: { key: 'works.replace_device', equals: 'yes' },
-          },
-          {
-            ...scan('works.new_device_number', 'New Device Number'),
             showWhen: { key: 'works.replace_device', equals: 'yes' },
           },
           {
@@ -616,7 +611,7 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           yes('final.connectors_installed', 'Single-screw connectors installed?'),
           yes('final.connections_checked', 'All connections checked?'),
           yes('final.completed', 'Installation, testing and commissioning completed?'),
-          photo('final.completed_photo', 'Completed installation photos'),
+          photo('final.completed_photo', 'Completed installation photos (include the antenna)'),
         ],
       },
     ],
@@ -781,6 +776,12 @@ export function answersAfterChange(
   value: string,
 ): Record<string, FormValue> {
   const next = { ...answers, [key]: value };
+  const compatibilityKey = {
+    'device.id': 'device.number',
+    'existing.device_id': 'existing.device_number',
+    'works.new_device_id': 'works.new_device_number',
+  }[key];
+  if (compatibilityKey) next[compatibilityKey] = value;
   for (const section of definition.sections) {
     if (!isSectionVisible(section, next)) {
       for (const field of section.fields) delete next[field.key];
@@ -795,6 +796,27 @@ export function answersAfterChange(
       const selected = String(next[field.key] ?? '');
       if (selected && !optionsForField(field, next).includes(selected)) delete next[field.key];
     }
+  }
+  if (!next['works.new_device_id']) delete next['works.new_device_number'];
+  return next;
+}
+
+/** Older synchronized form snapshots may still contain a separate device
+ * number. Current authoring exposes one serial identity and mirrors it into
+ * the compatibility alias without asking the installer twice. */
+export function withMirroredDeviceIdentityAnswers(
+  answers: Record<string, FormValue>,
+): Record<string, FormValue> {
+  const next = { ...answers };
+  for (const [identityKey, compatibilityKey] of [
+    ['device.id', 'device.number'],
+    ['existing.device_id', 'existing.device_number'],
+    ['works.new_device_id', 'works.new_device_number'],
+  ] as const) {
+    const identity = String(next[identityKey] ?? next[compatibilityKey] ?? '');
+    if (!identity) continue;
+    next[identityKey] = identity;
+    next[compatibilityKey] = identity;
   }
   return next;
 }
@@ -849,19 +871,23 @@ export function validateForm(submission: FormSubmission): string[] {
 export function meterAfterCommsReplacement(
   meter: Meter,
   answers: Record<string, FormValue>,
+  labelPrefix = '',
 ): Meter {
   const deviceType = String(answers['works.new_device_type'] ?? '');
   if (!DEVICE_TYPES.includes(deviceType as (typeof DEVICE_TYPES)[number])) return meter;
 
   const typedDevice = deviceType as (typeof DEVICE_TYPES)[number];
+  const deviceId = String(answers['works.new_device_id'] ?? '');
   const sensorRating = String(answers['works.new_sensor_rating'] ?? '');
   const channelCount = typedDevice === 'A3RM' ? 3 : 6;
   return {
     ...meter,
-    device_name: `${typedDevice} Auditor`,
+    device_name: humanDeviceLabel(labelPrefix, typedDevice, deviceId),
     device_type: typedDevice,
-    device_id: String(answers['works.new_device_id'] ?? ''),
-    device_number: String(answers['works.new_device_number'] ?? ''),
+    device_id: deviceId,
+    device_number: String(
+      answers['works.new_device_id'] ?? answers['works.new_device_number'] ?? '',
+    ),
     ww_channels: Array.from({ length: channelCount }, (_, index) => {
       const {
         rogowski_size: _rogowskiSize,

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   boundedPickerResults,
+  inheritedSourceForQuickSwitchboard,
   pagedPickerResults,
+  quickSwitchboardCreateValues,
   searchSourceBoards,
   sourceKeyAfterKindSelection,
 } from '../src/domain/sourcePicker';
@@ -32,21 +34,59 @@ test('changing to a concrete source kind never silently chooses its first record
   assert.equal(sourceKeyAfterKindSelection('TBC'), 'TBC');
 });
 
-test('source board search includes code, name, type, and zone and stays bounded', () => {
+test('source board search uses human name, type, and zone and stays bounded', () => {
   const boards = Array.from({ length: 140 }, (_, index) => board(index + 1));
   const bounded = searchSourceBoards(boards, [zone], '', 100);
   assert.equal(bounded.total, 140);
   assert.equal(bounded.visible.length, 100);
   assert.equal(searchSourceBoards(boards, [zone], 'warehouse').total, 140);
-  assert.equal(searchSourceBoards(boards, [zone], 'lx-139').visible[0]?.id, 'board-139');
+  assert.equal(searchSourceBoards(boards, [zone], 'lighting board 139').visible[0]?.id, 'board-139');
+  assert.equal(searchSourceBoards(boards, [zone], 'lx-139').total, 0);
   assert.equal(searchSourceBoards(boards, [zone], 'lx-db').total, 140);
   const pinned = searchSourceBoards(boards, [zone], '', 100, 'board-140');
   assert.equal(pinned.visible.length, 100);
   assert.equal(pinned.visible[0]?.id, 'board-140');
   assert.equal(pinned.selectedPinned, true);
-  const pinnedOutsideQuery = searchSourceBoards(boards, [zone], 'lx-2', 100, 'board-140');
+  const pinnedOutsideQuery = searchSourceBoards(boards, [zone], 'lighting board 2', 100, 'board-140');
   assert.equal(pinnedOutsideQuery.visible[0]?.id, 'board-140');
   assert.equal(pinnedOutsideQuery.selectedPinned, true);
+});
+
+test('quick switchboard insertion inherits the asset path and creates only minimal board details', () => {
+  const grids = [{
+    id: 'grid-default', installationId: 'installation', name: 'Incoming supply',
+    isDefault: true, createdAt: '2026-08-05T00:00:00.000Z', updatedAt: '2026-08-05T00:00:00.000Z',
+  }];
+  assert.deepEqual(
+    inheritedSourceForQuickSwitchboard('BOARD:upstream', { kind: 'GRID', gridSupplyId: 'grid-old' }, grids),
+    { kind: 'BOARD', boardId: 'upstream' },
+  );
+  assert.deepEqual(
+    inheritedSourceForQuickSwitchboard('BOARD:', { kind: 'GRID', gridSupplyId: 'grid-old' }, grids),
+    { kind: 'GRID', gridSupplyId: 'grid-old' },
+  );
+  assert.deepEqual(
+    inheritedSourceForQuickSwitchboard('BOARD:', { kind: 'TBC' }, grids),
+    { kind: 'GRID', gridSupplyId: 'grid-default' },
+  );
+
+  assert.deepEqual(quickSwitchboardCreateValues({
+    installationId: 'installation',
+    zoneId: 'zone',
+    inheritedSource: { kind: 'BOARD', boardId: 'upstream' },
+    details: { name: '  Boiler DB  ', typeCode: 'DB' },
+  }), {
+    audit_id: 'installation',
+    zone_id: 'zone',
+    asset_name: 'Boiler DB',
+    display_code: '',
+    asset_type: 'DB',
+    type_code: 'DB',
+    custom_type_name: undefined,
+    electrical_source: { kind: 'BOARD', boardId: 'upstream' },
+    electrical_parent_id: 'upstream',
+    electrical_parent_tbc: false,
+  });
 });
 
 test('generic assignment-target results cap a 5k match set and preserve its selected row', () => {

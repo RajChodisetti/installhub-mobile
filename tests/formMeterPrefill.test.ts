@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { installationFormAnswersForMeter } from '../src/domain/formMeterPrefill';
+import {
+  installationFormAnswersForMeter,
+  isCanonicalBoardAnswerKey,
+} from '../src/domain/formMeterPrefill';
 import { meterDeviceFromLegacy } from '../src/domain/installationV2';
 import { meterFromInstallationForm } from '../src/domain/meterCommissioning';
 import type { ElectricalAsset, FormSubmission, MeterDevice } from '../src/types';
@@ -25,11 +28,24 @@ const canonicalMeter: MeterDevice = {
   ],
 };
 
+test('known-board report answers stay stored but are not separate editable WW questions', () => {
+  for (const key of [
+    'auditor.switchboard_name',
+    'auditor.switchboard_location',
+    'auditor.switchboard_type',
+    'auditor.site_nmi',
+  ]) {
+    assert.equal(isCanonicalBoardAnswerKey('ww-installation', key), true);
+  }
+  assert.equal(isCanonicalBoardAnswerKey('ww-installation', 'device.id'), false);
+  assert.equal(isCanonicalBoardAnswerKey('comms-fault', 'auditor.switchboard_name'), false);
+});
+
 test('existing canonical meter context prefills WW identity, purpose, load, rating, and description', () => {
   const answers = installationFormAnswersForMeter(canonicalMeter);
   assert.equal(answers['device.type'], 'A6M');
   assert.equal(answers['device.id'], 'SERIAL-42');
-  assert.equal(answers['device.number'], 'D-42');
+  assert.equal(answers['device.number'], 'SERIAL-42');
   assert.deepEqual(
     [1, 2, 3, 4, 5, 6].map((ordinal) => answers[`channel.${ordinal}.purpose`]),
     [

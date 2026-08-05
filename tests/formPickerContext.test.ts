@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FORM_DEFINITIONS } from '../src/forms/catalog';
-import { isFormTypeAvailableForContext } from '../src/domain/formPickerContext';
+import {
+  isFormTypeAvailableForContext,
+  wwCommissioningPickerParams,
+} from '../src/domain/formPickerContext';
 
 function availableTypes(context: Parameters<typeof isFormTypeAvailableForContext>[1]) {
   return FORM_DEFINITIONS
@@ -33,4 +36,24 @@ test('board-only and site-asset picker contexts retain their existing catalogs',
     availableTypes({ siteAssetId: 'asset-1' }),
     ['honeywell-q400', 'captis-logger', 'sums-logger'],
   );
+});
+
+test('a communications fault starts only from a selected device replacement flow', () => {
+  assert.deepEqual(
+    availableTypes({}),
+    ['ww-installation', 'ace-switchboard', 'honeywell-q400', 'captis-logger', 'sums-logger'],
+  );
+});
+
+test('asset commissioning detours always target the detailed WW form', () => {
+  assert.deepEqual(wwCommissioningPickerParams({
+    installationId: 'installation-1',
+    zoneId: 'zone-1',
+    boardId: 'board-1',
+  }), {
+    installationId: 'installation-1',
+    zoneId: 'zone-1',
+    boardId: 'board-1',
+    formType: 'ww-installation',
+  });
 });

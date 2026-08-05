@@ -115,6 +115,19 @@ Installation (id)
 - Scanner requirements are field metadata in the form catalog. Preserve manual
   entry as a fallback and keep SUMS serial fields enabled for both barcode and
   QR scanning.
+- New WW and replacement-device authoring exposes one required Device ID/serial
+  field. `device_number` answer/property aliases remain readable and are mirrored
+  invisibly for compatibility; never ask the installer for the same identity twice.
+- Board, asset, and device names accept 1–64 visible characters. Stable record
+  IDs and serials remain separate identities, while duplicate names are rejected
+  installation-wide.
+- Every evidence-photo field is a multi-photo collection. Keep the visible
+  “another photo” camera/library affordance after the first attachment.
+- Meter presence on a switchboard is derived from its installed devices. Do not
+  add a separate yes/no question; use the detailed WW commissioning action.
+- The site-asset source-board detour is intentionally minimal: collect only the
+  switchboard name/type, inherit the asset's upstream/grid source, auto-select
+  the created board, and return to the protected asset draft.
 - Completed form snapshots are read-only; corrections use `cloneAmendment`.
 
 ## Change recipes

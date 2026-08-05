@@ -11,6 +11,7 @@ import {
   meterAfterCommsReplacement,
   optionsForField,
   validateForm,
+  withMirroredDeviceIdentityAnswers,
 } from '../src/forms/catalog';
 import { buildFormReportHtml } from '../src/services/formReportHtml';
 import { formPdfFilename } from '../src/services/reportFilenames';
@@ -67,10 +68,10 @@ test('the full mobile catalog matches the audited portal contract fingerprint', 
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 390);
+  assert.equal(fieldCount, 387);
   assert.equal(
     fingerprint,
-    'df5cda7af9d65d9f6c19bdcaec182a61d248b1d9fe47bb29478f1d736e1b482a',
+    '49097638a6ef9bd16bf7d869d315b30f8e57af3910839333aeacd65d7fa3aee9',
   );
 });
 
@@ -366,14 +367,21 @@ test('Comms replacement rebuilds channel count and sensor representation', () =>
     'works.new_device_number': 'NEW-NUMBER',
     'works.new_sensor_rating': '3000A - 20cm',
   });
-  assert.equal(replacement.device_name, 'A3RM Auditor');
+  assert.equal(replacement.device_name, 'A3RM - NEW-ID');
   assert.equal(replacement.device_type, 'A3RM');
   assert.equal(replacement.device_id, 'NEW-ID');
-  assert.equal(replacement.device_number, 'NEW-NUMBER');
+  assert.equal(replacement.device_number, 'NEW-ID');
   assert.equal(replacement.ww_channels?.length, 3);
   assert.equal(replacement.ww_channels?.[0]?.load_type, 'Mains Supply');
   assert.equal(replacement.ww_channels?.[0]?.rogowski_size, '3000A - 20cm');
   assert.equal(replacement.ww_channels?.[0]?.ct_ratio, undefined);
+
+  const humanNamed = meterAfterCommsReplacement(existing, {
+    'works.new_device_type': 'A3RM',
+    'works.new_device_id': 'NEW-ID',
+    'works.new_sensor_rating': '3000A - 20cm',
+  }, 'Redgum Factory - Boiler Room');
+  assert.equal(humanNamed.device_name, 'Redgum Factory - Boiler Room - A3RM - NEW-ID');
 
   const expanded = meterAfterCommsReplacement(replacement, {
     'works.new_device_type': 'A6M',
@@ -455,11 +463,8 @@ test('scanner requirements are attached to every ingestion field', () => {
       )),
   );
   for (const key of [
-    'ww-installation:device.number',
     'ww-installation:device.id',
-    'comms-fault:existing.device_number',
     'comms-fault:existing.device_id',
-    'comms-fault:works.new_device_number',
     'comms-fault:works.new_device_id',
     'ace-switchboard:job.number',
     'ace-switchboard:install.ct_serial_a',
@@ -471,6 +476,13 @@ test('scanner requirements are attached to every ingestion field', () => {
   ]) {
     assert.deepEqual(fields[key]?.scanModes, ['barcode'], key);
   }
+  for (const removedCompatibilityField of [
+    'ww-installation:device.number',
+    'comms-fault:existing.device_number',
+    'comms-fault:works.new_device_number',
+  ]) {
+    assert.equal(fields[removedCompatibilityField], undefined, removedCompatibilityField);
+  }
   assert.deepEqual(fields['ace-switchboard:job.qr_link']?.scanModes, ['qr']);
   assert.deepEqual(
     fields['sums-logger:meter.serial_number']?.scanModes,
@@ -480,6 +492,56 @@ test('scanner requirements are attached to every ingestion field', () => {
     fields['sums-logger:logger.serial_number']?.scanModes,
     ['barcode', 'qr'],
   );
+});
+
+test('device identity authoring mirrors one visible ID into legacy compatibility aliases', () => {
+  const ww = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  assert.deepEqual(
+    answersAfterChange(ww, {}, 'device.id', 'SERIAL-100'),
+    { 'device.id': 'SERIAL-100', 'device.number': 'SERIAL-100' },
+  );
+
+  const comms = FORM_DEFINITION_BY_TYPE['comms-fault'];
+  assert.deepEqual(
+    answersAfterChange(comms, {}, 'existing.device_id', 'SERIAL-OLD'),
+    { 'existing.device_id': 'SERIAL-OLD', 'existing.device_number': 'SERIAL-OLD' },
+  );
+  assert.deepEqual(
+    answersAfterChange(
+      comms,
+      { 'works.replace_device': 'yes' },
+      'works.new_device_id',
+      'SERIAL-NEW',
+    ),
+    {
+      'works.replace_device': 'yes',
+      'works.new_device_id': 'SERIAL-NEW',
+      'works.new_device_number': 'SERIAL-NEW',
+    },
+  );
+
+  assert.deepEqual(withMirroredDeviceIdentityAnswers({
+    'device.number': 'LEGACY-WW',
+    'existing.device_number': 'LEGACY-OLD',
+    'works.new_device_number': 'LEGACY-NEW',
+  }), {
+    'device.id': 'LEGACY-WW',
+    'device.number': 'LEGACY-WW',
+    'existing.device_id': 'LEGACY-OLD',
+    'existing.device_number': 'LEGACY-OLD',
+    'works.new_device_id': 'LEGACY-NEW',
+    'works.new_device_number': 'LEGACY-NEW',
+  });
+});
+
+test('every catalog photo slot remains a multi-photo collection', () => {
+  const photoFields = FORM_DEFINITIONS.flatMap((definition) =>
+    definition.sections.flatMap((section) =>
+      section.fields.filter((field) => field.kind === 'photo'),
+    ),
+  );
+  assert.ok(photoFields.length > 0);
+  assert.equal(photoFields.every((field) => field.multiple === true), true);
 });
 
 test('SUMS has the same stored field keys as Captis', () => {

@@ -19,14 +19,14 @@ Field App Complete API login
      │  │  └─ A3RM/A6M meters and commissioning channels
      │  └─ site assets (HVAC, lighting, solar, EV, etc.)
      └─ views/reports
+        ├─ global device search with Open and Replace actions
         ├─ six new field-form families with draft/completed/amendment lifecycle
         ├─ form-specific A4 PDFs with embedded evidence photos
         │  └─ local quality retries -> durable API job fallback
         ├─ merged installation pack (summary + completed form PDFs)
         ├─ Data View and TBC resolver
         ├─ metering table
-        ├─ client report placeholder
-        └─ photo-selection placeholder
+        └─ compact tools/reports drawer
 ```
 
 The app is production-connected for authentication, opt-in Cloud Backup, explicit cloud-copy
@@ -197,17 +197,26 @@ The mobile commissioning workflow now enforces the canonical sequence: choose or
 zone and switchboard, start the WW form against that exact board, complete the validated form, then
 map active channels. Form completion and operational-meter materialization are one store
 transaction: the immutable Completed form receives the same stable `board_id` and `meter_id` that
-the canonical `meterDevices` row uses. Canonical board name/code/type/zone/location/NMI are shown as
-read-only context in the form and are normalized again at completion.
+the canonical `meterDevices` row uses. Canonical switchboard name/type/zone/location/NMI are shown
+once as concise read-only context in the form, while the same prefilled answers remain stored for
+PDF/reporting and are normalized again at completion.
 
 An assignment may target `BOARD`, `GRID_BOUNDARY`, `SITE_ASSET`, or explicit `TBC`. Main-supply
 channels may identify their installed-on board, an upstream Grid boundary, or TBC; sub-circuit
 channels may identify a downstream board, a site asset on the same source path, or TBC. One
 assignment cannot mix purposes, phase counts are explicit, and one channel cannot be assigned
-twice. Asset entry makes `METERED`, `UNMETERED`, and `TBC` an explicit decision. The Metered branch
+twice. New asset entry requires an explicit `METERED` or `UNMETERED` decision. A legacy asset
+already stored as `TBC` remains readable but prompts the installer to correct it before saving.
+The Metered branch
 uses dependent source-path/device/channel/phase/direction choices and can detour to commissioning
 without discarding the partially entered asset draft. Moving an existing Metered asset to
 Unmetered/TBC previews the exact assignments and channels removed before the atomic save.
+
+The asset source picker also has a quick switchboard detour. Its popup asks only
+for switchboard name/type, inherits the asset's existing upstream or incoming-grid
+relationship, creates and auto-selects the board, then restores the protected asset
+draft. “Commission a new device” similarly returns to the draft and always opens
+the detailed WW installation form for the selected source board.
 
 Meter deletion is Draft-only for the active installation tree: the meter and its assignments are
 retired and affected assets return to explicit `TBC`. Immutable Completed forms and their evidence
@@ -215,9 +224,9 @@ remain readable with the original meter ID. That historical exception is deliber
 missing meter reference is valid only when the form status is exactly Completed and `completedAt`
 is a valid ISO timestamp.
 
-Offline display-code allocations are provisional. A successful push alone cannot finalize them:
+Offline generated-name allocations are provisional. A successful push alone cannot finalize them:
 the app fetches and reconciles the exact canonical server tree. Once a code is server-confirmed it
-is immutable across later site/type/rule changes; only the explicit custom-code action may alter it.
+is immutable across later site/type/rule changes; only the explicit custom-name action may alter it.
 Rule-version metadata is preserved. Virtual/residual definitions and mapping exports are
 server-owned; local residuals are advisory shared/unallocated previews with no per-asset quantity.
 
@@ -425,6 +434,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `MainTabs` | none | Dashboard/Settings bottom tabs |
 | `InstallationForm` | optional `installationId` | Create or edit an installation |
 | `InstallationDetail` | `installationId` | Site summary, status, zones, report entry points |
+| `DeviceSearch` | none | Search every local device by ID/serial, legacy number, name, zone, board, installation, or type; Open or start a prefilled replacement form |
 | `ZoneWorkspace` | `zoneId`, `installationId` | Zone edit/photos, boards/assets, coverage and unresolved summary |
 | `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list |
 | `SiteAssetDetail` | `assetId`, `installationId`, `zoneId` | Site asset edit/delete |
@@ -432,8 +442,8 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `DataView` | `installationId` | Reconciliation, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
 | `MeteringTable` | `installationId` | Combined board-meter/site-asset metering rows |
 | `InstallationReport` | `installationId` | Summary and PDF export/share |
-| `ClientReport` | `installationId` | Placeholder client-facing summary |
-| `PhotoPreview` | `installationId` | Local photo inventory and non-persisted inclusion toggles |
+| `ClientReport` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
+| `PhotoPreview` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
 | `FormsList` | `installationId` | List drafts/completed forms, export or amend |
 | `FormTypePicker` | installation plus optional entity links | Central/contextual six-form catalog |
 | `FormEditor` | `formId` | Autosave, validation, location, evidence, completion and PDF |
@@ -478,16 +488,26 @@ preserving:
 - A3RM creates three channels and uses Rogowski coil-size choices.
 - A6M creates six channels and uses CT-rating choices.
 - Legacy saved choices remain selectable through `withLegacyOption`.
-- Device number, device ID/serial, and optional auditor serial can be barcode/QR scanned.
+- New WW and Comms replacement forms expose one Device ID/serial field, which can
+  be scanned or typed. Older separate device-number values remain readable and
+  are mirrored invisibly into the compatibility alias.
 - Manual entry always remains available when camera access is denied.
 - The new-form picker contains Installation (WW), Comms Fault, ACE
   Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger. The old
   `a3rm-installation` and `a6m-installation` types remain in the catalog only so
   stored submissions and PDFs remain readable.
+- Comms Fault is replacement-only: it is not offered as an unlinked generic
+  form. Device Search creates it directly with the stable device, board, zone,
+  installation, and existing serial already linked.
 - A WW form cannot be created or completed without a real board in the same installation. The
   installation-wide picker has searchable board choices plus an inline add-board detour.
-- New-board entry explicitly asks whether to commission a meter next. Parent-board search includes
-  code/name/type/zone and excludes the edited board and every descendant, preventing cycles.
+- New-board entry derives meter presence from installed devices and offers a clear
+  detailed WW commissioning action; it does not ask a separate meter-present yes/no.
+  Parent-board search includes name/type/zone and excludes the edited board and every
+  descendant, preventing cycles.
+- New device names are suggested as `<site> - <zone> - <type>` (bounded to 64
+  visible characters). Stable IDs/serials remain separate, and global Device Search
+  can find devices by either identity or by their site/zone/board/type context.
 - Installation uses one `device.type` controller. A3RM exposes three channels
   with exactly `3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`; A6M exposes six
   channels with exactly `60A`, `120A`, `200A`, `400A`, or `600A`.
@@ -587,6 +607,11 @@ files must never be committed.
 URI. The app stores that URI directly in the domain record. Cloud Backup keeps the local working
 URI and records the confirmed remote URL in its durable upload queue; API payloads never contain
 `file://` paths.
+
+Every form photo slot accepts multiple attachments. After the first image, the
+active editor keeps explicit “Take another photo” and “Choose another photo” actions,
+with an optional caption and individual remove action for each image. Completed WW
+installation evidence explicitly reminds the installer to include the antenna.
 
 ### Barcode scanning
 

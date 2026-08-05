@@ -30,6 +30,7 @@ import { ChangePasswordScreen } from '../screens/ChangePasswordScreen';
 import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
 import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
+import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabParamList>();
@@ -157,6 +158,7 @@ export function RootNavigator() {
             <Stack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
             <Stack.Screen name="InstallationForm" component={InstallationFormScreen} options={{ title: 'Installation' }} />
             <Stack.Screen name="InstallationDetail" component={InstallationDetailScreen} options={{ title: 'Site' }} />
+            <Stack.Screen name="DeviceSearch" component={DeviceSearchScreen} options={{ title: 'Device Search' }} />
             <Stack.Screen name="ZoneWorkspace" component={ZoneWorkspaceScreen} options={{ title: 'Zone' }} />
             <Stack.Screen name="BoardDetail" component={BoardDetailScreen} options={{ title: 'Board' }} />
             <Stack.Screen name="SiteAssetDetail" component={SiteAssetDetailScreen} options={{ title: 'Asset' }} />

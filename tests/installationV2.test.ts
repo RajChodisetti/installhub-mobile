@@ -335,6 +335,47 @@ test('display-code readiness matches server case-and-all-whitespace normalizatio
   assert.equal(issues.filter((item) => item.code === 'DISPLAY_CODE_DUPLICATE').length, 2);
 });
 
+test('human names accept spaces and punctuation while duplicate checks span boards, assets, and devices', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const board = store.electricalAssets[0]!;
+  const asset = store.siteAssets[0]!;
+  const meter = store.meterDevices[0]!;
+  board.display_code = 'Main Switchboard & Services';
+  board.display_code_meta = {
+    value: board.display_code,
+    generatedValue: board.display_code,
+    isOverridden: true,
+    ruleVersion: 1,
+  };
+  asset.display_code = 'Chiller Plant / East';
+  asset.display_code_meta = {
+    value: asset.display_code,
+    generatedValue: asset.display_code,
+    isOverridden: true,
+    ruleVersion: 1,
+  };
+  meter.displayName = {
+    value: 'Example Site - Plant - Other',
+    generatedValue: 'Example Site - Plant - Other',
+    isOverridden: false,
+    ruleVersion: 1,
+  };
+  const validIssues = installationReadiness(store, 'installation').issues;
+  assert.equal(validIssues.some((issue) =>
+    issue.code === 'DISPLAY_CODE_INVALID' && [board.id, asset.id, meter.id].includes(issue.entityId)), false);
+
+  board.display_code = 'Shared Name';
+  board.display_code_meta.value = 'Shared Name';
+  asset.display_code = ' shared   name ';
+  asset.display_code_meta.value = ' shared   name ';
+  meter.displayName.value = 'SHAREDNAME';
+  const duplicateIds = installationReadiness(store, 'installation').issues
+    .filter((issue) => issue.code === 'DISPLAY_CODE_DUPLICATE')
+    .map((issue) => issue.entityId)
+    .sort();
+  assert.deepEqual(duplicateIds, [asset.id, board.id, meter.id].sort());
+});
+
 test('local canonical refresh never renames a server-confirmed generated code', () => {
   const store = normalizeCanonicalStore(storeFixture());
   const board = store.electricalAssets[0]!;

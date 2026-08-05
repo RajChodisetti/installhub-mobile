@@ -65,6 +65,25 @@ export function channelAfterPurposeChange(
   };
 }
 
+export function deviceLabelPrefix(siteName: string, zoneName: string): string {
+  return [siteName.trim(), zoneName.trim()].filter(Boolean).join(' - ');
+}
+
+export function humanDeviceLabel(
+  prefix: string,
+  deviceType: MeterDeviceType,
+  serialNumber = '',
+): string {
+  const normalizedPrefix = prefix.trim();
+  const normalizedSerial = serialNumber.trim();
+  const serialToken = normalizedSerial.length > 20
+    ? normalizedSerial.slice(-20)
+    : normalizedSerial;
+  const suffix = ` - ${deviceType}${serialToken ? ` - ${serialToken}` : ''}`;
+  if (!normalizedPrefix) return `${deviceType}${serialToken ? ` - ${serialToken}` : ' Auditor'}`;
+  return `${normalizedPrefix.slice(0, 64 - suffix.length).trimEnd()}${suffix}`;
+}
+
 /**
  * Board identity in a commissioning form is a projection of the canonical
  * board, never a second editable copy. Applying it again at completion also
@@ -113,6 +132,7 @@ export function meterFromInstallationForm(
   form: FormSubmission,
   board: ElectricalAsset,
   meterId: string,
+  labelPrefix = '',
 ): Meter {
   if (!['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(form.form_type)) {
     throw new Error('This form does not commission a Wattwatchers meter.');
@@ -131,6 +151,7 @@ export function meterFromInstallationForm(
   const deviceIdKey = form.form_type === 'ww-installation'
     ? 'device.id'
     : 'auditor.serial_number';
+  const deviceId = String(form.answers[deviceIdKey] ?? '');
   const channels = Array.from({ length: channelCount }, (_, index) => {
     const ordinal = index + 1;
     const load = String(form.answers[`channel.${ordinal}.load`] ?? '');
@@ -164,10 +185,10 @@ export function meterFromInstallationForm(
   return {
     ...(existing ?? {}),
     id: meterId,
-    device_name: `${deviceType} Auditor`,
+    device_name: humanDeviceLabel(labelPrefix, deviceType, deviceId),
     device_type: deviceType,
-    device_id: String(form.answers[deviceIdKey] ?? ''),
-    device_number: String(form.answers['device.number'] ?? ''),
+    device_id: deviceId,
+    device_number: String(form.answers['device.id'] ?? form.answers['device.number'] ?? ''),
     ww_prestart: prestart,
     ww_channels: channels,
   };

@@ -1,10 +1,11 @@
-import type { UserSourceApp, UserSourceState } from '../types';
+import type { FormType, UserSourceApp, UserSourceState } from '../types';
 
 export type RootStackParamList = {
   Login: undefined;
   MainTabs: undefined;
   InstallationForm: { installationId?: string } | undefined;
   InstallationDetail: { installationId: string };
+  DeviceSearch: undefined;
   ZoneWorkspace: { zoneId: string; installationId: string };
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };
@@ -26,6 +27,7 @@ export type RootStackParamList = {
     boardId?: string;
     meterId?: string;
     siteAssetId?: string;
+    formType?: FormType;
   };
   FormEditor: { formId: string };
   RemoteInstallations: undefined;

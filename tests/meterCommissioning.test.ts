@@ -4,10 +4,28 @@ import {
   answersWithCanonicalBoardContext,
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
+  deviceLabelPrefix,
+  humanDeviceLabel,
   meterFromInstallationForm,
   siteAssetTargetIdsOwnedByOtherMeters,
 } from '../src/domain/meterCommissioning';
 import type { ElectricalAsset, FormSubmission } from '../src/types';
+
+test('new device names are suggested from site, zone, and type within the API limit', () => {
+  const prefix = deviceLabelPrefix('Redgum Factory', 'Boiler Room');
+  assert.equal(prefix, 'Redgum Factory - Boiler Room');
+  assert.equal(
+    humanDeviceLabel(prefix, 'A6M', 'WW-260805-01'),
+    'Redgum Factory - Boiler Room - A6M - WW-260805-01',
+  );
+  const long = humanDeviceLabel(
+    'A very long customer site and exceptionally descriptive plant zone name',
+    'A3RM',
+    'SERIAL-260805-1234567890',
+  );
+  assert.equal(long.length <= 64, true);
+  assert.equal(long.endsWith(' - A3RM - AL-260805-1234567890'), true);
+});
 
 test('switching a fixed meter to Other never defaults the custom definition to three', () => {
   const a3 = Array.from({ length: 3 }, (_, index) => ({ ordinal: index + 1 }));
@@ -93,7 +111,7 @@ test('WW completion projects read-only canonical board context and one stable me
   const amended = meterFromInstallationForm({
     ...form,
     meter_id: first.id,
-    answers: { ...answers, 'device.number': 'D-2' },
+    answers: { ...answers, 'device.id': 'D-2', 'device.number': 'D-2' },
   }, board, first.id);
   assert.equal(amended.id, 'stable-meter');
   assert.equal(amended.device_number, 'D-2');

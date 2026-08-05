@@ -220,13 +220,18 @@ export function primaryGridSupplyId(installationId: string): string {
   return `grid_${installationId}_primary`;
 }
 
-function displayCodeFromLegacy(value: string, generatedValue?: string): DisplayCode {
+function displayCodeFromLegacy(
+  value: string,
+  generatedValue?: string,
+  isOverridden?: boolean,
+): DisplayCode {
   const trimmed = value.trim();
   const generated = (generatedValue ?? trimmed).trim();
   return {
     value: trimmed,
     generatedValue: generated,
-    isOverridden: Boolean(trimmed && generated && trimmed !== generated),
+    isOverridden: isOverridden
+      ?? Boolean(trimmed && generated && trimmed !== generated),
     ruleVersion: DISPLAY_CODE_RULE_VERSION,
     provisional: true,
   };
@@ -325,7 +330,11 @@ export function meterDeviceFromLegacy(
     customModelName: model === 'OTHER' ? meter.custom_model_name : undefined,
     deviceNumber: meter.device_number,
     serialNumber: meter.device_id,
-    displayName: displayCodeFromLegacy(generatedName),
+    displayName: displayCodeFromLegacy(
+      generatedName,
+      meter.id,
+      Boolean(meter.device_name.trim()),
+    ),
     // Other devices deliberately preserve the explicit count, including zero;
     // the readiness engine asks the installer to declare capabilities.
     channels: channels.map((channel, index) =>
@@ -1003,19 +1012,19 @@ export function installationReadiness(
   }
 
   const codes = new Map<string, Array<{ entityType: 'board' | 'site_asset' | 'meter'; id: string }>>();
-  const validDisplayCode = (value: string) => {
+  const validDisplayName = (value: string) => {
     const trimmed = value.trim();
-    return trimmed.length >= 1 && trimmed.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed);
+    return trimmed.length >= 1 && trimmed.length <= 64 && !/[\u0000-\u001F\u007F]/.test(trimmed);
   };
   for (const entity of [...boards, ...assets]) {
     const code = entity.display_code_meta?.value ?? entity.display_code ?? '';
     const key = displayCodeKey(code);
     const entityType = 'meters' in entity ? 'board' as const : 'site_asset' as const;
-    if (!validDisplayCode(code)) {
+    if (!validDisplayName(code)) {
       issue(issues, {
         code: 'DISPLAY_CODE_INVALID', severity: 'ERROR', entityType,
         entityId: entity.id, field: 'displayCode',
-        message: 'Display code must be 1–64 characters using letters, numbers, dot, underscore, or hyphen.',
+        message: 'Name must contain 1–64 visible characters.',
       });
     }
     const entries = codes.get(key) ?? [];
@@ -1023,15 +1032,15 @@ export function installationReadiness(
     codes.set(key, entries);
   }
   for (const meter of meters) {
-    const code = meter.displayName.value;
-    const key = displayCodeKey(code);
-    if (!validDisplayCode(code)) {
+    const label = meter.displayName.value;
+    if (!validDisplayName(label)) {
       issue(issues, {
         code: 'DISPLAY_CODE_INVALID', severity: 'ERROR', entityType: 'meter',
         entityId: meter.id, field: 'displayName',
-        message: 'Display code must be 1–64 characters using letters, numbers, dot, underscore, or hyphen.',
+        message: 'Device name must contain 1–64 visible characters.',
       });
     }
+    const key = displayCodeKey(label);
     const entries = codes.get(key) ?? [];
     entries.push({ entityType: 'meter', id: meter.id });
     codes.set(key, entries);
@@ -1040,7 +1049,7 @@ export function installationReadiness(
     if (entries.length < 2) continue;
     for (const entry of entries) issue(issues, {
       code: 'DISPLAY_CODE_DUPLICATE', severity: 'ERROR', entityType: entry.entityType,
-      entityId: entry.id, field: 'displayCode', message: 'Display code must be unique in this installation.',
+      entityId: entry.id, field: 'displayCode', message: 'Name must be unique in this installation.',
     });
   }
 
