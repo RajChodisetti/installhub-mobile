@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -24,6 +25,7 @@ import {
   type StorageDiagnostics,
 } from '../services/storageDiagnostics';
 import { apiClient } from '../api/apiClient';
+import { PRIVACY_POLICY_URL } from '../constants/legalLinks';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import {
   passwordChangeSessionNotice,
@@ -359,6 +361,20 @@ export function SettingsScreen({ navigation }: Props) {
           Sustainability Wise report styling and secure Cloud Backup use the
           same service pattern as the other mobile apps.
         </Text>
+        <Button
+          title="Privacy Policy"
+          variant="secondary"
+          accessibilityRole="link"
+          accessibilityHint="Opens the Privacy Policy in your browser."
+          onPress={() => {
+            void Linking.openURL(PRIVACY_POLICY_URL).catch(() => {
+              Alert.alert(
+                'Could not open Privacy Policy',
+                'Check your internet connection and try again.',
+              );
+            });
+          }}
+        />
       </Card>
 
       <View style={{ marginTop: spacing.xl }}>
