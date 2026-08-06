@@ -6,6 +6,18 @@ export interface FormPickerContext {
   siteAssetId?: string;
 }
 
+const WATTWATCHERS_INSTALLATION_FORM_TYPES = new Set<FormType>([
+  'ww-installation',
+  'a3rm-installation',
+  'a6m-installation',
+]);
+
+/** The switchboard chooser is part of Wattwatchers commissioning, not the
+ * generic installation form catalog or the water/logger form journeys. */
+export function needsWattwatchersSwitchboard(formType?: FormType): boolean {
+  return Boolean(formType && WATTWATCHERS_INSTALLATION_FORM_TYPES.has(formType));
+}
+
 export function wwCommissioningPickerParams({
   installationId,
   zoneId,

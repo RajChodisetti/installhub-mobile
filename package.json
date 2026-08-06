@@ -7,7 +7,7 @@
     "@react-navigation/bottom-tabs": "^7.18.12",
     "@react-navigation/native": "^7.3.12",
     "@react-navigation/native-stack": "^7.18.4",
-    "expo": "~57.0.9",
+    "expo": "~57.0.10",
     "expo-asset": "~57.0.8",
     "expo-background-task": "~57.0.7",
     "expo-camera": "~57.0.3",

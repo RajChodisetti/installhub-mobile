@@ -9,6 +9,7 @@ import type {
 import type { ScanMode } from '../components/BarcodeScanField';
 import { WW_CHANNEL_PURPOSE_FORM_OPTIONS } from '../domain/formMeterPrefill';
 import { humanDeviceLabel } from '../domain/meterCommissioning';
+import { defaultMeterCustomName, nameAfterTypeChange } from '../domain/namingV2';
 
 export type FormFieldKind = 'text' | 'multiline' | 'number' | 'yesno' | 'select' | 'photo';
 
@@ -27,6 +28,12 @@ export interface FormFieldDefinition {
   multiple?: boolean;
   showWhen?: { key: string; equals: string | string[] };
   optionsWhen?: ConditionalOptions;
+  /** Keep a saved value selectable when a controlled list changed after the draft was created. */
+  preserveLegacyValue?: boolean;
+  /** Bounded historical choices accepted when preserveLegacyValue is enabled. */
+  legacyOptions?: string[];
+  /** A numeric field may accept named observations for selected controller values. */
+  nonNumericValuesWhen?: ConditionalOptions;
   scanModes?: ScanMode[];
   allowNotApplicable?: boolean;
 }
@@ -114,12 +121,24 @@ const prestartFields: FormFieldDefinition[] = [
   yes('prestart.safe_to_proceed', 'Can you safely proceed?'),
 ];
 
-const signalOptions = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'];
-const antennaOptions = ['Internal', 'CSM550 - External High Gain', 'Other', 'N/A'];
+const signalOptions = ['Low', 'Medium', 'High'];
+const antennaOptions = ['Internal', 'External', 'CSM550 - External High Gain', 'Other'];
+const legacySignalOptions = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'];
+const legacyAntennaOptions = ['N/A'];
+const legacySensorOptions = [
+  '3000A - 9cm',
+  '3000A - 20cm',
+  '3000A - 29cm',
+  '60A',
+  '120A',
+  '200A',
+  '400A',
+  '600A',
+];
 export const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 export const SENSOR_OPTIONS_BY_DEVICE: Record<(typeof DEVICE_TYPES)[number], string[]> = {
-  A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
-  A6M: ['60A', '120A', '200A', '400A', '600A'],
+  A3RM: ['10cm-200A', '10cm-333mV', '20cm-3000A', '30cm-3000A', '45cm-3000A', 'Not Used'],
+  A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
 };
 const loads = [
   'Mains Supply',
@@ -159,6 +178,8 @@ function sensorField(
       key: deviceTypeKey,
       values: SENSOR_OPTIONS_BY_DEVICE,
     },
+    preserveLegacyValue: true,
+    legacyOptions: legacySensorOptions,
   };
 }
 
@@ -299,6 +320,8 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
             kind: 'select',
             options: signalOptions,
             required: true,
+            preserveLegacyValue: true,
+            legacyOptions: legacySignalOptions,
           },
           {
             key: 'commissioning.antenna_type',
@@ -306,6 +329,8 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
             kind: 'select',
             options: antennaOptions,
             required: true,
+            preserveLegacyValue: true,
+            legacyOptions: legacyAntennaOptions,
           },
           yes('commissioning.start_complete', 'Start page completed?'),
           photo('commissioning.start_screenshot', 'Start page screenshot'),
@@ -326,7 +351,12 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
                 showWhen: { key: `channel.${n}.rating`, equals: usedRatings },
               },
               {
-                ...number(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`),
+                ...(kind === 'A6M'
+                  ? {
+                      ...text(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`),
+                      placeholder: 'e.g. 2.61 or Not Connected',
+                    }
+                  : number(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`)),
                 showWhen: { key: `channel.${n}.rating`, equals: usedRatings },
               },
             ];
@@ -358,11 +388,19 @@ function wattwatcherInstallationDefinition(): FormDefinition {
           text('auditor.switchboard_location', 'Switchboard location', true),
           text('auditor.switchboard_type', 'Type of switchboard', true),
           text('auditor.site_nmi', 'Site NMI'),
+          text('auditor.address_map_locator', 'Address map locator (latitude / longitude)'),
           photo('auditor.location_before', 'Auditor location photos'),
           photo('auditor.sensor_before', 'CT / Rogowski coil location photos'),
           photo('auditor.cb_before', 'Circuit breaker location photos'),
           deviceTypeField('device.type'),
           scan('device.id', 'Device ID / serial'),
+          scan(
+            'device.number',
+            'Site / asset tag (optional; not the Device ID / serial)',
+            ['barcode'],
+            false,
+          ),
+          text('device.name', 'Device name'),
         ],
       },
       ...dynamicChannelFields(),
@@ -387,6 +425,8 @@ function wattwatcherInstallationDefinition(): FormDefinition {
             kind: 'select',
             options: signalOptions,
             required: true,
+            preserveLegacyValue: true,
+            legacyOptions: legacySignalOptions,
           },
           {
             key: 'commissioning.antenna_type',
@@ -394,6 +434,8 @@ function wattwatcherInstallationDefinition(): FormDefinition {
             kind: 'select',
             options: antennaOptions,
             required: true,
+            preserveLegacyValue: true,
+            legacyOptions: legacyAntennaOptions,
           },
           yes('commissioning.start_complete', 'Start page completed?'),
           photo('commissioning.start_screenshot', 'Start page screenshot'),
@@ -421,6 +463,11 @@ function wattwatcherInstallationDefinition(): FormDefinition {
                   `commissioning.channel_${n}_current`,
                   `Channel ${n} current - AC clamp tester`,
                 ),
+                placeholder: 'e.g. 2.61 or Not Connected',
+                nonNumericValuesWhen: {
+                  key: 'device.type',
+                  values: { A6M: ['Not Connected'] },
+                },
                 showWhen: {
                   key: `channel.${n}.load`,
                   equals: usedLoads,
@@ -468,8 +515,8 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           yes('existing.energised', 'Is the Auditor energised?'),
           yes('existing.leds_visible', 'Are LEDs visible?'),
           yes('existing.online', 'Is the Auditor online in the WW app?'),
-          { key: 'existing.signal', label: 'Existing signal strength', kind: 'select', options: signalOptions },
-          { key: 'existing.antenna', label: 'Existing antenna type', kind: 'select', options: antennaOptions },
+          { key: 'existing.signal', label: 'Existing signal strength', kind: 'select', options: signalOptions, preserveLegacyValue: true, legacyOptions: legacySignalOptions },
+          { key: 'existing.antenna', label: 'Existing antenna type', kind: 'select', options: antennaOptions, preserveLegacyValue: true, legacyOptions: legacyAntennaOptions },
         ],
       },
       {
@@ -487,6 +534,15 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
             showWhen: { key: 'works.replace_device', equals: 'yes' },
           },
           {
+            ...scan(
+              'works.new_device_number',
+              'New site / asset tag (optional; not the Device ID / serial)',
+              ['barcode'],
+              false,
+            ),
+            showWhen: { key: 'works.replace_device', equals: 'yes' },
+          },
+          {
             ...sensorField(
               'works.new_sensor_rating',
               'works.new_device_type',
@@ -494,11 +550,11 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
             ),
           },
           { ...yes('works.new_online', 'Is the new device online?'), showWhen: { key: 'works.replace_device', equals: 'yes' } },
-          { key: 'works.new_signal', label: 'New device signal strength', kind: 'select', options: signalOptions, showWhen: { key: 'works.replace_device', equals: 'yes' } },
+          { key: 'works.new_signal', label: 'New device signal strength', kind: 'select', options: signalOptions, preserveLegacyValue: true, legacyOptions: legacySignalOptions, showWhen: { key: 'works.replace_device', equals: 'yes' } },
           yes('works.external_antenna', 'Install an external antenna?'),
-          { key: 'works.external_signal', label: 'Signal after external antenna', kind: 'select', options: signalOptions, showWhen: { key: 'works.external_antenna', equals: 'yes' } },
+          { key: 'works.external_signal', label: 'Signal after external antenna', kind: 'select', options: signalOptions, preserveLegacyValue: true, legacyOptions: legacySignalOptions, showWhen: { key: 'works.external_antenna', equals: 'yes' } },
           yes('works.extend_antenna', 'Extend the external antenna?'),
-          { key: 'works.extended_signal', label: 'Signal after antenna extension', kind: 'select', options: signalOptions, showWhen: { key: 'works.extend_antenna', equals: 'yes' } },
+          { key: 'works.extended_signal', label: 'Signal after antenna extension', kind: 'select', options: signalOptions, preserveLegacyValue: true, legacyOptions: legacySignalOptions, showWhen: { key: 'works.extend_antenna', equals: 'yes' } },
         ],
       },
       {
@@ -761,12 +817,36 @@ export function isSectionVisible(
   return expected.includes(String(answers[section.showWhen.key] ?? ''));
 }
 
-export function optionsForField(
+function authoredOptionsForField(
   field: FormFieldDefinition,
   answers: Record<string, FormValue>,
 ): string[] {
   if (!field.optionsWhen) return field.options ?? [];
   return field.optionsWhen.values[String(answers[field.optionsWhen.key] ?? '')] ?? [];
+}
+
+export function optionsForField(
+  field: FormFieldDefinition,
+  answers: Record<string, FormValue>,
+): string[] {
+  const options = authoredOptionsForField(field, answers);
+  if (!field.preserveLegacyValue) return options;
+  const saved = String(answers[field.key] ?? '').trim();
+  return saved
+    && !options.includes(saved)
+    && (field.legacyOptions?.includes(saved) ?? false)
+    ? [...options, saved]
+    : options;
+}
+
+export function nonNumericValuesForField(
+  field: FormFieldDefinition,
+  answers: Record<string, FormValue>,
+): string[] {
+  if (!field.nonNumericValuesWhen) return [];
+  return field.nonNumericValuesWhen.values[
+    String(answers[field.nonNumericValuesWhen.key] ?? '')
+  ] ?? [];
 }
 
 export function answersAfterChange(
@@ -781,7 +861,20 @@ export function answersAfterChange(
     'existing.device_id': 'existing.device_number',
     'works.new_device_id': 'works.new_device_number',
   }[key];
-  if (compatibilityKey) next[compatibilityKey] = value;
+  if (compatibilityKey && !String(next[compatibilityKey] ?? '').trim()) {
+    next[compatibilityKey] = value;
+  }
+  if (key === 'device.type' && DEVICE_TYPES.includes(value as (typeof DEVICE_TYPES)[number])) {
+    const previousType = String(answers['device.type'] ?? '');
+    const previousDefault = DEVICE_TYPES.includes(previousType as (typeof DEVICE_TYPES)[number])
+      ? defaultMeterCustomName(previousType as (typeof DEVICE_TYPES)[number])
+      : '';
+    next['device.name'] = nameAfterTypeChange(
+      String(answers['device.name'] ?? ''),
+      previousDefault,
+      defaultMeterCustomName(value as (typeof DEVICE_TYPES)[number]),
+    );
+  }
   for (const section of definition.sections) {
     if (!isSectionVisible(section, next)) {
       for (const field of section.fields) delete next[field.key];
@@ -794,16 +887,15 @@ export function answersAfterChange(
       }
       if (field.optionsWhen?.key !== key) continue;
       const selected = String(next[field.key] ?? '');
-      if (selected && !optionsForField(field, next).includes(selected)) delete next[field.key];
+      if (selected && !authoredOptionsForField(field, next).includes(selected)) delete next[field.key];
     }
   }
   if (!next['works.new_device_id']) delete next['works.new_device_number'];
   return next;
 }
 
-/** Older synchronized form snapshots may still contain a separate device
- * number. Current authoring exposes one serial identity and mirrors it into
- * the compatibility alias without asking the installer twice. */
+/** Seed a missing compatibility identity without overwriting a distinct field
+ * number that the installer scanned or typed explicitly. */
 export function withMirroredDeviceIdentityAnswers(
   answers: Record<string, FormValue>,
 ): Record<string, FormValue> {
@@ -813,10 +905,10 @@ export function withMirroredDeviceIdentityAnswers(
     ['existing.device_id', 'existing.device_number'],
     ['works.new_device_id', 'works.new_device_number'],
   ] as const) {
-    const identity = String(next[identityKey] ?? next[compatibilityKey] ?? '');
-    if (!identity) continue;
-    next[identityKey] = identity;
-    next[compatibilityKey] = identity;
+    const identity = String(next[identityKey] ?? '').trim();
+    const compatibility = String(next[compatibilityKey] ?? '').trim();
+    if (!identity && compatibility) next[identityKey] = compatibility;
+    if (!compatibility && identity) next[compatibilityKey] = identity;
   }
   return next;
 }
@@ -852,7 +944,10 @@ export function validateForm(submission: FormSubmission): string[] {
         errors.push(`${section.title}: ${field.label} has an invalid selection`);
       } else if (
         field.kind === 'number' &&
-        !Number.isFinite(Number(value))
+        !Number.isFinite(Number(value)) &&
+        !nonNumericValuesForField(field, submission.answers).some(
+          (allowed) => allowed.toLocaleLowerCase() === value.toLocaleLowerCase(),
+        )
       ) {
         errors.push(`${section.title}: ${field.label} must be a number`);
       } else if (
@@ -880,14 +975,19 @@ export function meterAfterCommsReplacement(
   const deviceId = String(answers['works.new_device_id'] ?? '');
   const sensorRating = String(answers['works.new_sensor_rating'] ?? '');
   const channelCount = typedDevice === 'A3RM' ? 3 : 6;
+  const previousDefaultName = defaultMeterCustomName(meter.device_type);
+  const customName = nameAfterTypeChange(
+    meter.custom_name ?? '',
+    previousDefaultName,
+    defaultMeterCustomName(typedDevice),
+  );
   return {
     ...meter,
     device_name: humanDeviceLabel(labelPrefix, typedDevice, deviceId),
+    custom_name: customName,
     device_type: typedDevice,
     device_id: deviceId,
-    device_number: String(
-      answers['works.new_device_id'] ?? answers['works.new_device_number'] ?? '',
-    ),
+    device_number: String(answers['works.new_device_number'] ?? '').trim() || deviceId,
     ww_channels: Array.from({ length: channelCount }, (_, index) => {
       const {
         rogowski_size: _rogowskiSize,

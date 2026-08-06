@@ -26,6 +26,7 @@ import {
   installationSiteCodeForNewCopy,
   siteAssetTypeCode,
 } from '../domain/installationV2';
+import { defaultMeterCustomName } from '../domain/namingV2';
 import { validRecordVersionNumber } from '../services/reportVersioning';
 import {
   assertRemoteInstallationIdentity,
@@ -140,7 +141,8 @@ function canonicalSiteAssetType(
   return ({
     PV: 'Solar / PV', HVAC: 'HVAC', LIGHTING: 'Lighting', EV_CHARGER: 'EV Charger',
     VEHICLE_HOIST: 'Other', FORKLIFT: 'Other', EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
-    POWER_OUTLET: 'Power Outlet', HEATER_GEYSER: 'Hot Water', OTHER: 'Other',
+    POWER_OUTLET: 'Power Outlet', HEATER_GEYSER: 'Hot Water',
+    REFRIGERATION: 'Refrigeration', COMPRESSED_AIR: 'Compressed Air', OTHER: 'Other',
   } as const)[typeCode];
 }
 
@@ -218,6 +220,7 @@ function mapMeter(record: Record<string, unknown>, id: string): Meter {
   return {
     id,
     device_name: text(record, 'deviceName', 'device_name'),
+    custom_name: optionalText(record, 'customName', 'custom_name'),
     device_type: (text(record, 'deviceType', 'device_type') || 'Other') as Meter['device_type'],
     device_id: text(record, 'deviceId', 'device_id'),
     device_number: optionalText(record, 'deviceNumber', 'device_number'),
@@ -437,6 +440,7 @@ export async function importRemoteInstallationAsCopy(
   const zones: Zone[] = tree.zones.map((zone) => ({
     id: zoneIds.get(text(zone, 'id'))!,
     audit_id: installationId,
+    zone_code: optionalText(zone, 'zoneCode', 'zone_code'),
     zone_name: text(zone, 'zoneName', 'zone_name'),
     zone_description: text(zone, 'zoneDescription', 'zone_description'),
     photos: array<string>(zone, 'photos'),
@@ -627,6 +631,12 @@ export async function importRemoteInstallationAsCopy(
       deviceModel,
       customManufacturerName: optionalText(meter, 'customManufacturerName', 'custom_manufacturer_name'),
       customModelName: optionalText(meter, 'customModelName', 'custom_model_name'),
+      customName: optionalText(meter, 'customName', 'custom_name')
+        ?? defaultMeterCustomName(
+          deviceModel,
+          optionalText(meter, 'customModelName', 'custom_model_name'),
+          optionalText(meter, 'customManufacturerName', 'custom_manufacturer_name'),
+        ),
       deviceNumber: optionalText(meter, 'deviceNumber', 'device_number'),
       serialNumber: text(meter, 'serialNumber', 'serial_number'),
       displayName,

@@ -13,6 +13,7 @@ import type {
   BackupMediaReference,
   InstallationBackupTree,
 } from '../repositories/cloudSyncRepository';
+import { defaultMeterCustomName, resolvedZoneCodes } from '../domain/namingV2';
 
 export type BackupSyncStage = 'metadata' | 'complete';
 
@@ -217,6 +218,12 @@ function wireMeter(
   return {
     id: meter.id,
     deviceName: meter.device_name,
+    customName: meter.custom_name?.trim().slice(0, 64)
+      || defaultMeterCustomName(
+        meter.device_type,
+        meter.custom_model_name,
+        meter.custom_manufacturer_name,
+      ),
     deviceType: meter.device_type,
     deviceId: meter.device_id,
     deviceNumber: meter.device_number ?? null,
@@ -286,11 +293,13 @@ function wireMeter(
 function wireZone(
   installationId: string,
   zone: Zone,
+  zoneCode: string,
   remote: ReturnType<typeof remoteResolver>,
 ) {
   return {
     id: zone.id,
     installationId,
+    zoneCode,
     zoneName: zone.zone_name,
     zoneDescription: zone.zone_description,
     photos: zone.photos
@@ -438,6 +447,12 @@ function wireMeterDevice(
     deviceModel: meter.deviceModel,
     customManufacturerName: meter.customManufacturerName ?? null,
     customModelName: meter.customModelName ?? null,
+    customName: meter.customName?.trim().slice(0, 64)
+      || defaultMeterCustomName(
+        meter.deviceModel,
+        meter.customModelName,
+        meter.customManufacturerName,
+      ),
     deviceNumber: meter.deviceNumber ?? null,
     serialNumber: meter.serialNumber,
     displayName: meter.displayName,
@@ -548,6 +563,7 @@ export function buildBackupPayload(
 ) {
   const installationId = tree.installation.id;
   const remote = remoteResolver(queue);
+  const zoneCodes = resolvedZoneCodes(tree.zones);
   return {
     treeSchemaVersion: tree.treeSchemaVersion,
     ...(tree.baseTreeRevision !== undefined
@@ -573,7 +589,12 @@ export function buildBackupPayload(
       updatedAt: tree.installation.updated_at,
     },
     gridSupplies: tree.gridSupplies.map(wireGridSupply),
-    zones: tree.zones.map((zone) => wireZone(installationId, zone, remote)),
+    zones: tree.zones.map((zone) => wireZone(
+      installationId,
+      zone,
+      zoneCodes.get(zone.id) ?? 'ZONE',
+      remote,
+    )),
     electricalAssets: tree.electricalAssets.map((board) =>
       wireElectricalAsset(installationId, board, remote)),
     siteAssets: tree.siteAssets.map((asset) =>

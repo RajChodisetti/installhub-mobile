@@ -22,6 +22,7 @@ import {
   answersAfterChange,
   isFieldVisible,
   isSectionVisible,
+  nonNumericValuesForField,
   optionsForField,
   validateForm,
   withMirroredDeviceIdentityAnswers,
@@ -152,6 +153,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
   const navigationFlushRunning = useRef(false);
   const scrollRef = useRef<ScrollView | null>(null);
   const sectionOffsets = useRef(new Map<string, number>());
+  const pendingPhotoDeletes = useRef(new Map<string, FormAttachment>());
   const autosaveRef = useRef<
     DraftAutosaveCoordinator<DraftSnapshot, FormSubmission> | null
   >(null);
@@ -170,6 +172,12 @@ export function FormEditorScreen({ navigation, route }: Props) {
         if (mounted.current) setSaving(nextSaving);
       },
       onPersisted: (savedForm) => {
+        const savedAttachmentIds = new Set(savedForm.attachments.map((item) => item.id));
+        for (const [attachmentId, attachment] of pendingPhotoDeletes.current) {
+          if (savedAttachmentIds.has(attachmentId)) continue;
+          deleteFormPhoto(attachment);
+          pendingPhotoDeletes.current.delete(attachmentId);
+        }
         if (mounted.current) setForm(savedForm);
       },
     });
@@ -271,7 +279,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
       const removed = current.filter((item) => hiddenSlots.has(item.slot));
       for (const item of removed) {
         if (!form.supersedes_id || item.captured_at >= form.created_at) {
-          deleteFormPhoto(item);
+          pendingPhotoDeletes.current.set(item.id, item);
         }
       }
       return current.filter((item) => !hiddenSlots.has(item.slot));
@@ -319,7 +327,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
         style: 'destructive',
         onPress: () => {
           if (!form.supersedes_id || item.captured_at >= form.created_at) {
-            deleteFormPhoto(item);
+            pendingPhotoDeletes.current.set(item.id, item);
           }
           setAttachments((current) =>
             current.filter((candidate) => candidate.id !== item.id),
@@ -486,16 +494,20 @@ export function FormEditorScreen({ navigation, route }: Props) {
       );
     }
     const Input = field.kind === 'multiline' ? TextArea : TextField;
+    const acceptsNamedNumericObservation = field.kind === 'number'
+      && nonNumericValuesForField(field, answers).length > 0;
     return (
       <Input
         key={field.key}
         label={label}
         value={value}
         editable={!readOnly}
-        keyboardType={field.kind === 'number' ? 'numbers-and-punctuation' : 'default'}
-      placeholder={field.placeholder}
-      error={fieldError}
-      onChangeText={(next) => change(field.key, next)}
+        keyboardType={field.kind === 'number' && !acceptsNamedNumericObservation
+          ? 'numbers-and-punctuation'
+          : 'default'}
+        placeholder={field.placeholder}
+        error={fieldError}
+        onChangeText={(next) => change(field.key, next)}
       />
     );
   };
@@ -867,7 +879,10 @@ export function FormEditorScreen({ navigation, route }: Props) {
                     finishChannelMapping: true,
                   });
                 } else {
-                  Alert.alert('Form completed', 'This record is now read-only and ready for PDF export.');
+                  void AccessibilityInfo.announceForAccessibility(
+                    'Form completed. Returning to the parent page.',
+                  );
+                  setReleasedNavigationAction(StackActions.pop(1));
                 }
               } catch (error) {
                 setCompletionErrors([
@@ -892,11 +907,6 @@ export function FormEditorScreen({ navigation, route }: Props) {
                   style: 'destructive',
                   onPress: async () => {
                     await autosave.cancelPending();
-                    for (const attachment of attachments) {
-                      if (!form.supersedes_id || attachment.captured_at >= form.created_at) {
-                        deleteFormPhoto(attachment);
-                      }
-                    }
                     await formsRepo.removeDraft(form.id);
                     setReleasedNavigationAction(StackActions.pop(1));
                   },

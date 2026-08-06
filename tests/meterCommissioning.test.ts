@@ -5,8 +5,13 @@ import {
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
   deviceLabelPrefix,
+  energyFlowLabel,
   humanDeviceLabel,
+  measuredItemTypeLabel,
   meterFromInstallationForm,
+  meterChannelPurposeLabel,
+  phaseGroupingLabel,
+  showsWattwatchersCommissioningSections,
   siteAssetTargetIdsOwnedByOtherMeters,
 } from '../src/domain/meterCommissioning';
 import type { ElectricalAsset, FormSubmission } from '../src/types';
@@ -30,6 +35,22 @@ test('new device names are suggested from site, zone, and type within the API li
 test('switching a fixed meter to Other never defaults the custom definition to three', () => {
   const a3 = Array.from({ length: 3 }, (_, index) => ({ ordinal: index + 1 }));
   assert.deepEqual(channelsAfterDeviceTypeChange('A3RM', 'Other', a3), []);
+});
+
+test('direct Other meter capture excludes Wattwatchers-only commissioning sections', () => {
+  assert.equal(showsWattwatchersCommissioningSections('Other'), false);
+  assert.equal(showsWattwatchersCommissioningSections('A3RM'), true);
+  assert.equal(showsWattwatchersCommissioningSections('A6M'), true);
+});
+
+test('channel measurement choices use plain field-facing labels without changing canonical values', () => {
+  assert.equal(meterChannelPurposeLabel('MAIN_SUPPLY'), 'Main supply');
+  assert.equal(meterChannelPurposeLabel('SUB_CIRCUIT'), 'Sub-circuit or site asset');
+  assert.equal(meterChannelPurposeLabel('SPARE'), 'Spare / unused');
+  assert.equal(phaseGroupingLabel('THREE_PHASE'), 'Three phase · 3 channels');
+  assert.equal(energyFlowLabel('BIDIRECTIONAL'), 'Can consume or generate');
+  assert.equal(measuredItemTypeLabel('GRID_BOUNDARY'), 'Incoming grid connection');
+  assert.equal(measuredItemTypeLabel('TBC'), 'To be confirmed');
 });
 
 test('custom channel definitions persist while fixed models keep exact positive ordinals', () => {
@@ -94,6 +115,7 @@ test('WW completion projects read-only canonical board context and one stable me
     answers: {
       'auditor.switchboard_name': 'Stale editable copy',
       'device.type': 'A3RM', 'device.id': 'SERIAL-1', 'device.number': 'D-1',
+      'device.name': 'Boiler Meter',
       'channel.1.load': 'Mains Supply', 'channel.1.rating': '3000A - 9cm',
       'channel.2.load': 'HVAC', 'channel.2.rating': '3000A - 9cm',
       'channel.3.load': 'Not Used', 'channel.3.rating': '',
@@ -107,6 +129,8 @@ test('WW completion projects read-only canonical board context and one stable me
   assert.equal(answers['auditor.site_nmi'], 'NMI-1');
 
   const first = meterFromInstallationForm({ ...form, answers }, board, 'stable-meter');
+  assert.equal(first.custom_name, 'Boiler Meter');
+  assert.equal(first.device_number, 'D-1');
   board.meters = [first];
   const amended = meterFromInstallationForm({
     ...form,

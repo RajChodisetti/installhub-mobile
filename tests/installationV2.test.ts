@@ -21,8 +21,10 @@ import {
   replaceMeterMeasurementAssignments,
   setAssetMeteringState,
   siteAssetTypeCode,
+  siteAssetTypeFromCode,
+  SITE_ASSET_TYPE_LABELS,
 } from '../src/domain/installationV2';
-import type { AppDataStore } from '../src/types';
+import { SITE_ASSET_TYPE_CODES, type AppDataStore } from '../src/types';
 
 function storeFixture(): AppDataStore {
   const timestamp = '2026-08-01T00:00:00.000Z';
@@ -67,6 +69,17 @@ test('site-code rule matches the canonical eight-initial cross-client fixtures',
   for (const invalid of ['bad', 'BAD SITE', 'BAD!', '-BAD', 'BAD-', 'BAD--SITE', 'ABCDEFGHIJKLMNOPQ']) {
     assert.equal(isValidInstallationSiteCode(invalid), false);
   }
+});
+
+test('Refrigeration and Compressed Air are first-class choices without rewriting legacy Other data', () => {
+  assert.ok(SITE_ASSET_TYPE_CODES.includes('REFRIGERATION'));
+  assert.ok(SITE_ASSET_TYPE_CODES.includes('COMPRESSED_AIR'));
+  assert.equal(SITE_ASSET_TYPE_LABELS.REFRIGERATION, 'Refrigeration');
+  assert.equal(SITE_ASSET_TYPE_LABELS.COMPRESSED_AIR, 'Compressed Air');
+  assert.equal(siteAssetTypeFromCode('REFRIGERATION'), 'Refrigeration');
+  assert.equal(siteAssetTypeFromCode('COMPRESSED_AIR'), 'Compressed Air');
+  assert.equal(siteAssetTypeCode('Refrigeration'), 'OTHER');
+  assert.equal(siteAssetTypeCode('Compressed Air'), 'OTHER');
 });
 
 test('historical site codes use the shared bounded display-code prefix', () => {
@@ -128,6 +141,12 @@ test('meter commissioning metadata survives legacy-to-canonical-to-legacy normal
     photos_taken: false,
     notes: 'Commissioned in QA',
   };
+  meter.ww_photos = {
+    device_installed: 'file:///installed.jpg',
+    switchboard_overview: undefined,
+    labeling: 'file:///label.jpg',
+    extra: ['file:///extra-1.jpg', 'file:///extra-2.jpg'],
+  };
 
   normalizeCanonicalStore(store);
 
@@ -172,6 +191,13 @@ test('meter commissioning metadata survives legacy-to-canonical-to-legacy normal
   assert.equal(projected.ww_switchboard?.sb_location, 'Plant room north wall');
   assert.equal(projected.ww_verification?.communications_ok, true);
   assert.equal(projected.ww_commissioning?.channels_reporting, true);
+  assert.deepEqual(store.meterDevices[0]!.wwPhotos, {
+    deviceInstalled: 'file:///installed.jpg',
+    switchboardOverview: undefined,
+    labeling: 'file:///label.jpg',
+    extra: ['file:///extra-1.jpg', 'file:///extra-2.jpg'],
+  });
+  assert.deepEqual(projected.ww_photos, meter.ww_photos);
 });
 
 test('legacy meter load labels map to canonical codes only for sub-circuits', () => {
@@ -280,6 +306,26 @@ test('metering inventory keeps confirmed unmetered non-blocking and exposes brok
   assert.equal(valid.channels.unassignedActive, 1);
   assert.equal(valid.channels.spare, 1);
   assert.equal(valid.meters.withUnassignedActiveChannels, 1);
+
+  store.measurementAssignments = [{
+    id: 'retained-unmetered-assignment',
+    installationId: 'installation',
+    meterId: 'meter-inventory',
+    channelIds: ['active-unassigned'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: asset.id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  asset.meter_present = true;
+  assert.equal(
+    installationReadiness(store, 'installation').issues.find(
+      (issue) => issue.code === 'METERING_STATE_INVALID' && issue.entityId === asset.id,
+    )?.field,
+    'meteringState.measurementAssignmentIds',
+  );
+  store.measurementAssignments = [];
+  asset.meter_present = false;
 
   asset.metering_state = { kind: 'METERED', measurementAssignmentIds: ['missing-assignment'] };
   assert.equal(allAssetMeteringRows(store, 'installation')[0]?.state, 'MAPPING_ISSUE');
@@ -437,7 +483,10 @@ test('accepted legacy taxonomy aliases normalize without losing deliberate custo
   assert.equal(store.electricalAssets[0]!.type_code, 'MSB');
   assert.deepEqual(store.electricalAssets[0]!.electrical_source, { kind: 'GRID', gridSupplyId: 'grid-a' });
   assert.equal(store.gridSupplies.find((grid) => grid.isDefault)?.id, 'grid-a');
-  assert.equal(store.siteAssets.find((asset) => asset.id === 'new-light')?.display_code, 'ESS-LIGHTING-005');
+  assert.equal(
+    store.siteAssets.find((asset) => asset.id === 'new-light')?.display_code,
+    'ESS-PLANT-01-DIRECT-GRID-LOAD',
+  );
   assert.equal(store.siteAssets.find((asset) => asset.id === 'refrigeration')?.custom_type_name, 'Refrigeration');
 });
 

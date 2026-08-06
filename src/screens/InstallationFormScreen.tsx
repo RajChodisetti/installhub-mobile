@@ -38,7 +38,7 @@ export function InstallationFormScreen({ navigation, route }: Props) {
         onSubmit={async (values) => {
           if (id) {
             await installationsRepo.update(id, values);
-            navigation.replace('InstallationDetail', { installationId: id });
+            navigation.goBack();
           } else {
             const created = await installationsRepo.create(values);
             navigation.replace('InstallationDetail', { installationId: created.id });

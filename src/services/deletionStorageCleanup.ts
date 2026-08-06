@@ -4,9 +4,11 @@ import {
   deleteFormsLocalFiles,
   type FormStorageCleanupResult,
 } from './formStorageCleanup';
+import { deleteLocalPhoto } from './localMedia';
 
 export interface DeletionStorageCleanupResult {
   forms: FormStorageCleanupResult[];
+  removedEntityMediaFiles: number;
   removedThumbnailFiles: number;
   warnings: string[];
 }
@@ -25,9 +27,15 @@ export function cleanupDeletedTreeStorage(
   );
   const result: DeletionStorageCleanupResult = {
     forms,
+    removedEntityMediaFiles: 0,
     removedThumbnailFiles: 0,
     warnings: forms.flatMap((item) => item.warnings),
   };
+  const protectedEntityMedia = new Set(effects.protectedEntityMediaUris);
+  for (const uri of effects.deletedEntityMediaUris) {
+    if (protectedEntityMedia.has(uri)) continue;
+    if (deleteLocalPhoto(uri)) result.removedEntityMediaFiles += 1;
+  }
   for (const uri of effects.orphanedThumbnailCacheUris) {
     try {
       const file = new File(uri);

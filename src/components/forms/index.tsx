@@ -23,16 +23,29 @@ import {
   boardTypeCode,
   boardTypeFromCode,
   cycleSafeBoardCandidates,
+  normalizedSiteCode,
   siteAssetTypeCode,
   siteAssetTypeFromCode,
 } from '../../domain/installationV2';
 import { createId } from '../../utils';
 import { useTheme } from '../../context/AppProviders';
-import { Button, Card, SearchBar, TextArea, TextField, SectionHeader } from '../ui';
+import {
+  Button,
+  Card,
+  PhotoThumbnailGrid,
+  SearchBar,
+  TextArea,
+  TextField,
+  SectionHeader,
+} from '../ui';
 import { BarcodeScanField, withLegacyOption } from '../BarcodeScanField';
 import {
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
+  energyFlowLabel,
+  meterChannelPurposeLabel,
+  phaseGroupingLabel,
+  showsWattwatchersCommissioningSections,
 } from '../../domain/meterCommissioning';
 import { radii, spacing, typography } from '../../theme';
 import { validateInstallationIdentity } from '../../domain/installationValidation';
@@ -56,6 +69,16 @@ import {
 } from '../../services/siteAssetEditorDraft';
 import { booleanConsequenceHint } from '../../domain/accessibilityCopy';
 import { searchEligibleMeters } from '../../domain/meterSearch';
+import {
+  DISPLAY_CODE_MAX_LENGTH,
+  defaultMeterCustomName,
+  nameAfterTypeChange,
+} from '../../domain/namingV2';
+import {
+  deleteRemovedLocalPhotos,
+  pickLocalPhoto,
+  takeLocalPhoto,
+} from '../../services';
 
 const ELIGIBLE_METER_RESULT_LIMIT = 100;
 
@@ -147,6 +170,83 @@ function BoolRow({
   );
 }
 
+function PhotoAttachmentField({
+  label,
+  uris,
+  onChange,
+  single = false,
+}: {
+  label: string;
+  uris: string[];
+  onChange: (uris: string[]) => void;
+  single?: boolean;
+}) {
+  const { colors } = useTheme();
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  const addPhoto = async (source: 'camera' | 'library') => {
+    setPhotoBusy(true);
+    try {
+      const uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
+      if (uri) onChange(single ? [uri] : [...uris, uri]);
+    } catch (error) {
+      Alert.alert(
+        'Photo not added',
+        error instanceof Error ? error.message : 'The photo could not be added.',
+      );
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const confirmRemove = (uri: string) => {
+    Alert.alert('Remove photo?', undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => onChange(single ? [] : uris.filter((item) => item !== uri)),
+      },
+    ]);
+  };
+
+  return (
+    <View style={{ marginBottom: spacing.md }}>
+      <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>
+        {label}
+      </Text>
+      {uris.length ? (
+        <PhotoThumbnailGrid uris={uris} onRemove={confirmRemove} />
+      ) : (
+        <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
+          No photo attached.
+        </Text>
+      )}
+      <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+        <Button
+          title={photoBusy
+            ? 'Opening…'
+            : uris.length
+              ? single ? 'Retake photo' : 'Take another photo'
+              : 'Take photo'}
+          disabled={photoBusy}
+          onPress={() => { void addPhoto('camera'); }}
+          style={{ flex: 1 }}
+        />
+        <Button
+          title={uris.length
+            ? single ? 'Replace from library' : 'Choose another photo'
+            : 'Choose photo'}
+          variant="secondary"
+          disabled={photoBusy}
+          onPress={() => { void addPhoto('library'); }}
+          style={{ flex: 1 }}
+        />
+      </View>
+    </View>
+  );
+}
+
 export function InstallationForm({
   initial,
   onSubmit,
@@ -156,6 +256,7 @@ export function InstallationForm({
   onSubmit: (values: {
     client_name: string;
     site_name: string;
+    site_code: string;
     site_address: string;
     inspector_name: string;
     audit_date: string;
@@ -166,6 +267,10 @@ export function InstallationForm({
   const { colors } = useTheme();
   const [client_name, setClient] = useState(initial?.client_name ?? '');
   const [site_name, setSite] = useState(initial?.site_name ?? '');
+  const [site_code, setSiteCode] = useState(
+    initial?.site_code?.trim() || normalizedSiteCode(initial?.site_name ?? ''),
+  );
+  const siteCodeEdited = useRef(Boolean(initial?.site_code?.trim()));
   const [site_address, setAddress] = useState(initial?.site_address ?? '');
   const [inspector_name, setInspector] = useState(initial?.inspector_name ?? '');
   const [audit_date, setDate] = useState(initial?.audit_date ?? new Date().toISOString().slice(0, 10));
@@ -179,7 +284,28 @@ export function InstallationForm({
   return (
     <View>
       <TextField label="Client name" value={client_name} error={errorFor('client_name')} onChangeText={setClient} />
-      <TextField label="Site name" value={site_name} error={errorFor('site_name')} onChangeText={setSite} />
+      <TextField
+        label="Site name"
+        value={site_name}
+        error={errorFor('site_name')}
+        onChangeText={(value) => {
+          setSite(value);
+          if (!siteCodeEdited.current) setSiteCode(normalizedSiteCode(value));
+        }}
+      />
+      <TextField
+        label="Installation short code"
+        accessibilityHint="Used as the first segment of generated board, asset, and meter codes"
+        value={site_code}
+        error={errorFor('site_code')}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        maxLength={16}
+        onChangeText={(value) => {
+          siteCodeEdited.current = true;
+          setSiteCode(value.toUpperCase());
+        }}
+      />
       <TextArea label="Site address" value={site_address} error={errorFor('site_address')} onChangeText={setAddress} />
       <TextField label="Inspector" value={inspector_name} error={errorFor('inspector_name')} onChangeText={setInspector} />
       <TextField label="Audit date (YYYY-MM-DD)" value={audit_date} error={errorFor('audit_date')} onChangeText={setDate} />
@@ -208,6 +334,7 @@ export function InstallationForm({
             const values = {
               client_name: client_name.trim(),
               site_name: site_name.trim(),
+              site_code: site_code.trim().toUpperCase(),
               site_address: site_address.trim(),
               inspector_name: inspector_name.trim(),
               audit_date: audit_date.trim(),
@@ -242,18 +369,28 @@ export function ElectricalAssetForm({
   zones?: Zone[];
   onSubmit: (values: Omit<ElectricalAsset, 'id' | 'created_at' | 'updated_at' | 'meters' | 'extra_photos'> & {
     meters?: Meter[];
+    extra_photos?: string[];
   }, options: { commissionMeter: boolean; removeMeters: boolean }) => Promise<void> | void;
 }) {
   const { colors } = useTheme();
-  const [asset_name, setName] = useState(initial?.asset_name ?? '');
+  const initialTypeCode = initial?.type_code ?? boardTypeCode(initial?.asset_type ?? 'DB');
+  const initialDefaultName = initialTypeCode === 'OTHER'
+    ? initial?.custom_type_name?.trim() || BOARD_TYPE_LABELS[initialTypeCode]
+    : BOARD_TYPE_LABELS[initialTypeCode];
+  const [asset_name, setName] = useState(initial?.asset_name?.trim() || initialDefaultName);
+  const nameEdited = useRef(Boolean(initial?.asset_name?.trim()));
   const display_code = initial?.display_code ?? '';
   const customCode = Boolean(initial?.display_code_meta?.isOverridden);
   const [type_code, setTypeCode] = useState<BoardTypeCode>(
-    initial?.type_code ?? boardTypeCode(initial?.asset_type ?? 'DB'),
+    initialTypeCode,
   );
   const [custom_type_name, setCustomTypeName] = useState(initial?.custom_type_name ?? '');
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
-  const [phase, setPhase] = useState(initial?.phase ?? '3P+N');
+  const [photo, setPhoto] = useState(initial?.photo ?? '');
+  const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
+  const [sub_circuits_description, setSubCircuitsDescription] = useState(
+    initial?.sub_circuits_description ?? '',
+  );
   const [amperage_rating, setAmps] = useState(initial?.amperage_rating ?? '');
   const [site_nmi, setNmi] = useState(initial?.site_nmi ?? '');
   const initialSource = initial?.electrical_source ?? (
@@ -292,16 +429,35 @@ export function ElectricalAssetForm({
 
   return (
     <View>
-      <TextField label="Board name" value={asset_name} onChangeText={setName} />
+      <TextField
+        label={`Board name (${DISPLAY_CODE_MAX_LENGTH} characters max)`}
+        value={asset_name}
+        maxLength={DISPLAY_CODE_MAX_LENGTH}
+        error={asset_name.trim().length > DISPLAY_CODE_MAX_LENGTH
+          ? `Use ${DISPLAY_CODE_MAX_LENGTH} characters or fewer.`
+          : undefined}
+        onChangeText={(value) => {
+          nameEdited.current = true;
+          setName(value);
+        }}
+      />
       <SelectChips
         label="Board type"
         value={type_code}
         options={BOARD_TYPE_CODES}
         getLabel={(value) => BOARD_TYPE_LABELS[value]}
-        onChange={setTypeCode}
+        onChange={(value) => {
+          if (!nameEdited.current) setName(BOARD_TYPE_LABELS[value]);
+          setTypeCode(value);
+        }}
       />
       {type_code === 'OTHER' ? (
-        <TextField label="Custom board type" value={custom_type_name} onChangeText={setCustomTypeName} />
+        <TextField label="Custom board type" value={custom_type_name} onChangeText={(value) => {
+          setCustomTypeName(value);
+          if (!nameEdited.current) {
+            setName((value.trim() || BOARD_TYPE_LABELS.OTHER).slice(0, DISPLAY_CODE_MAX_LENGTH));
+          }
+        }} />
       ) : null}
       <SelectChips
         label="Electrical source type"
@@ -379,13 +535,29 @@ export function ElectricalAssetForm({
         </View>
       ) : null}
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
-      <TextField label="Phase" value={phase} onChangeText={setPhase} />
+      <PhotoAttachmentField
+        label="Location photo"
+        uris={photo ? [photo] : []}
+        single
+        onChange={(uris) => setPhoto(uris[0] ?? '')}
+      />
       <TextField label="Amperage" value={amperage_rating} onChangeText={setAmps} />
       <TextField label="Site NMI" value={site_nmi} onChangeText={setNmi} />
+      <TextArea
+        label="Sub-circuits description"
+        value={sub_circuits_description}
+        onChangeText={setSubCircuitsDescription}
+        placeholder="Outgoing circuits from this board"
+      />
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
+      <PhotoAttachmentField
+        label="Additional photos"
+        uris={extra_photos}
+        onChange={setExtraPhotos}
+      />
       <Button
         title={busy ? 'Saving…' : 'Save board'}
-        disabled={busy || !asset_name}
+        disabled={busy || !asset_name.trim() || asset_name.trim().length > DISPLAY_CODE_MAX_LENGTH}
         onPress={async () => {
           setBusy(true);
           try {
@@ -420,20 +592,27 @@ export function ElectricalAssetForm({
               custom_type_name: type_code === 'OTHER' ? custom_type_name.trim() : undefined,
               electrical_source,
               location_description,
-              phase,
+              // Retain imported legacy data on edit, but switchboards no longer
+              // author a phase value. Phase belongs to meter/channel mappings.
+              phase: initial?.phase,
               amperage_rating,
               site_nmi,
               electrical_parent_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
               electrical_parent_tbc: electrical_source.kind === 'TBC',
-              photo: initial?.photo ?? '',
+              photo,
+              extra_photos,
               meter_present: (initial?.meters?.length ?? 0) > 0,
-              sub_circuits_description: initial?.sub_circuits_description ?? '',
+              sub_circuits_description,
               comments,
               meters: initial?.meters,
             }, {
               commissionMeter: false,
               removeMeters: false,
             });
+            deleteRemovedLocalPhotos(
+              [initial?.photo, ...(initial?.extra_photos ?? [])],
+              [photo, ...extra_photos],
+            );
           } finally {
             setBusy(false);
           }
@@ -455,7 +634,8 @@ export function QuickSwitchboardForm({
   onSubmit: (details: QuickSwitchboardDetails) => Promise<void> | void;
 }) {
   const { colors } = useTheme();
-  const [name, setName] = useState('');
+  const [name, setName] = useState(BOARD_TYPE_LABELS.DB);
+  const nameEdited = useRef(false);
   const [typeCode, setTypeCode] = useState<BoardTypeCode>('DB');
   const [customTypeName, setCustomTypeName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -464,20 +644,41 @@ export function QuickSwitchboardForm({
     : inheritedSource.kind === 'BOARD'
       ? sourceBoards.find((board) => board.id === inheritedSource.boardId)?.asset_name ?? 'Upstream switchboard'
       : 'To be confirmed';
-  const valid = Boolean(name.trim()) && (typeCode !== 'OTHER' || Boolean(customTypeName.trim()));
+  const valid = Boolean(name.trim())
+    && name.trim().length <= DISPLAY_CODE_MAX_LENGTH
+    && (typeCode !== 'OTHER' || Boolean(customTypeName.trim()));
 
   return (
     <View>
-      <TextField label="Switchboard name" value={name} onChangeText={setName} />
+      <TextField
+        label={`Switchboard name (${DISPLAY_CODE_MAX_LENGTH} characters max)`}
+        value={name}
+        maxLength={DISPLAY_CODE_MAX_LENGTH}
+        error={name.trim().length > DISPLAY_CODE_MAX_LENGTH
+          ? `Use ${DISPLAY_CODE_MAX_LENGTH} characters or fewer.`
+          : undefined}
+        onChangeText={(value) => {
+          nameEdited.current = true;
+          setName(value);
+        }}
+      />
       <SelectChips
         label="Switchboard type"
         value={typeCode}
         options={BOARD_TYPE_CODES}
         getLabel={(value) => BOARD_TYPE_LABELS[value]}
-        onChange={setTypeCode}
+        onChange={(value) => {
+          if (!nameEdited.current) setName(BOARD_TYPE_LABELS[value]);
+          setTypeCode(value);
+        }}
       />
       {typeCode === 'OTHER' ? (
-        <TextField label="Custom switchboard type" value={customTypeName} onChangeText={setCustomTypeName} />
+        <TextField label="Custom switchboard type" value={customTypeName} onChangeText={(value) => {
+          setCustomTypeName(value);
+          if (!nameEdited.current) {
+            setName((value.trim() || BOARD_TYPE_LABELS.OTHER).slice(0, DISPLAY_CODE_MAX_LENGTH));
+          }
+        }} />
       ) : null}
       <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
         Upstream source inherited from the asset: {inheritedLabel}.
@@ -560,18 +761,26 @@ export function SiteAssetForm({
   onDraftRestored?: () => void;
   onDiscardDraft?: () => void;
   onSubmit: (values: Omit<SiteAsset, 'id' | 'created_at' | 'updated_at' | 'extra_photos' | 'meter_channels'> & {
+    extra_photos?: string[];
     meter_channels?: SiteAsset['meter_channels'];
   }, metering: SiteAssetMeteringDraft) => Promise<void> | void;
 }) {
   const { colors } = useTheme();
-  const [asset_name, setName] = useState(initial?.asset_name ?? '');
+  const initialTypeCode = initial?.type_code ?? siteAssetTypeCode(initial?.asset_type ?? 'Other');
+  const initialDefaultName = initialTypeCode === 'OTHER'
+    ? initial?.custom_type_name?.trim() || SITE_ASSET_TYPE_LABELS[initialTypeCode]
+    : SITE_ASSET_TYPE_LABELS[initialTypeCode];
+  const [asset_name, setName] = useState(initial?.asset_name?.trim() || initialDefaultName);
+  const nameEdited = useRef(Boolean(initial?.asset_name?.trim()));
   const [type_code, setTypeCode] = useState<SiteAssetTypeCode>(
-    initial?.type_code ?? siteAssetTypeCode(initial?.asset_type ?? 'Other'),
+    initialTypeCode,
   );
   const [custom_type_name, setCustomTypeName] = useState(initial?.custom_type_name ?? '');
   const [display_code, setCode] = useState(initial?.display_code ?? '');
   const [customCode, setCustomCode] = useState(Boolean(initial?.display_code_meta?.isOverridden));
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
+  const [location_photo, setLocationPhoto] = useState(initial?.location_photo ?? '');
+  const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
   const initialSource = initial?.electrical_source ?? (
     initial?.electrical_board_tbc || !initial?.electrical_board_id
       ? { kind: 'TBC' as const }
@@ -675,6 +884,8 @@ export function SiteAssetForm({
     displayCode: display_code,
     customCode,
     locationDescription: location_description,
+    locationPhoto: location_photo,
+    extraPhotos: extra_photos,
     sourceKey,
     sourceBoardSearch,
     meteringKind,
@@ -693,12 +904,15 @@ export function SiteAssetForm({
     const applySaved = (saved: SiteAssetEditorDraftSnapshot) => {
       if (!live) return;
       restoredDraft.current = true;
+      nameEdited.current = true;
       setName(saved.assetName);
       setTypeCode(saved.typeCode);
       setCustomTypeName(saved.customTypeName);
       setCode(saved.displayCode);
       setCustomCode(saved.customCode);
       setLoc(saved.locationDescription);
+      setLocationPhoto(saved.locationPhoto ?? initial?.location_photo ?? '');
+      setExtraPhotos(saved.extraPhotos ?? initial?.extra_photos ?? []);
       setSourceKey(saved.sourceKey);
       setSourceBoardSearch(saved.sourceBoardSearch);
       setMeteringKind(saved.meteringKind);
@@ -761,7 +975,8 @@ export function SiteAssetForm({
       ));
   }, [
     active, asset_name, comments, customCode, custom_type_name, deviceDetour,
-    direction, display_code, draftAssetId, draftHydrated, draftInstallationId, draftScope, location_description,
+    direction, display_code, draftAssetId, draftHydrated, draftInstallationId, draftScope, extra_photos,
+    location_description, location_photo,
     meterSearch, meteringKind, phaseMode, selectedChannelIds, selectedMeterId,
     sourceBoardSearch, sourceKey, type_code,
   ]);
@@ -843,16 +1058,35 @@ export function SiteAssetForm({
 
   return (
     <View>
-      <TextField label="Asset name" value={asset_name} onChangeText={setName} />
+      <TextField
+        label={`Asset name (${DISPLAY_CODE_MAX_LENGTH} characters max)`}
+        value={asset_name}
+        maxLength={DISPLAY_CODE_MAX_LENGTH}
+        error={asset_name.trim().length > DISPLAY_CODE_MAX_LENGTH
+          ? `Use ${DISPLAY_CODE_MAX_LENGTH} characters or fewer.`
+          : undefined}
+        onChangeText={(value) => {
+          nameEdited.current = true;
+          setName(value);
+        }}
+      />
       <SelectChips
         label="Asset type"
         value={type_code}
         options={SITE_ASSET_TYPE_CODES}
         getLabel={(value) => SITE_ASSET_TYPE_LABELS[value]}
-        onChange={setTypeCode}
+        onChange={(value) => {
+          if (!nameEdited.current) setName(SITE_ASSET_TYPE_LABELS[value]);
+          setTypeCode(value);
+        }}
       />
       {type_code === 'OTHER' ? (
-        <TextField label="Custom asset type" value={custom_type_name} onChangeText={setCustomTypeName} />
+        <TextField label="Custom asset type" value={custom_type_name} onChangeText={(value) => {
+          setCustomTypeName(value);
+          if (!nameEdited.current) {
+            setName((value.trim() || SITE_ASSET_TYPE_LABELS.OTHER).slice(0, DISPLAY_CODE_MAX_LENGTH));
+          }
+        }} />
       ) : null}
       <SelectChips
         label="Electrical source type"
@@ -953,6 +1187,12 @@ export function SiteAssetForm({
         </View>
       ) : null}
       <TextArea label="Location" value={location_description} onChangeText={setLoc} />
+      <PhotoAttachmentField
+        label="Location photo"
+        uris={location_photo ? [location_photo] : []}
+        single
+        onChange={(uris) => setLocationPhoto(uris[0] ?? '')}
+      />
       <Card style={{ marginBottom: spacing.md }}>
         <SectionHeader title="How this asset is measured" />
         <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
@@ -1079,22 +1319,22 @@ export function SiteAssetForm({
             {selectedMeter ? (
               <>
                 <SelectChips
-                  label="Electrical phase grouping"
+                  label="Phase grouping"
                   value={phaseMode}
                   options={['SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
-                  getLabel={(value) => value === 'SINGLE_PHASE' ? 'Single phase (1)' : value === 'THREE_PHASE' ? 'Three phase (3)' : 'Other group'}
+                  getLabel={phaseGroupingLabel}
                   onChange={setPhaseMode}
                 />
                 <SelectChips
-                  label="Energy flow direction"
+                  label="Energy flow"
                   value={direction}
                   options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
-                  getLabel={(value) => value === '' ? 'Choose direction' : value === 'BIDIRECTIONAL' ? 'Bidirectional' : value === 'GENERATION' ? 'Generation' : 'Consumption'}
+                  getLabel={energyFlowLabel}
                   onChange={setDirection}
                 />
-                <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Measured channels</Text>
+                <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.sm }]}>Meter channels that measure this asset</Text>
                 <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
-                  Select the exact one- or three-phase channel group. Consumption uses energy; generation exports it; bidirectional can do both.
+                  Select the exact non-spare channel or group, then record its phase grouping and whether this asset consumes energy, generates energy, or can do both.
                 </Text>
                 <Text
                   accessibilityRole="summary"
@@ -1121,8 +1361,8 @@ export function SiteAssetForm({
                         key={channel.id}
                         accessibilityRole="checkbox"
                         accessibilityState={{ checked: selected, disabled }}
-                        accessibilityLabel={`Channel ${channel.ordinal}, ${channel.purpose}${assignedElsewhere ? ', assigned elsewhere' : ''}`}
-                        accessibilityHint={`${channelIndex + 1} of ${selectedMeter.channels.length}. ${disabled ? assignedElsewhere ? 'Unavailable because another confirmed assignment uses it.' : 'Unavailable because only sub-circuit channels can map to a site asset.' : 'Double tap to toggle this channel.'}`}
+                        accessibilityLabel={`Channel ${channel.ordinal}, ${meterChannelPurposeLabel(channel.purpose)}${assignedElsewhere ? ', included in another measured group' : ''}`}
+                        accessibilityHint={`${channelIndex + 1} of ${selectedMeter.channels.length}. ${disabled ? assignedElsewhere ? 'Unavailable because another confirmed measured group uses it.' : 'Unavailable because only sub-circuit channels can measure a site asset.' : 'Double tap to include or remove this channel.'}`}
                         disabled={disabled}
                         onPress={() => setSelectedChannelIds((current) => selected
                           ? current.filter((id) => id !== channel.id)
@@ -1143,7 +1383,7 @@ export function SiteAssetForm({
                           {selected ? '✓ ' : ''}Ch {channel.ordinal}
                         </Text>
                         <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>
-                          {assignedElsewhere ? 'In use' : channel.purpose.replace('_', ' ')}
+                          {assignedElsewhere ? 'In another group' : meterChannelPurposeLabel(channel.purpose)}
                         </Text>
                       </Pressable>
                     );
@@ -1159,6 +1399,11 @@ export function SiteAssetForm({
         ) : null}
       </Card>
       <TextArea label="Comments" value={comments} onChangeText={setComments} />
+      <PhotoAttachmentField
+        label="Additional photos"
+        uris={extra_photos}
+        onChange={setExtraPhotos}
+      />
       {draftPersistenceError ? (
         <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={{ color: colors.destructive, marginBottom: spacing.md }}>
           Draft protection failed: {draftPersistenceError}
@@ -1166,7 +1411,7 @@ export function SiteAssetForm({
       ) : null}
       <Button
         title={busy ? 'Saving…' : 'Save asset'}
-        disabled={busy || !asset_name}
+        disabled={busy || !asset_name.trim() || asset_name.trim().length > DISPLAY_CODE_MAX_LENGTH}
         onPress={async () => {
           setBusy(true);
           try {
@@ -1195,9 +1440,9 @@ export function SiteAssetForm({
               const expectedCount = phaseMode === 'SINGLE_PHASE' ? 1 : phaseMode === 'THREE_PHASE' ? 3 : null;
               if ((expectedCount !== null && selectedChannelIds.length !== expectedCount) ||
                   (expectedCount === null && !selectedChannelIds.length)) {
-                throw new Error('Selected channel count must match the phase mode.');
+                throw new Error('Selected channel count must match the phase grouping.');
               }
-              if (!direction) throw new Error('Choose the measurement direction explicitly.');
+              if (!direction) throw new Error('Choose the energy flow.');
               meteringDraft = {
                 kind: 'METERED', meterId: selectedMeter.id,
                 channelIds: selectedChannelIds, phaseMode, direction,
@@ -1222,7 +1467,7 @@ export function SiteAssetForm({
                   }
                 : initial?.display_code_meta,
               location_description,
-              location_photo: initial?.location_photo ?? '',
+              location_photo,
               electrical_source,
               electrical_board_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
               electrical_board_tbc: electrical_source.kind === 'TBC',
@@ -1232,7 +1477,12 @@ export function SiteAssetForm({
               meter_switchboard_tbc: initial?.meter_switchboard_tbc ?? false,
               meter_channels: initial?.meter_channels ?? [],
               comments,
+              extra_photos,
             }, meteringDraft);
+            deleteRemovedLocalPhotos(
+              [initial?.location_photo, ...(initial?.extra_photos ?? [])],
+              [location_photo, ...extra_photos],
+            );
             try {
               await clearSiteAssetEditorDraft(draftScope);
               restoredDraft.current = false;
@@ -1288,17 +1538,41 @@ const LOAD_TYPES = [
   'Other',
   'Not Used',
 ];
-const ROGOWSKI = ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'];
-const CT_RATINGS = ['60A', '120A', '200A', '400A', '600A'];
+const ROGOWSKI = [
+  '10cm-200A',
+  '10cm-333mV',
+  '20cm-3000A',
+  '30cm-3000A',
+  '45cm-3000A',
+  'Not Used',
+];
+const CT_RATINGS = ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'];
+const SIGNAL_STRENGTHS = ['Low', 'Medium', 'High'];
+const ANTENNA_TYPES = ['Internal', 'External', 'CSM550 - External High Gain', 'Other'];
+const METER_CLASSIFICATIONS = [
+  'Utility / Gate Meter',
+  'Sub-meter',
+  'Check Meter',
+  'Solar / Generation Meter',
+  'Other',
+];
+const METER_COVERAGE = [
+  'Entire Board Load',
+  'Specific Outgoing Circuit',
+  'Multiple Circuits',
+  'Unknown',
+];
 
 export function WattwatcherForm({
   deviceType,
   data,
   onChange,
+  lockDeviceType = false,
 }: {
   deviceType: MeterDeviceType;
   data: Partial<Meter>;
   onChange: (next: Partial<Meter>) => void;
+  lockDeviceType?: boolean;
 }) {
   const { colors } = useTheme();
   const selectedType = data.device_type ?? deviceType;
@@ -1314,6 +1588,7 @@ export function WattwatcherForm({
   const isA6M = selectedType === 'A6M';
   const isA3RM = selectedType === 'A3RM';
   const isOther = selectedType === 'Other';
+  const showWattwatchersSections = showsWattwatchersCommissioningSections(selectedType);
 
   const setSection = <K extends keyof Meter>(section: K, key: string, val: unknown) => {
     const prev = (data[section] as Record<string, unknown>) || {};
@@ -1342,70 +1617,159 @@ export function WattwatcherForm({
         <SectionHeader title={`${selectedType} identity`} />
         <TextField
           label="Device name"
-          value={data.device_name ?? ''}
-          onChangeText={(v) => onChange({ ...data, device_name: v })}
+          maxLength={64}
+          value={data.custom_name ?? defaultMeterCustomName(
+            selectedType,
+            data.custom_model_name,
+            data.custom_manufacturer_name,
+          )}
+          onChangeText={(v) => onChange({ ...data, custom_name: v })}
         />
         <BarcodeScanField
-          label="Device ID / serial"
+          label="Device ID / serial *"
           value={data.device_id ?? ''}
-          onChangeText={(v) => onChange({ ...data, device_id: v, device_number: v })}
+          onChangeText={(v) => onChange({
+            ...data,
+            device_id: v,
+            device_number: isOther
+              ? data.device_number
+              : data.device_number?.trim() ? data.device_number : v,
+          })}
           placeholder="e.g. DD03710160579"
         />
-        <SelectChips
-          label="Device type"
-          value={(data.device_type as MeterDeviceType) || deviceType}
-          options={METER_DEVICE_TYPES}
-          onChange={(value) => {
-            const nextChannels = channelsAfterDeviceTypeChange(
-              selectedType,
-              value,
-              data.ww_channels ?? [],
-            );
-            onChange({ ...data, device_type: value, ww_channels: nextChannels });
-          }}
+        <BarcodeScanField
+          label="Site / asset tag (optional)"
+          value={data.device_number ?? ''}
+          onChangeText={(v) => onChange({ ...data, device_number: v })}
+          placeholder="Optional site tag; not the Device ID / serial"
         />
+        <Text style={{ color: colors.mutedForeground, marginTop: -spacing.sm, marginBottom: spacing.md, lineHeight: 19 }}>
+          Use this only for a separate site label or asset tag. The Device ID / serial above remains the physical device identity.
+        </Text>
+        {lockDeviceType ? (
+          <View style={{ marginBottom: spacing.md }}>
+            <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: 8 }]}>Device type</Text>
+            <Text style={{ color: colors.foreground, fontWeight: '700' }}>{selectedType}</Text>
+            <Text style={{ color: colors.mutedForeground, marginTop: 6 }}>
+              Wattwatchers devices must be added through the full installation form.
+            </Text>
+          </View>
+        ) : (
+          <SelectChips
+            label="Device type"
+            value={(data.device_type as MeterDeviceType) || deviceType}
+            options={METER_DEVICE_TYPES}
+            onChange={(value) => {
+              const nextChannels = channelsAfterDeviceTypeChange(
+                selectedType,
+                value,
+                data.ww_channels ?? [],
+              );
+              onChange({
+                ...data,
+                device_type: value,
+                custom_name: nameAfterTypeChange(
+                  data.custom_name ?? '',
+                  defaultMeterCustomName(
+                    selectedType,
+                    data.custom_model_name,
+                    data.custom_manufacturer_name,
+                  ),
+                  defaultMeterCustomName(value, data.custom_model_name, data.custom_manufacturer_name),
+                ),
+                ww_channels: nextChannels,
+              });
+            }}
+          />
+        )}
         {isOther ? (
           <>
             <TextField
               label="Manufacturer"
               value={data.custom_manufacturer_name ?? ''}
-              onChangeText={(value) => onChange({ ...data, custom_manufacturer_name: value })}
+              onChangeText={(value) => onChange({
+                ...data,
+                custom_manufacturer_name: value,
+                custom_name: nameAfterTypeChange(
+                  data.custom_name ?? '',
+                  defaultMeterCustomName(
+                    'Other', data.custom_model_name, data.custom_manufacturer_name,
+                  ),
+                  defaultMeterCustomName('Other', data.custom_model_name, value),
+                ),
+              })}
             />
             <TextField
               label="Custom model"
               value={data.custom_model_name ?? ''}
-              onChangeText={(value) => onChange({ ...data, custom_model_name: value })}
+              onChangeText={(value) => onChange({
+                ...data,
+                custom_model_name: value,
+                custom_name: nameAfterTypeChange(
+                  data.custom_name ?? '',
+                  defaultMeterCustomName(
+                    'Other', data.custom_model_name, data.custom_manufacturer_name,
+                  ),
+                  defaultMeterCustomName('Other', value, data.custom_manufacturer_name),
+                ),
+              })}
+            />
+            <SelectChips
+              label="Meter classification"
+              value={data.classification ?? ''}
+              options={withLegacyOption(METER_CLASSIFICATIONS, data.classification)}
+              onChange={(value) => onChange({ ...data, classification: value })}
+            />
+            <SelectChips
+              label="Coverage type"
+              value={data.coverage ?? ''}
+              options={withLegacyOption(METER_COVERAGE, data.coverage)}
+              onChange={(value) => onChange({ ...data, coverage: value })}
             />
           </>
         ) : null}
       </Card>
 
-      <Card>
-        <SectionHeader title="Pre-start" />
-        <BoolRow label="Site induction required?" value={pre.site_induction} onChange={(v) => setSection('ww_prestart', 'site_induction', v)} />
-        <BoolRow label="Safe access?" value={pre.safe_access} onChange={(v) => setSection('ww_prestart', 'safe_access', v)} />
-        <BoolRow label="Correct PPE?" value={pre.correct_ppe} onChange={(v) => setSection('ww_prestart', 'correct_ppe', v)} />
-        <BoolRow label="Aware of LIVE points?" value={pre.live_points_aware} onChange={(v) => setSection('ww_prestart', 'live_points_aware', v)} />
-        <BoolRow label="Can isolate power?" value={pre.can_isolate} onChange={(v) => setSection('ww_prestart', 'can_isolate', v)} />
-        <BoolRow label="Additional hazards?" value={pre.additional_hazards} onChange={(v) => setSection('ww_prestart', 'additional_hazards', v)} />
-        <BoolRow label="Safe to proceed?" value={pre.safe_to_proceed} onChange={(v) => setSection('ww_prestart', 'safe_to_proceed', v)} />
-      </Card>
+      {showWattwatchersSections ? (
+        <>
+          <Card>
+            <SectionHeader title="Pre-start" />
+            <BoolRow label="Site induction required?" value={pre.site_induction} onChange={(v) => setSection('ww_prestart', 'site_induction', v)} />
+            <BoolRow label="Safe access?" value={pre.safe_access} onChange={(v) => setSection('ww_prestart', 'safe_access', v)} />
+            <BoolRow label="Correct PPE?" value={pre.correct_ppe} onChange={(v) => setSection('ww_prestart', 'correct_ppe', v)} />
+            <BoolRow label="Aware of LIVE points?" value={pre.live_points_aware} onChange={(v) => setSection('ww_prestart', 'live_points_aware', v)} />
+            <BoolRow label="Can isolate power?" value={pre.can_isolate} onChange={(v) => setSection('ww_prestart', 'can_isolate', v)} />
+            <BoolRow label="Additional hazards?" value={pre.additional_hazards} onChange={(v) => setSection('ww_prestart', 'additional_hazards', v)} />
+            <BoolRow label="Safe to proceed?" value={pre.safe_to_proceed} onChange={(v) => setSection('ww_prestart', 'safe_to_proceed', v)} />
+          </Card>
 
-      <Card>
-        <SectionHeader title="Switchboard & device" />
-        <TextField label="Switchboard name" value={sb.sb_name ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'sb_name', v)} />
-        <TextField label="Location" value={sb.sb_location ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'sb_location', v)} />
-        <BarcodeScanField
-          label="Auditor serial (optional)"
-          value={sb.device_serial ?? ''}
-          onChangeText={(v) => setSection('ww_switchboard', 'device_serial', v)}
-          placeholder="Scan or type serial"
-        />
-        <TextField label="Firmware" value={sb.firmware ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'firmware', v)} />
-        <TextField label="Antenna" value={sb.antenna_type ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'antenna_type', v)} />
-        <TextField label="Signal" value={sb.signal_strength ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'signal_strength', v)} />
-        <TextArea label="Notes" value={sb.notes ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'notes', v)} />
-      </Card>
+          <Card>
+            <SectionHeader title="Switchboard & device" />
+            <TextField label="Switchboard name" value={sb.sb_name ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'sb_name', v)} />
+            <TextField label="Location" value={sb.sb_location ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'sb_location', v)} />
+            <BarcodeScanField
+              label="Auditor serial (optional)"
+              value={sb.device_serial ?? ''}
+              onChangeText={(v) => setSection('ww_switchboard', 'device_serial', v)}
+              placeholder="Scan or type serial"
+            />
+            <TextField label="Firmware" value={sb.firmware ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'firmware', v)} />
+            <SelectChips
+              label="Antenna"
+              value={sb.antenna_type ?? ''}
+              options={withLegacyOption(ANTENNA_TYPES, sb.antenna_type)}
+              onChange={(v) => setSection('ww_switchboard', 'antenna_type', v)}
+            />
+            <SelectChips
+              label="Signal"
+              value={sb.signal_strength ?? ''}
+              options={withLegacyOption(SIGNAL_STRENGTHS, sb.signal_strength)}
+              onChange={(v) => setSection('ww_switchboard', 'signal_strength', v)}
+            />
+            <TextArea label="Notes" value={sb.notes ?? ''} onChangeText={(v) => setSection('ww_switchboard', 'notes', v)} />
+          </Card>
+        </>
+      ) : null}
 
       <Text
         accessibilityRole="summary"
@@ -1484,7 +1848,7 @@ export function WattwatcherForm({
         </Card>
       ))}
 
-      {isOther ? (
+      {!showWattwatchersSections ? (
         <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
           <Button
             title="Add channel"
@@ -1511,25 +1875,73 @@ export function WattwatcherForm({
         </View>
       ) : null}
 
-      <Card>
-        <SectionHeader title="Verification" />
-        <BoolRow label="Voltage checked" value={ver.voltage_checked} onChange={(v) => setSection('ww_verification', 'voltage_checked', v)} />
-        <BoolRow label="Polarity checked" value={ver.polarity_checked} onChange={(v) => setSection('ww_verification', 'polarity_checked', v)} />
-        <BoolRow label="Communications OK" value={ver.communications_ok} onChange={(v) => setSection('ww_verification', 'communications_ok', v)} />
-        <TextArea label="Notes" value={ver.notes ?? ''} onChangeText={(v) => setSection('ww_verification', 'notes', v)} />
-      </Card>
+      {!showWattwatchersSections ? (
+        <Card>
+          <SectionHeader title="Notes & evidence" />
+          <TextArea
+            label="Device notes"
+            value={sb.notes ?? com.notes ?? ''}
+            onChangeText={(value) => setSection('ww_switchboard', 'notes', value)}
+          />
+          <PhotoAttachmentField
+            label="Installed device photo"
+            uris={data.ww_photos?.device_installed ? [data.ww_photos.device_installed] : []}
+            single
+            onChange={(uris) => onChange({
+              ...data,
+              ww_photos: {
+                ...(data.ww_photos ?? {}),
+                device_installed: uris[0],
+              },
+            })}
+          />
+          <PhotoAttachmentField
+            label="Device label / serial photo"
+            uris={data.ww_photos?.labeling ? [data.ww_photos.labeling] : []}
+            single
+            onChange={(uris) => onChange({
+              ...data,
+              ww_photos: {
+                ...(data.ww_photos ?? {}),
+                labeling: uris[0],
+              },
+            })}
+          />
+          <PhotoAttachmentField
+            label="Additional device evidence"
+            uris={data.ww_photos?.extra ?? []}
+            onChange={(extra) => onChange({
+              ...data,
+              ww_photos: {
+                ...(data.ww_photos ?? {}),
+                extra,
+              },
+            })}
+          />
+          <Text style={{ color: colors.mutedForeground, lineHeight: 19 }}>
+            Evidence is stored in app-owned local media and included when this installation is backed up.
+          </Text>
+        </Card>
+      ) : (
+        <>
+          <Card>
+            <SectionHeader title="Verification" />
+            <BoolRow label="Voltage checked" value={ver.voltage_checked} onChange={(v) => setSection('ww_verification', 'voltage_checked', v)} />
+            <BoolRow label="Polarity checked" value={ver.polarity_checked} onChange={(v) => setSection('ww_verification', 'polarity_checked', v)} />
+            <BoolRow label="Communications OK" value={ver.communications_ok} onChange={(v) => setSection('ww_verification', 'communications_ok', v)} />
+            <TextArea label="Notes" value={ver.notes ?? ''} onChangeText={(v) => setSection('ww_verification', 'notes', v)} />
+          </Card>
 
-      <Card>
-        <SectionHeader title="Commissioning" />
-        <BoolRow label="Device online" value={com.device_online} onChange={(v) => setSection('ww_commissioning', 'device_online', v)} />
-        <BoolRow label="Channels reporting" value={com.channels_reporting} onChange={(v) => setSection('ww_commissioning', 'channels_reporting', v)} />
-        <BoolRow label="Labeled" value={com.labeled} onChange={(v) => setSection('ww_commissioning', 'labeled', v)} />
-        <BoolRow label="Photos taken" value={com.photos_taken} onChange={(v) => setSection('ww_commissioning', 'photos_taken', v)} />
-        <TextArea label="Notes" value={com.notes ?? ''} onChangeText={(v) => setSection('ww_commissioning', 'notes', v)} />
-        <Text style={{ color: colors.mutedForeground, marginTop: 8 }}>
-          Photos upload will use cloud API later. Local URIs can be attached in a future iteration.
-        </Text>
-      </Card>
+          <Card>
+            <SectionHeader title="Commissioning" />
+            <BoolRow label="Device online" value={com.device_online} onChange={(v) => setSection('ww_commissioning', 'device_online', v)} />
+            <BoolRow label="Channels reporting" value={com.channels_reporting} onChange={(v) => setSection('ww_commissioning', 'channels_reporting', v)} />
+            <BoolRow label="Labeled" value={com.labeled} onChange={(v) => setSection('ww_commissioning', 'labeled', v)} />
+            <BoolRow label="Photos taken" value={com.photos_taken} onChange={(v) => setSection('ww_commissioning', 'photos_taken', v)} />
+            <TextArea label="Notes" value={com.notes ?? ''} onChangeText={(v) => setSection('ww_commissioning', 'notes', v)} />
+          </Card>
+        </>
+      )}
     </View>
   );
 }
@@ -1538,6 +1950,7 @@ export function createEmptyMeter(deviceType: MeterDeviceType = 'A3RM'): Meter {
   return {
     id: createId('meter'),
     device_name: '',
+    custom_name: defaultMeterCustomName(deviceType),
     device_type: deviceType,
     device_id: '',
     device_number: '',

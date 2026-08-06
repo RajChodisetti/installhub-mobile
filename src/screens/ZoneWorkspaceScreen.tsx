@@ -22,7 +22,7 @@ import {
   QuickSwitchboardForm,
   SiteAssetForm,
 } from '../components/forms';
-import { pickLocalPhoto, sendZoneSummaryStub, takeLocalPhoto } from '../services';
+import { deleteLocalPhoto, pickLocalPhoto, takeLocalPhoto } from '../services';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -32,6 +32,7 @@ import {
 } from '../domain/sourcePicker';
 import type { ElectricalSource } from '../types';
 import { wwCommissioningPickerParams } from '../domain/formPickerContext';
+import { isValidZoneCode, ZONE_CODE_MAX_LENGTH } from '../domain/namingV2';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ZoneWorkspace'>;
 const ZONE_PAGE_SIZE = 100;
@@ -102,6 +103,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
   const [assetFormKey, setAssetFormKey] = useState(0);
   const [editZone, setEditZone] = useState(false);
   const [zoneName, setZoneName] = useState('');
+  const [zoneCode, setZoneCode] = useState('');
   const [zoneDesc, setZoneDesc] = useState('');
   const [inventorySearch, setInventorySearch] = useState('');
   const [boardPage, setBoardPage] = useState(0);
@@ -132,8 +134,16 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
   const addPhoto = async (source: 'library' | 'camera') => {
     const uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
     if (!uri || !zone) return;
-    await zonesRepo.update(zoneId, { photos: [...zone.photos, uri] });
-    await refresh();
+    try {
+      await zonesRepo.update(zoneId, { photos: [...zone.photos, uri] });
+      await refresh();
+    } catch (error) {
+      deleteLocalPhoto(uri);
+      Alert.alert(
+        'Photo not added',
+        error instanceof Error ? error.message : 'The photo could not be saved.',
+      );
+    }
   };
 
   if (loading || !zone) {
@@ -147,6 +157,9 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <Text style={[typography.title, { color: colors.foreground }]}>{zone.zone_name}</Text>
+      <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+        Zone code: {zone.zone_code ?? 'Not set'}
+      </Text>
       <Text style={{ color: colors.mutedForeground, marginTop: 6 }}>
         {zone.zone_description || 'No description'}
       </Text>
@@ -167,22 +180,9 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           disabled={readOnly}
           onPress={() => {
             setZoneName(zone.zone_name);
+            setZoneCode(zone.zone_code ?? '');
             setZoneDesc(zone.zone_description);
             setEditZone(true);
-          }}
-        />
-        <Button
-          title="Send Summary"
-          variant="secondary"
-          onPress={async () => {
-            const res = await sendZoneSummaryStub({
-              installationId,
-              zoneId,
-              zoneName: zone.zone_name,
-              boardCount: boards.length,
-              assetCount: siteAssets.length,
-            });
-            Alert.alert('Summary', res.message);
           }}
         />
       </View>
@@ -211,6 +211,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
                   await zonesRepo.update(zoneId, {
                     photos: zone.photos.filter((p) => p !== uri),
                   });
+                  deleteLocalPhoto(uri);
                   await refresh();
                 },
               },
@@ -361,17 +362,13 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
             gridSupplies={gridSupplies}
             zones={zones}
             onSubmit={async (values) => {
-              const created = await electricalAssetsRepo.create({
+              await electricalAssetsRepo.create({
                 ...values,
                 audit_id: installationId,
                 zone_id: zoneId,
               });
               setBoardModal(false);
-              navigation.navigate('BoardDetail', {
-                boardId: created.id,
-                installationId,
-                zoneId,
-              });
+              await Promise.all([refresh(), refreshInstallation()]);
             }}
           />
         )}
@@ -414,34 +411,42 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
             }));
           }}
           onSubmit={async (values, metering) => {
-            const created = await siteAssetsRepo.saveEditor(null, {
+            await siteAssetsRepo.saveEditor(null, {
               ...values,
               audit_id: installationId,
               zone_id: zoneId,
             }, metering);
             setAssetModal(false);
             setAssetFormKey((current) => current + 1);
-            navigation.navigate('SiteAssetDetail', {
-              assetId: created.id,
-              installationId,
-              zoneId,
-            });
+            await Promise.all([refresh(), refreshInstallation()]);
           }}
         />
       </FormModal>
 
       <FormModal visible={editZone} title="Edit zone" onClose={() => setEditZone(false)}>
         <TextField label="Zone name" value={zoneName} onChangeText={setZoneName} />
+        <TextField
+          label="Zone short code"
+          value={zoneCode}
+          autoCapitalize="characters"
+          maxLength={ZONE_CODE_MAX_LENGTH}
+          onChangeText={(value) => setZoneCode(
+            value.toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/-{2,}/g, '-'),
+          )}
+          error={zoneCode && !isValidZoneCode(zoneCode) ? 'Use uppercase letters/numbers with single internal hyphens.' : undefined}
+        />
         <TextArea label="Description" value={zoneDesc} onChangeText={setZoneDesc} />
         <Button
           title="Save"
+          disabled={!zoneName.trim() || !isValidZoneCode(zoneCode)}
           onPress={async () => {
             await zonesRepo.update(zoneId, {
               zone_name: zoneName.trim(),
+              zone_code: zoneCode,
               zone_description: zoneDesc.trim(),
             });
             setEditZone(false);
-            await refresh();
+            navigation.goBack();
           }}
         />
         <View style={{ height: 12 }} />

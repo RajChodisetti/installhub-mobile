@@ -23,7 +23,7 @@ function canonicalTree(): RemoteInstallationTree {
       id: 'grid-1', installationId: 'installation-1', name: 'Grid', isDefault: true,
     }],
     zones: [{
-      id: 'zone-1', installationId: 'installation-1', zoneName: 'Plant',
+      id: 'zone-1', installationId: 'installation-1', zoneName: 'Plant', zoneCode: 'PLANT',
       zoneDescription: '', photos: [],
     }],
     electricalAssets: [{
@@ -50,6 +50,7 @@ function canonicalTree(): RemoteInstallationTree {
     meterDevices: [{
       id: 'meter-1', installationId: 'installation-1', installedOnBoardId: 'board-1',
       deviceFamily: 'WATTWATCHERS', deviceModel: 'A3RM',
+      customName: 'A3RM Meter',
       serialNumber: 'SERIAL-1',
       displayName: {
         value: 'SITE-METER-001', generatedValue: 'SITE-METER-001',
@@ -90,6 +91,14 @@ test('canonical v2 import validation accepts a fully referenced direct-Grid tree
   );
 });
 
+test('canonical v2 import accepts the first-class Refrigeration and Compressed Air codes', () => {
+  for (const typeCode of ['REFRIGERATION', 'COMPRESSED_AIR']) {
+    const tree = canonicalTree();
+    tree.siteAssets[0]!.typeCode = typeCode;
+    assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(tree), typeCode);
+  }
+});
+
 test('canonical v2 import preserves a non-empty authoritative historical site code', () => {
   const historical = canonicalTree();
   historical.installation.siteCode = 'Legacy Site Code / 2024';
@@ -100,6 +109,21 @@ test('canonical v2 import preserves a non-empty authoritative historical site co
     () => validateCanonicalRemoteTreeIds(historical),
     /installation site code is missing or invalid/,
   );
+});
+
+test('canonical v2 naming fields remain backward compatible but validate when present', () => {
+  const historical = canonicalTree();
+  delete historical.zones[0]!.zoneCode;
+  delete historical.meterDevices![0]!.customName;
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(historical));
+
+  const badZone = canonicalTree();
+  badZone.zones[0]!.zoneCode = 'bad zone';
+  assert.throws(() => validateCanonicalRemoteTreeIds(badZone), /zone zone-1 code is invalid/);
+
+  const badName = canonicalTree();
+  badName.meterDevices![0]!.customName = ' '.repeat(65);
+  assert.throws(() => validateCanonicalRemoteTreeIds(badName), /custom name is invalid/);
 });
 
 test('canonical v2 import accepts server compatibility display strings only with exact metadata', () => {

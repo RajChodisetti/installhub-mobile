@@ -21,7 +21,13 @@ import type {
   Zone,
 } from '../types';
 import { meterDeviceFromLegacy } from '../domain/installationV2';
-import { siteAssetTargetIdsOwnedByOtherMeters } from '../domain/meterCommissioning';
+import {
+  energyFlowLabel,
+  measuredItemTypeLabel,
+  meterChannelPurposeLabel,
+  phaseGroupingLabel,
+  siteAssetTargetIdsOwnedByOtherMeters,
+} from '../domain/meterCommissioning';
 import { SelectChips, WattwatcherForm, createEmptyMeter } from '../components/forms';
 import { Button, Card, LoadingState, SearchBar, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
@@ -29,6 +35,7 @@ import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { createId } from '../utils';
 import { boundedPickerResults } from '../domain/sourcePicker';
+import { deleteRemovedLocalPhotos } from '../services';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MeterForm'>;
 type AssignmentDraft = Omit<MeasurementAssignment, 'phaseMode' | 'target' | 'direction'> & {
@@ -43,6 +50,15 @@ type TargetCandidate = {
   target: MeasurementTarget;
 };
 const TARGET_RESULT_LIMIT = 100;
+
+function meterPhotoUris(meter: Pick<Meter, 'ww_photos'>): string[] {
+  return [
+    meter.ww_photos?.device_installed,
+    meter.ww_photos?.switchboard_overview,
+    meter.ww_photos?.labeling,
+    ...(meter.ww_photos?.extra ?? []),
+  ].filter((uri): uri is string => Boolean(uri));
+}
 
 function boardIsUpstreamOf(
   boards: ElectricalAsset[],
@@ -87,6 +103,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
   const { boardId, meterId, deviceType = 'A3RM', finishChannelMapping = false } = route.params;
   const { colors } = useTheme();
   const [meter, setMeter] = useState<Meter | null>(null);
+  const [persistedMeterPhotoUris, setPersistedMeterPhotoUris] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
@@ -162,9 +179,13 @@ export function MeterFormScreen({ navigation, route }: Props) {
         ),
       });
       if (meterId) {
-        setMeter(board.meters.find((m) => m.id === meterId) ?? createEmptyMeter(deviceType));
+        const nextMeter = board.meters.find((m) => m.id === meterId) ?? createEmptyMeter(deviceType);
+        setMeter(nextMeter);
+        setPersistedMeterPhotoUris(meterPhotoUris(nextMeter));
       } else {
-        setMeter(createEmptyMeter(deviceType));
+        const nextMeter = createEmptyMeter(deviceType);
+        setMeter(nextMeter);
+        setPersistedMeterPhotoUris([]);
       }
       setLoading(false);
     })();
@@ -278,7 +299,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
       (item) => item.purpose !== 'SPARE' && !used.has(item.id),
     );
     if (!channel) {
-      Alert.alert('No channel available', 'Every non-spare channel already has an assignment.');
+      Alert.alert('All channels included', 'Every non-spare channel is already included in a measured group.');
       return;
     }
     setAssignmentDrafts((current) => [...current, {
@@ -296,20 +317,20 @@ export function MeterFormScreen({ navigation, route }: Props) {
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.lg }]}>
-        Wattwatcher {meter.device_type}
+        {meter.device_type === 'Other' ? 'Other Meter' : `Wattwatcher ${meter.device_type}`}
       </Text>
       {finishChannelMapping ? (
         <Card style={{ marginBottom: spacing.lg }}>
-          <Text accessibilityRole="alert" style={[typography.subheading, { color: colors.foreground }]}>Finish channel mapping</Text>
+          <Text accessibilityRole="alert" style={[typography.subheading, { color: colors.foreground }]}>Finish channel measurements</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 21 }}>
-            The installation form is complete. Commissioning step 2 is required: assign every non-spare channel exactly once and explicitly choose its phase, measurement direction, and target. Use TBC only when the target is genuinely unresolved.
+            The installation form is complete. Now record what every non-spare meter channel measures. For each channel or group, choose the phase grouping, energy flow, and exact switchboard, grid connection, or site asset it measures. Choose To be confirmed only when the measured item is genuinely unresolved.
           </Text>
         </Card>
       ) : null}
       {lockedByCompletedForm ? (
         <View style={{ marginBottom: spacing.md }}>
           <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
-            Meter identity and channel definitions are pinned by a completed form. Measurement assignments remain editable below. Create an amendment to change the commissioned device itself; deletion retains completed form history and evidence.
+            Meter identity and channel definitions are fixed by a completed form. You can still update what each non-spare channel measures below. Create an amendment to change the commissioned device itself; deletion retains completed form history and evidence.
           </Text>
           <Button
             title="Create commissioning amendment"
@@ -327,18 +348,23 @@ export function MeterFormScreen({ navigation, route }: Props) {
         pointerEvents={readOnly || lockedByCompletedForm ? 'none' : 'auto'}
         style={{ opacity: readOnly || lockedByCompletedForm ? 0.68 : 1 }}
       >
-        <WattwatcherForm deviceType={meter.device_type} data={meter} onChange={(next) => setMeter({ ...meter, ...next })} />
+        <WattwatcherForm
+          deviceType={meter.device_type}
+          data={meter}
+          lockDeviceType={deviceType === 'Other'}
+          onChange={(next) => setMeter({ ...meter, ...next })}
+        />
       </View>
 
       <View style={{ marginTop: spacing.xl }}>
-        <SectionHeader title="Measurement assignments" actionLabel={readOnly ? undefined : '+ Add'} onAction={readOnly ? undefined : addAssignment} />
+        <SectionHeader title="What each channel measures" actionLabel={readOnly ? undefined : '+ Add group'} onAction={readOnly ? undefined : addAssignment} />
         <Text style={{ color: colors.mutedForeground, lineHeight: 20, marginBottom: spacing.md }}>
-          Group same-purpose channels, choose the phase and direction, then map them to a board, Grid boundary, site asset, or explicit TBC target. A channel can be used only once.
+          Create one measured group for each load or supply. Group channels only when they measure the same thing, then choose the phase grouping, energy flow, and measured item. Every non-spare channel must appear once; spare channels need no group.
         </Text>
         {!assignmentDrafts.length ? (
           <Card style={{ marginBottom: spacing.md }}>
             <Text style={{ color: colors.mutedForeground }}>
-              No channel mappings yet. Spare channels do not need assignments.
+              No channel measurements recorded yet. Add a group for every non-spare channel.
             </Text>
           </Card>
         ) : null}
@@ -349,42 +375,42 @@ export function MeterFormScreen({ navigation, route }: Props) {
           const activeChannelCount = previewDevice.channels.filter((channel) => channel.purpose !== 'SPARE').length;
           const representedChannelCount = new Set(assignmentDrafts.flatMap((item) => item.channelIds)).size;
           const requiredInGroup = assignment.phaseMode === 'SINGLE_PHASE'
-            ? 'exactly 1'
+            ? 'exactly 1 channel'
             : assignment.phaseMode === 'THREE_PHASE'
-              ? 'exactly 3'
+              ? 'exactly 3 channels'
               : assignment.phaseMode === 'OTHER'
-                ? 'at least 1'
-                : 'an explicit phase choice';
+                ? 'at least 1 channel'
+                : 'a phase grouping';
           return (
             <Card key={assignment.id} style={{ marginBottom: spacing.md }}>
               <View pointerEvents={readOnly ? 'none' : 'auto'} style={{ opacity: readOnly ? 0.68 : 1 }}>
-                <SectionHeader title={`Assignment ${index + 1}`} />
+                <SectionHeader title={`Measured group ${index + 1}`} />
                 <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-                  {assignmentPurpose ? assignmentPurpose.replace('_', ' ') : 'Select channels with one purpose'}
+                  {meterChannelPurposeLabel(assignmentPurpose)}
                 </Text>
                 <SelectChips
-                  label="Phase mode"
+                  label="Phase grouping"
                   value={assignment.phaseMode}
                   options={['', 'SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
-                  getLabel={(value) => value === '' ? 'Choose phase' : value === 'SINGLE_PHASE' ? 'Single phase (1)' : value === 'THREE_PHASE' ? 'Three phase (3)' : 'Other group'}
+                  getLabel={phaseGroupingLabel}
                   onChange={(phaseMode) => updateAssignment(assignment.id, (current) => ({ ...current, phaseMode }))}
                 />
                 <SelectChips
-                  label="Direction"
+                  label="Energy flow"
                   value={assignment.direction}
                   options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
-                  getLabel={(value) => value === '' ? 'Choose direction' : value === 'BIDIRECTIONAL' ? 'Bidirectional' : value === 'GENERATION' ? 'Generation' : 'Consumption'}
+                  getLabel={energyFlowLabel}
                   onChange={(direction) => updateAssignment(assignment.id, (current) => ({ ...current, direction }))}
                 />
-                <Text style={[styles.label, { color: colors.mutedForeground }]}>Channels</Text>
+                <Text style={[styles.label, { color: colors.mutedForeground }]}>Meter channels</Text>
                 <Text
                   accessibilityRole="summary"
                   accessibilityLiveRegion="polite"
                   style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}
                 >
-                  Assignment {index + 1} requires {requiredInGroup}; {assignment.channelIds.length} selected in this group. {representedChannelCount} of {activeChannelCount} active channels are represented across all groups.
+                  This group needs {requiredInGroup}; {assignment.channelIds.length} selected here. {representedChannelCount} of {activeChannelCount} non-spare channels are included across all groups.
                 </Text>
-                <View accessibilityLabel={`Assignment ${index + 1} channel checkboxes`} style={styles.channelGrid}>
+                <View accessibilityLabel={`Measured group ${index + 1} meter channel checkboxes`} style={styles.channelGrid}>
                   {previewDevice.channels.map((channel, channelIndex) => {
                     const selected = assignment.channelIds.includes(channel.id);
                     const usedElsewhere = assignmentDrafts.some(
@@ -396,8 +422,8 @@ export function MeterFormScreen({ navigation, route }: Props) {
                         key={channel.id}
                         accessibilityRole="checkbox"
                         accessibilityState={{ checked: selected, disabled }}
-                        accessibilityLabel={`Channel ${channel.ordinal}, ${channel.purpose}${usedElsewhere ? ', assigned in another group' : channel.purpose === 'SPARE' ? ', spare and assignment-exempt' : ''}`}
-                        accessibilityHint={`${channelIndex + 1} of ${previewDevice.channels.length}. ${disabled ? usedElsewhere ? 'Unavailable because another assignment uses it.' : 'Unavailable because spare channels do not require mapping.' : 'Double tap to toggle this channel in the group.'}`}
+                        accessibilityLabel={`Channel ${channel.ordinal}, ${meterChannelPurposeLabel(channel.purpose)}${usedElsewhere ? ', included in another measured group' : channel.purpose === 'SPARE' ? ', no measured group required' : ''}`}
+                        accessibilityHint={`${channelIndex + 1} of ${previewDevice.channels.length}. ${disabled ? usedElsewhere ? 'Unavailable because another measured group uses it.' : 'Unavailable because spare channels do not need a measured item.' : 'Double tap to include or remove this channel.'}`}
                         disabled={disabled}
                         onPress={() => {
                           updateAssignment(assignment.id, (current) => {
@@ -406,7 +432,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
                             }
                             const currentPurpose = purposeFor(current);
                             if (currentPurpose && currentPurpose !== channel.purpose) {
-                              Alert.alert('Purpose conflict', 'One assignment cannot mix main-supply and sub-circuit channels.');
+                              Alert.alert('Channels measure different things', 'A measured group cannot mix main-supply and sub-circuit channels. Create a separate group instead.');
                               return current;
                             }
                             const next = { ...current, channelIds: [...current.channelIds, channel.id] };
@@ -436,17 +462,17 @@ export function MeterFormScreen({ navigation, route }: Props) {
                           {selected ? '✓ ' : ''}Ch {channel.ordinal}
                         </Text>
                         <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>
-                          {channel.purpose.replace('_', ' ')}{usedElsewhere ? ' · in use' : ''}
+                          {meterChannelPurposeLabel(channel.purpose)}{usedElsewhere ? ' · in another group' : ''}
                         </Text>
                       </Pressable>
                     );
                   })}
                 </View>
                 <SelectChips
-                  label="Measurement target type"
+                  label="What these channels measure"
                   value={assignment.target?.kind ?? ''}
                   options={['', ...targetKindsFor(assignment)]}
-                  getLabel={(value) => value === '' ? 'Choose target type' : value === 'GRID_BOUNDARY' ? 'Grid boundary' : value === 'SITE_ASSET' ? 'Site asset' : value === 'BOARD' ? 'Board' : 'TBC'}
+                  getLabel={measuredItemTypeLabel}
                   onChange={(kind) => kind
                     ? setTargetKind(assignment, kind)
                     : updateAssignment(assignment.id, (current) => ({ ...current, target: null, status: 'TBC' }))}
@@ -456,15 +482,15 @@ export function MeterFormScreen({ navigation, route }: Props) {
                     <SearchBar
                       value={targetSearch[assignment.id] ?? ''}
                       onChangeText={(value) => setTargetSearch((current) => ({ ...current, [assignment.id]: value }))}
-                      placeholder="Search compatible target"
+                      placeholder="Search switchboards or site assets"
                     />
                     <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
                       {candidateResults.total > TARGET_RESULT_LIMIT
-                        ? `Showing ${TARGET_RESULT_LIMIT} of ${candidateResults.total} matches. Refine the search to choose another target.`
-                        : `${candidateResults.total} compatible target${candidateResults.total === 1 ? '' : 's'}.`}
-                      {candidateResults.selectedPinned ? ' The selected target remains pinned.' : ''}
+                        ? `Showing ${TARGET_RESULT_LIMIT} of ${candidateResults.total} matches. Refine the search to choose another item.`
+                        : `${candidateResults.total} matching item${candidateResults.total === 1 ? '' : 's'}.`}
+                      {candidateResults.selectedPinned ? ' The selected item remains visible.' : ''}
                     </Text>
-                    <View accessibilityRole="radiogroup" accessibilityLabel={`Assignment ${index + 1} target`}>
+                    <View accessibilityRole="radiogroup" accessibilityLabel={`Measured group ${index + 1} measured item`}>
                       {candidates.map((candidate) => {
                         const selected = JSON.stringify(assignment.target) === JSON.stringify(candidate.target);
                         return (
@@ -498,17 +524,17 @@ export function MeterFormScreen({ navigation, route }: Props) {
                     </View>
                     {!candidates.length ? (
                       <Text style={{ color: colors.mutedForeground }}>
-                        No compatible target matches. Choose another target type or TBC.
+                        No matching item found. Choose a different measured item type or To be confirmed.
                       </Text>
                     ) : null}
                   </View>
                 ) : assignment.target?.kind === 'TBC' ? (
                   <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-                    This mapping stays visibly unresolved and blocks installation completion until confirmed.
+                    The measured item is left To be confirmed and must be resolved before the installation can be completed.
                   </Text>
                 ) : null}
                 <Button
-                  title="Remove assignment"
+                  title="Remove measured group"
                   variant="danger"
                   onPress={() => setAssignmentDrafts((current) => current.filter((item) => item.id !== assignment.id))}
                 />
@@ -518,7 +544,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
         })}
       </View>
       <Button
-        title={busy ? 'Saving…' : 'Save device & assignments'}
+        title={busy ? 'Saving…' : 'Save device & channel measurements'}
         disabled={busy || readOnly}
         style={{ marginTop: spacing.lg }}
         onPress={async () => {
@@ -526,20 +552,20 @@ export function MeterFormScreen({ navigation, route }: Props) {
           try {
             const finalizedAssignments: MeasurementAssignment[] = assignmentDrafts.map((assignment, index) => {
               if (!assignment.phaseMode) {
-                throw new Error(`Choose the phase mode for assignment ${index + 1}.`);
+                throw new Error(`Choose the phase grouping for measured group ${index + 1}.`);
               }
               if (!assignment.direction) {
-                throw new Error(`Choose the measurement direction for assignment ${index + 1}.`);
+                throw new Error(`Choose the energy flow for measured group ${index + 1}.`);
               }
               if (!assignment.target) {
-                throw new Error(`Choose the measurement target type for assignment ${index + 1}.`);
+                throw new Error(`Choose what the channels measure for measured group ${index + 1}.`);
               }
               if (
                 (assignment.target.kind === 'BOARD' && !assignment.target.boardId) ||
                 (assignment.target.kind === 'GRID_BOUNDARY' && !assignment.target.gridSupplyId) ||
                 (assignment.target.kind === 'SITE_ASSET' && !assignment.target.siteAssetId)
               ) {
-                throw new Error(`Choose the exact measurement target for assignment ${index + 1}.`);
+                throw new Error(`Choose the exact switchboard, grid connection, or site asset for measured group ${index + 1}.`);
               }
               return {
                 ...assignment,
@@ -549,6 +575,9 @@ export function MeterFormScreen({ navigation, route }: Props) {
                 status: assignment.target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
               };
             });
+            if (!meter.device_id.trim()) {
+              throw new Error('Device ID / serial is required.');
+            }
             if (meter.device_type === 'Other') {
               if (!meter.custom_manufacturer_name?.trim() || !meter.custom_model_name?.trim()) {
                 throw new Error('Custom meters require manufacturer and model.');
@@ -574,6 +603,8 @@ export function MeterFormScreen({ navigation, route }: Props) {
               meter,
               finalizedAssignments,
             );
+            deleteRemovedLocalPhotos(persistedMeterPhotoUris, meterPhotoUris(meter));
+            setPersistedMeterPhotoUris(meterPhotoUris(meter));
             navigation.goBack();
           } catch (e) {
             Alert.alert('Error', e instanceof Error ? e.message : 'Save failed');
@@ -621,6 +652,10 @@ export function MeterFormScreen({ navigation, route }: Props) {
                       meters,
                       meter_present: meters.length > 0,
                     });
+                    deleteRemovedLocalPhotos([
+                      ...persistedMeterPhotoUris,
+                      ...meterPhotoUris(meter),
+                    ], []);
                     navigation.goBack();
                   } catch (error) {
                     Alert.alert('Meter not deleted', error instanceof Error ? error.message : String(error));

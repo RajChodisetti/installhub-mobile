@@ -107,7 +107,10 @@ function storeFixture(): AppDataStore {
         audit_id: 'installation-1',
         zone_name: 'Delete',
         zone_description: '',
-        photos: ['https://api.example.test/v1/files/zone-delete.jpg'],
+        photos: [
+          'https://api.example.test/v1/files/zone-delete.jpg',
+          'file:///documents/installhub-media/zone-delete.jpg',
+        ],
         created_at: timestamp,
         updated_at: timestamp,
       },
@@ -129,6 +132,7 @@ function storeFixture(): AppDataStore {
         asset_name: 'Deleted board',
         display_code: 'DB-1',
         asset_type: 'DB',
+        photo: 'file:///documents/installhub-media/board-delete.jpg',
         meter_present: true,
         meters: [{
           id: 'meter-delete',
@@ -154,7 +158,38 @@ function storeFixture(): AppDataStore {
         updated_at: timestamp,
       },
     ],
-    meterDevices: [],
+    meterDevices: [
+      {
+        id: 'meter-delete',
+        installationId: 'installation-1',
+        installedOnBoardId: 'board-delete',
+        deviceFamily: 'WATTWATCHERS',
+        deviceModel: 'A3RM',
+        serialNumber: 'serial-delete',
+        displayName: {
+          value: 'SITE-ZONE-01-A3RM-METER',
+          generatedValue: 'SITE-ZONE-01-A3RM-METER',
+          isOverridden: false,
+          ruleVersion: 2,
+        },
+        channels: [],
+      },
+      {
+        id: 'meter-keep',
+        installationId: 'installation-1',
+        installedOnBoardId: 'board-keep',
+        deviceFamily: 'WATTWATCHERS',
+        deviceModel: 'A3RM',
+        serialNumber: 'serial-keep',
+        displayName: {
+          value: 'SITE-ZONE-02-A3RM-METER',
+          generatedValue: 'SITE-ZONE-02-A3RM-METER',
+          isOverridden: false,
+          ruleVersion: 2,
+        },
+        channels: [],
+      },
+    ],
     measurementAssignments: [],
     siteAssets: [
       {
@@ -163,6 +198,7 @@ function storeFixture(): AppDataStore {
         zone_id: 'zone-delete',
         asset_name: 'Deleted asset',
         asset_type: 'HVAC',
+        location_photo: 'file:///documents/installhub-media/site-delete.jpg',
         meter_present: false,
         created_at: timestamp,
         updated_at: timestamp,
@@ -195,6 +231,8 @@ function storeFixture(): AppDataStore {
         queue('electrical_asset', 'board-keep'),
         queue('site_asset', 'site-delete'),
         queue('site_asset', 'site-keep'),
+        queue('meter_device', 'meter-delete'),
+        queue('meter_device', 'meter-keep'),
         ...forms.map((item) => queue('form_submission', item.id)),
       ],
       thumbnail_queue: [
@@ -281,6 +319,11 @@ test('zone deletion includes child-linked forms, meter forms and amendment desce
       ].includes(item.entity_id)),
     false,
   );
+  assert.equal(
+    store.cloudSync.upload_queue.some((item) =>
+      item.entity_type === 'meter_device' && item.entity_id === 'meter-keep'),
+    true,
+  );
   assert.deepEqual(
     store.cloudSync.thumbnail_queue.map((item) => item.id).sort(),
     ['thumb-site-keep', 'thumb-zone-keep'],
@@ -288,6 +331,21 @@ test('zone deletion includes child-linked forms, meter forms and amendment desce
   assert.deepEqual(effects.orphanedThumbnailCacheUris, [
     'file:///cache/deleted.jpg',
   ]);
+  assert.deepEqual(
+    [...effects.deletedEntityMediaUris].sort(),
+    [
+      'file:///documents/installhub-media/board-delete.jpg',
+      'file:///documents/installhub-media/site-delete.jpg',
+      'file:///documents/installhub-media/zone-delete.jpg',
+      'https://api.example.test/v1/files/zone-delete.jpg',
+    ],
+  );
+  assert.equal(
+    effects.protectedEntityMediaUris.includes(
+      'https://api.example.test/v1/files/zone-keep.jpg',
+    ),
+    true,
+  );
   assert.deepEqual(store.cloudSync.force_dirty_installation_ids, [
     'installation-1',
   ]);
@@ -346,6 +404,54 @@ test('board and site-asset deletion plans remove every formally linked form', ()
     siteStore.formSubmissions.some((item) => item.site_asset_id === 'site-delete'),
     false,
   );
+});
+
+test('draft-form deletion removes only that draft, its queue entry, and unreferenced evidence', () => {
+  const store = storeFixture();
+  const draft = {
+    ...form(
+      'form-draft',
+      { zone_id: 'zone-keep', board_id: 'board-keep' },
+      'file:///documents/form-media/form-draft/photo.jpg',
+    ),
+    status: 'Draft' as const,
+  };
+  store.formSubmissions.push(draft);
+  store.cloudSync.upload_queue.push(queue('form_submission', draft.id));
+
+  const plan = planLocalDeletion(store, { kind: 'form_draft', id: draft.id });
+  assert.ok(plan);
+  assert.deepEqual(plan.formIds, [draft.id]);
+  assert.deepEqual(plan.zoneIds, []);
+  assert.deepEqual(plan.electricalAssetIds, []);
+  assert.deepEqual(plan.siteAssetIds, []);
+  assert.deepEqual(plan.meterIds, []);
+  assert.deepEqual(plan.measurementAssignmentIds, []);
+
+  const effects = applyLocalDeletionPlan(store, plan, repairedAt);
+  assert.equal(store.formSubmissions.some((item) => item.id === draft.id), false);
+  assert.equal(store.cloudSync.upload_queue.some((item) => item.entity_id === draft.id), false);
+  assert.deepEqual(effects.deletedForms.map((item) => item.id), [draft.id]);
+  assert.equal(
+    effects.protectedFormAttachmentUris.includes(draft.attachments[0]!.uri),
+    false,
+  );
+  assert.equal(store.zones.some((item) => item.id === 'zone-keep'), true);
+  assert.equal(store.electricalAssets.some((item) => item.id === 'board-keep'), true);
+});
+
+test('draft-form deletion planning identifies later amendment descendants for repository protection', () => {
+  const store = storeFixture();
+  const draft = { ...form('form-draft'), status: 'Draft' as const };
+  const later = {
+    ...form('form-later', { supersedes_id: draft.id }),
+    status: 'Draft' as const,
+  };
+  store.formSubmissions.push(draft, later);
+
+  const plan = planLocalDeletion(store, { kind: 'form_draft', id: draft.id });
+  assert.ok(plan);
+  assert.deepEqual([...plan.formIds].sort(), [draft.id, later.id]);
 });
 
 test('evidence ownership protects exact inherited amendment directories only', () => {

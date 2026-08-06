@@ -5,7 +5,7 @@ export type RootStackParamList = {
   MainTabs: undefined;
   InstallationForm: { installationId?: string } | undefined;
   InstallationDetail: { installationId: string };
-  DeviceSearch: undefined;
+  DeviceSearch: { installationId: string };
   ZoneWorkspace: { zoneId: string; installationId: string };
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };
@@ -15,7 +15,10 @@ export type RootStackParamList = {
     deviceType?: 'A3RM' | 'A6M' | 'Other';
     finishChannelMapping?: boolean;
   };
-  DataView: { installationId: string };
+  DataView: {
+    installationId: string;
+    initialMode?: 'RECONCILIATION' | 'VALIDATION';
+  };
   MeteringTable: { installationId: string };
   InstallationReport: { installationId: string };
   ClientReport: { installationId: string };

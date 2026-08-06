@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { searchAllDevices, searchEligibleMeters } from '../src/domain/meterSearch';
+import { searchEligibleMeters, searchInstallationDevices } from '../src/domain/meterSearch';
 import type {
   DeviceSearchRecord,
 } from '../src/domain/meterSearch';
@@ -36,10 +36,12 @@ test('eligible meter search deterministically caps a 1k-site result set', () => 
   assert.equal(pinned.selectedPinned, true);
 });
 
-const globalRecord = (index: number): DeviceSearchRecord => ({
+const installationRecord = (index: number): DeviceSearchRecord => ({
   meter: {
     ...meter(index),
     id: `stable-device-${index}`,
+    installationId: `installation-${index}`,
+    installedOnBoardId: `board-${index}`,
     serialNumber: `SERIAL-${index}`,
     deviceNumber: `LEGACY-${index}`,
     displayName: {
@@ -84,8 +86,8 @@ const globalRecord = (index: number): DeviceSearchRecord => ({
   },
 });
 
-test('global device search finds local devices by every installer-facing identity and context', () => {
-  const record = globalRecord(7);
+test('installation device search finds devices by every installer-facing identity and context', () => {
+  const record = installationRecord(7);
   for (const query of [
     'stable-device-7',
     'SERIAL-7',
@@ -96,18 +98,32 @@ test('global device search finds local devices by every installer-facing identit
     'Redgum Factory 7',
     'A6M',
   ]) {
-    assert.equal(searchAllDevices([record], query).visible[0]?.meter.id, 'stable-device-7', query);
+    assert.equal(
+      searchInstallationDevices([record], record.installation.id, query).visible[0]?.meter.id,
+      'stable-device-7',
+      query,
+    );
   }
 });
 
-test('global device search is deterministic and bounded', () => {
-  const records = [globalRecord(2), globalRecord(1), globalRecord(3)];
-  const first = searchAllDevices(records, '', 2);
-  const reversed = searchAllDevices([...records].reverse(), '', 2);
-  assert.equal(first.total, 3);
-  assert.equal(first.visible.length, 2);
+test('installation device search excludes every other installation and remains deterministic', () => {
+  const records = [installationRecord(2), installationRecord(1), installationRecord(3)];
+  const mismatchedJoin = {
+    ...installationRecord(9),
+    installation: records[0]!.installation,
+  };
+  const first = searchInstallationDevices([...records, mismatchedJoin], 'installation-2', '', 2);
+  const reversed = searchInstallationDevices(
+    [mismatchedJoin, ...records].reverse(),
+    'installation-2',
+    '',
+    2,
+  );
+  assert.equal(first.total, 1);
+  assert.equal(first.visible.length, 1);
   assert.deepEqual(
     first.visible.map((record) => record.meter.id),
     reversed.visible.map((record) => record.meter.id),
   );
+  assert.deepEqual(first.visible.map((record) => record.installation.id), ['installation-2']);
 });

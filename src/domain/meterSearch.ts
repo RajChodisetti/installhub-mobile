@@ -23,21 +23,36 @@ export interface DeviceSearchResult {
   visible: DeviceSearchRecord[];
 }
 
-export const GLOBAL_DEVICE_RESULT_LIMIT = 250;
+export const INSTALLATION_DEVICE_RESULT_LIMIT = 250;
 
-/** Search every locally accessible device without treating its human label as
- * a machine identity. Stable meter IDs and serials remain independent search
- * values and navigation keys. */
-export function searchAllDevices(
+export function deviceRecordBelongsToInstallation(
+  record: DeviceSearchRecord,
+  installationId: string,
+): boolean {
+  return record.installation.id === installationId &&
+    record.meter.installationId === installationId &&
+    record.board.audit_id === installationId &&
+    record.zone.audit_id === installationId &&
+    record.meter.installedOnBoardId === record.board.id &&
+    record.board.zone_id === record.zone.id;
+}
+
+/** Search devices from one installation without treating their human labels
+ * as machine identities. The installation filter is repeated at this domain
+ * boundary so a stale or over-broad data source cannot leak another site's
+ * devices into results or replacement actions. */
+export function searchInstallationDevices(
   records: DeviceSearchRecord[],
+  installationId: string,
   query: string,
-  limit = GLOBAL_DEVICE_RESULT_LIMIT,
+  limit = INSTALLATION_DEVICE_RESULT_LIMIT,
 ): DeviceSearchResult {
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error('Device search limit must be positive.');
   }
   const normalized = query.trim().toLocaleLowerCase();
   const matches = [...records]
+    .filter((record) => deviceRecordBelongsToInstallation(record, installationId))
     .filter(({ meter, board, zone, installation }) => !normalized || [
       meter.id,
       meter.serialNumber,

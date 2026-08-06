@@ -44,33 +44,34 @@ export function useInstallations() {
   return { items, loading, refresh };
 }
 
-export function useDeviceSearchRecords() {
+export function useDeviceSearchRecords(installationId: string) {
   const [items, setItems] = useState<DeviceSearchRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const installations = await installationsRepo.list();
-      const nested = await Promise.all(installations.map(async (installation) => {
-        const [zones, boards, meters] = await Promise.all([
-          zonesRepo.listByInstallation(installation.id),
-          electricalAssetsRepo.listByInstallation(installation.id),
-          canonicalInstallationRepo.meterDevices(installation.id),
-        ]);
-        const boardById = new Map(boards.map((board) => [board.id, board]));
-        const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
-        return meters.flatMap((meter) => {
-          const board = boardById.get(meter.installedOnBoardId);
-          const zone = board ? zoneById.get(board.zone_id) : undefined;
-          return board && zone ? [{ meter, board, zone, installation }] : [];
-        });
+      const installation = await installationsRepo.getById(installationId);
+      if (!installation) {
+        setItems([]);
+        return;
+      }
+      const [zones, boards, meters] = await Promise.all([
+        zonesRepo.listByInstallation(installationId),
+        electricalAssetsRepo.listByInstallation(installationId),
+        canonicalInstallationRepo.meterDevices(installationId),
+      ]);
+      const boardById = new Map(boards.map((board) => [board.id, board]));
+      const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
+      setItems(meters.flatMap((meter) => {
+        const board = boardById.get(meter.installedOnBoardId);
+        const zone = board ? zoneById.get(board.zone_id) : undefined;
+        return board && zone ? [{ meter, board, zone, installation }] : [];
       }));
-      setItems(nested.flat());
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [installationId]);
 
   useEffect(() => {
     void refresh();

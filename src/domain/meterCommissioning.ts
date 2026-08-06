@@ -3,7 +3,10 @@ import type {
   FormSubmission,
   FormValue,
   MeasurementAssignment,
+  MeasurementDirection,
+  MeasurementTarget,
   Meter,
+  MeterChannelPurpose,
   MeterDeviceType,
   WattwatcherPrestart,
   WattwatcherChannel,
@@ -12,6 +15,54 @@ import {
   channelPurposeFromFormAnswer,
   completedFormLoadType,
 } from './formMeterPrefill';
+import { defaultMeterCustomName } from './namingV2';
+
+/** Direct custom-meter capture owns identity, channel metadata, relationships,
+ * notes and evidence, but not the Wattwatchers commissioning questionnaire. */
+export function showsWattwatchersCommissioningSections(
+  deviceType: MeterDeviceType,
+): boolean {
+  return deviceType !== 'Other';
+}
+
+/** Field-facing labels for channel measurement capture. Persisted canonical
+ * values stay unchanged while installers see the operational meaning. */
+export function meterChannelPurposeLabel(
+  purpose?: MeterChannelPurpose | null,
+): string {
+  if (purpose === 'MAIN_SUPPLY') return 'Main supply';
+  if (purpose === 'SUB_CIRCUIT') return 'Sub-circuit or site asset';
+  if (purpose === 'SPARE') return 'Spare / unused';
+  return 'Choose channels that measure the same thing';
+}
+
+export function phaseGroupingLabel(
+  phaseMode: MeasurementAssignment['phaseMode'] | '',
+): string {
+  if (phaseMode === 'SINGLE_PHASE') return 'Single phase · 1 channel';
+  if (phaseMode === 'THREE_PHASE') return 'Three phase · 3 channels';
+  if (phaseMode === 'OTHER') return 'Custom grouping';
+  return 'Choose phase grouping';
+}
+
+export function energyFlowLabel(
+  direction: MeasurementDirection | '',
+): string {
+  if (direction === 'CONSUMPTION') return 'Consumes energy';
+  if (direction === 'GENERATION') return 'Generates energy';
+  if (direction === 'BIDIRECTIONAL') return 'Can consume or generate';
+  return 'Choose energy flow';
+}
+
+export function measuredItemTypeLabel(
+  kind: MeasurementTarget['kind'] | '',
+): string {
+  if (kind === 'GRID_BOUNDARY') return 'Incoming grid connection';
+  if (kind === 'SITE_ASSET') return 'Site asset / equipment';
+  if (kind === 'BOARD') return 'Switchboard';
+  if (kind === 'TBC') return 'To be confirmed';
+  return 'Choose what is measured';
+}
 
 /**
  * A site asset can have only one direct meter owner. The current meter keeps
@@ -152,6 +203,9 @@ export function meterFromInstallationForm(
     ? 'device.id'
     : 'auditor.serial_number';
   const deviceId = String(form.answers[deviceIdKey] ?? '');
+  const customName = String(form.answers['device.name'] ?? '').trim().slice(0, 64)
+    || existing?.custom_name?.trim().slice(0, 64)
+    || defaultMeterCustomName(deviceType);
   const channels = Array.from({ length: channelCount }, (_, index) => {
     const ordinal = index + 1;
     const load = String(form.answers[`channel.${ordinal}.load`] ?? '');
@@ -186,9 +240,10 @@ export function meterFromInstallationForm(
     ...(existing ?? {}),
     id: meterId,
     device_name: humanDeviceLabel(labelPrefix, deviceType, deviceId),
+    custom_name: customName,
     device_type: deviceType,
     device_id: deviceId,
-    device_number: String(form.answers['device.id'] ?? form.answers['device.number'] ?? ''),
+    device_number: String(form.answers['device.number'] ?? '').trim() || deviceId,
     ww_prestart: prestart,
     ww_channels: channels,
   };

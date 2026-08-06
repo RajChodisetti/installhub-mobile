@@ -22,6 +22,8 @@ test('encrypted store restart normalization retains a protected site-asset edito
       displayCode: 'SITE-HVAC-010',
       customCode: false,
       locationDescription: 'Showroom',
+      locationPhoto: 'file:///showroom.jpg',
+      extraPhotos: ['file:///nameplate.jpg', 'file:///context.jpg'],
       sourceKey: 'BOARD:db-1',
       sourceBoardSearch: 'DB 1',
       meteringKind: 'METERED',
@@ -50,4 +52,12 @@ test('encrypted store restart normalization retains a protected site-asset edito
   assert.deepEqual(restarted.siteAssetEditorDrafts?.[0]?.payload.deviceDetour, {
     beforeMeterIds: ['meter-old'], startReturnToken: 2,
   });
+  assert.equal(
+    restarted.siteAssetEditorDrafts?.[0]?.payload.locationPhoto,
+    'file:///showroom.jpg',
+  );
+  assert.deepEqual(restarted.siteAssetEditorDrafts?.[0]?.payload.extraPhotos, [
+    'file:///nameplate.jpg',
+    'file:///context.jpg',
+  ]);
 });

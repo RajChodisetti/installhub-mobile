@@ -87,6 +87,11 @@ test('WW completion atomically pins canonical board and one stable operational m
   assert.equal(store.meterDevices.length, 1);
   assert.equal(store.meterDevices[0]!.id, 'meter-stable');
   assert.equal(store.meterDevices[0]!.installedOnBoardId, 'board');
+  assert.equal(store.meterDevices[0]!.customName, 'A3RM Meter');
+  assert.equal(store.meterDevices[0]!.deviceNumber, 'D-1');
+  assert.equal(store.meterDevices[0]!.displayName.ruleVersion, 2);
+  assert.equal(store.meterDevices[0]!.displayName.provisional, true);
+  assert.match(store.meterDevices[0]!.displayName.value, /-PLANT-01-A3RM-METER$/);
   assert.deepEqual(store.meterDevices[0]!.commissioningData?.prestart, {
     siteInduction: true,
     safeAccess: true,

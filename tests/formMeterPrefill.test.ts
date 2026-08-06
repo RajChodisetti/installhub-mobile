@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  commsFaultIdentityAnswersForMeter,
   installationFormAnswersForMeter,
   isCanonicalBoardAnswerKey,
 } from '../src/domain/formMeterPrefill';
@@ -28,6 +29,21 @@ const canonicalMeter: MeterDevice = {
   ],
 };
 
+test('Comms Fault prefill keeps a distinct device number separate from the serial', () => {
+  assert.deepEqual(commsFaultIdentityAnswersForMeter(canonicalMeter), {
+    'existing.device_id': 'SERIAL-42',
+    'existing.device_number': 'D-42',
+    'existing.device_type': 'A6M',
+  });
+  assert.equal(
+    commsFaultIdentityAnswersForMeter({
+      ...canonicalMeter,
+      deviceNumber: undefined,
+    })['existing.device_number'],
+    'SERIAL-42',
+  );
+});
+
 test('known-board report answers stay stored but are not separate editable WW questions', () => {
   for (const key of [
     'auditor.switchboard_name',
@@ -45,7 +61,8 @@ test('existing canonical meter context prefills WW identity, purpose, load, rati
   const answers = installationFormAnswersForMeter(canonicalMeter);
   assert.equal(answers['device.type'], 'A6M');
   assert.equal(answers['device.id'], 'SERIAL-42');
-  assert.equal(answers['device.number'], 'SERIAL-42');
+  assert.equal(answers['device.number'], 'D-42');
+  assert.equal(answers['device.name'], 'A6M Meter');
   assert.deepEqual(
     [1, 2, 3, 4, 5, 6].map((ordinal) => answers[`channel.${ordinal}.purpose`]),
     [

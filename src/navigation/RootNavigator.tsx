@@ -162,7 +162,7 @@ export function RootNavigator() {
             <Stack.Screen name="ZoneWorkspace" component={ZoneWorkspaceScreen} options={{ title: 'Zone' }} />
             <Stack.Screen name="BoardDetail" component={BoardDetailScreen} options={{ title: 'Board' }} />
             <Stack.Screen name="SiteAssetDetail" component={SiteAssetDetailScreen} options={{ title: 'Asset' }} />
-            <Stack.Screen name="MeterForm" component={MeterFormScreen} options={{ title: 'Wattwatcher' }} />
+            <Stack.Screen name="MeterForm" component={MeterFormScreen} options={{ title: 'Meter' }} />
             <Stack.Screen name="DataView" component={DataViewScreen} options={{ title: 'Data View' }} />
             <Stack.Screen name="MeteringTable" component={MeteringTableScreen} options={{ title: 'Metering' }} />
             <Stack.Screen name="InstallationReport" component={InstallationReportScreen} options={{ title: 'Report' }} />

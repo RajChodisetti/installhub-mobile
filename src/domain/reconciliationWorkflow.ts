@@ -1,4 +1,8 @@
-import type { ReadinessIssue } from '../types';
+import type {
+  MeasurementAssignment,
+  ReadinessIssue,
+  SiteAsset,
+} from '../types';
 
 export type ReadinessIssueGroupId =
   | 'SITE_GRID'
@@ -13,6 +17,58 @@ export interface ReadinessIssueSummaryGroup {
   count: number;
   blocking: number;
   warnings: number;
+}
+
+export interface ExplicitReconciliationContext {
+  siteAssets: Array<Pick<SiteAsset, 'id' | 'metering_state'>>;
+  measurementAssignments: Array<Pick<MeasurementAssignment, 'id' | 'status' | 'target'>>;
+}
+
+/** Reconciliation is reserved for states the installer deliberately left
+ * unresolved. Broken confirmed references and other validation failures still
+ * block readiness, but appear in completion checks instead of being described
+ * as TBC work. */
+export function isExplicitReconciliationIssue(
+  issue: ReadinessIssue,
+  context: ExplicitReconciliationContext,
+): boolean {
+  if (
+    issue.code === 'SUPPLY_TBC' &&
+    (issue.entityType === 'board' || issue.entityType === 'site_asset')
+  ) {
+    return true;
+  }
+  if (
+    issue.code === 'METERING_STATE_INVALID'
+    && issue.entityType === 'site_asset'
+    && issue.field === 'meteringState'
+  ) {
+    const asset = context.siteAssets.find((item) => item.id === issue.entityId);
+    return Boolean(asset && (!asset.metering_state || asset.metering_state.kind === 'TBC'));
+  }
+  if (
+    issue.code === 'MEASUREMENT_TARGET_TBC' &&
+    issue.entityType === 'measurement_assignment' &&
+    issue.field === 'targetConfirmation'
+  ) {
+    const assignment = context.measurementAssignments.find((item) => item.id === issue.entityId);
+    return Boolean(
+      assignment && (assignment.status === 'TBC' || assignment.target.kind === 'TBC'),
+    );
+  }
+  return false;
+}
+
+export function partitionReadinessIssues(
+  issues: ReadinessIssue[],
+  context: ExplicitReconciliationContext,
+): { reconciliation: ReadinessIssue[]; validation: ReadinessIssue[] } {
+  const reconciliation: ReadinessIssue[] = [];
+  const validation: ReadinessIssue[] = [];
+  for (const issue of issues) {
+    (isExplicitReconciliationIssue(issue, context) ? reconciliation : validation).push(issue);
+  }
+  return { reconciliation, validation };
 }
 
 const READINESS_GROUPS: Array<{

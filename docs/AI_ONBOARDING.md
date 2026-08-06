@@ -19,12 +19,12 @@ Field App Complete API login
      │  │  └─ A3RM/A6M meters and commissioning channels
      │  └─ site assets (HVAC, lighting, solar, EV, etc.)
      └─ views/reports
-        ├─ global device search with Open and Replace actions
+        ├─ installation-scoped device search across all zones, with Open and Replace actions
         ├─ six new field-form families with draft/completed/amendment lifecycle
         ├─ form-specific A4 PDFs with embedded evidence photos
         │  └─ local quality retries -> durable API job fallback
         ├─ merged installation pack (summary + completed form PDFs)
-        ├─ Data View and TBC resolver
+        ├─ Data View with explicit TBC reconciliation and separate completion checks
         ├─ metering table
         └─ compact tools/reports drawer
 ```
@@ -33,7 +33,8 @@ The app is production-connected for authentication, opt-in Cloud Backup, explici
 imports, user administration, installation access assignment, and server PDF jobs while remaining
 local-first for field work. Local records live in AsyncStorage; secure tokens live in SecureStore.
 Installation trees and evidence are backed up only after the user enables backup on that
-installation. Zone-summary sending and client-report UI remain placeholders.
+installation. Zone-summary sending is intentionally unavailable until an
+authenticated API destination is defined; client-report UI remains a placeholder.
 
 ## 2. Repository tree
 
@@ -400,7 +401,10 @@ Important terminology:
 
 - A code name of `audit_id` is the installation foreign key.
 - An electrical asset is a board such as MSB, MSSB, DB, HVAC-DB, LX-DB, PV-DB, or MCC.
-- A site asset is a load/equipment item such as HVAC, lighting, solar/PV, EV charger, or hot water.
+- A site asset is a load/equipment item such as HVAC, lighting, solar/PV, EV charger, hot water,
+  refrigeration, or compressed air. `REFRIGERATION` and `COMPRESSED_AIR` are first-class
+  `type_code` values for new records. Historical records whose legacy display type was
+  Refrigeration or Compressed Air remain `OTHER` unless an explicit canonical code was stored.
 - TBC flags explicitly track unresolved board relationships; they are not generic validation
   errors.
 - `meterDevices` owns canonical meter identity and channels. Embedded board meters are a legacy UI
@@ -411,6 +415,8 @@ Important terminology:
 
 Delete behavior is implemented manually:
 
+- Each editable installation card on the Dashboard exposes a local delete action. It confirms the
+  exact cascade counts before deletion and states that an existing Cloud Backup is retained.
 - Installation deletion removes child forms, zones, electrical assets, and site assets, then the
   repository cleanup path removes the deleted forms' owned media directories and generated form
   reports. It deliberately does not delete an existing Cloud Backup.
@@ -434,12 +440,12 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `MainTabs` | none | Dashboard/Settings bottom tabs |
 | `InstallationForm` | optional `installationId` | Create or edit an installation |
 | `InstallationDetail` | `installationId` | Site summary, status, zones, report entry points |
-| `DeviceSearch` | none | Search every local device by ID/serial, legacy number, name, zone, board, installation, or type; Open or start a prefilled replacement form |
+| `DeviceSearch` | `installationId` | Search every device in one installation across all of its zones by ID/serial, optional site/asset tag, name, zone, board, or type; open or start a prefilled replacement form |
 | `ZoneWorkspace` | `zoneId`, `installationId` | Zone edit/photos, boards/assets, coverage and unresolved summary |
-| `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list |
+| `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list; start WW commissioning or add an Other Meter |
 | `SiteAssetDetail` | `assetId`, `installationId`, `zoneId` | Site asset edit/delete |
-| `MeterForm` | `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments |
-| `DataView` | `installationId` | Reconciliation, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
+| `MeterForm` | `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments; Other Meter captures manufacturer, model, classification, coverage and explicit channel capabilities |
+| `DataView` | `installationId`, optional `initialMode` | Explicit TBC reconciliation, separate non-TBC completion checks, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
 | `MeteringTable` | `installationId` | Combined board-meter/site-asset metering rows |
 | `InstallationReport` | `installationId` | Summary and PDF export/share |
 | `ClientReport` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
@@ -472,7 +478,8 @@ components/domain
   InstallationCard, ZoneCard, ElectricalAssetCard, SiteAssetCard, StatusChip
 
 components/forms
-  InstallationForm, ElectricalAssetForm, SiteAssetForm, WattwatcherForm, FormModal
+  InstallationForm, ElectricalAssetForm, SiteAssetForm, WattwatcherForm, FormModal;
+  board/site-asset editors include camera/library attachments, and boards include sub-circuit notes
 
 components/BarcodeScanField
   text input + Expo Camera modal + supported barcode formats
@@ -488,9 +495,10 @@ preserving:
 - A3RM creates three channels and uses Rogowski coil-size choices.
 - A6M creates six channels and uses CT-rating choices.
 - Legacy saved choices remain selectable through `withLegacyOption`.
-- New WW and Comms replacement forms expose one Device ID/serial field, which can
-  be scanned or typed. Older separate device-number values remain readable and
-  are mirrored invisibly into the compatibility alias.
+- The WW form exposes a required Device ID/serial and an optional, barcode-scannable
+  site/asset tag. A blank compatibility value is seeded from the serial, but an
+  explicitly different site/asset tag is preserved through editing, backup, and
+  reports. Replacement details in Comms Fault expose the same optional distinct tag.
 - Manual entry always remains available when camera access is denied.
 - The new-form picker contains Installation (WW), Comms Fault, ACE
   Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger. The old
@@ -505,12 +513,33 @@ preserving:
   detailed WW commissioning action; it does not ask a separate meter-present yes/no.
   Parent-board search includes name/type/zone and excludes the edited board and every
   descendant, preventing cycles.
-- New device names are suggested as `<site> - <zone> - <type>` (bounded to 64
-  visible characters). Stable IDs/serials remain separate, and global Device Search
-  can find devices by either identity or by their site/zone/board/type context.
-- Installation uses one `device.type` controller. A3RM exposes three channels
-  with exactly `3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`; A6M exposes six
-  channels with exactly `60A`, `120A`, `200A`, `400A`, or `600A`.
+- Zones own an editable uppercase `zone_code` (maximum 16 characters). New boards,
+  site assets, and meters share one per-zone naming-rule-v2 sequence and receive
+  `<INSTALL>-<ZONE>-<NN>-<CUSTOMNAME>` codes. `NN` is at least two digits and the
+  local high-water mark prevents reuse after an offline delete; the server resolves
+  concurrent-device collisions. Rule-v1 and server-confirmed codes stay frozen.
+- Installations own a required editable uppercase `site_code` (maximum 16 characters). It is
+  derived from the site name while pristine and becomes the `<INSTALL>` prefix used by the naming
+  rule above.
+- New board/asset names default from their selected type but remain editable. WW
+  `device.name` similarly defaults to `A3RM Meter` or `A6M Meter` and advances on a
+  type change only while still pristine. Stable IDs, optional site/asset tags, and
+  generated display codes remain separate searchable identities.
+- Board-level `Add Other Meter` opens the canonical custom-meter editor with its
+  type fixed to `Other`; switching into A3RM/A6M must use the full Installation
+  form. It captures identity, manufacturer/model, classification/coverage, custom
+  channels/capabilities, notes, canonical assignments, and durable local evidence,
+  without Wattwatchers pre-start, duplicate switchboard, verification, or
+  commissioning questions. Its optional site/asset tag is not copied from the
+  serial, and persisted legacy values remain readable.
+- Installation uses one `device.type` controller. A3RM exposes three channels with exactly
+  `10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, or `Not Used`;
+  A6M exposes six channels with exactly `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`,
+  `CT-600A`, or `Not Used`. A6M current observations also accept the explicit text value
+  `Not Connected`; A3RM current observations remain numeric.
+- Signal authoring uses `Low`, `Medium`, or `High`. Antenna authoring uses `Internal`,
+  `External`, `CSM550 - External High Gain`, or `Other`. Known saved values from the previous
+  mobile catalogs remain selectable for compatibility, but arbitrary new values are rejected.
 - Every visible Installation channel first requires a purpose: Main board supply,
   Sub-circuit / asset, or Spare / unused. Active purposes require a Load; choosing
   `Other` also requires a separate custom load label. Spare channels hide and
@@ -525,6 +554,8 @@ preserving:
   barcode and QR input for its serial fields.
 - Changing a controlling device type clears incompatible selections and values
   (including A6M-only channels 4-6) from newly hidden sections before autosave.
+- Completing any non-WW field form returns to its parent page after the save succeeds. A completed
+  WW installation form instead continues to the required channel-mapping step.
 
 ## 7. Direct dependencies
 
@@ -608,6 +639,10 @@ URI. The app stores that URI directly in the domain record. Cloud Backup keeps t
 URI and records the confirmed remote URL in its durable upload queue; API payloads never contain
 `file://` paths.
 
+Board and site-asset editors expose both camera and photo-library actions. Boards persist one
+location photo, additional photos, and sub-circuit notes; site assets persist one location photo
+and additional photos. Removing an attachment requires confirmation.
+
 Every form photo slot accepts multiple attachments. After the first image, the
 active editor keeps explicit “Take another photo” and “Choose another photo” actions,
 with an optional caption and individual remove action for each image. Completed WW
@@ -664,8 +699,9 @@ Generated local PDFs live in the cache and are reproducible. Settings can clear 
 
 ### Zone summary
 
-`sendZoneSummaryStub()` only prepends a line to an in-process array. It does not survive an app
-restart or contact a server.
+No user-facing send action is exposed. The reference app's external handoff has
+no authenticated destination contract in this repository, so the mobile app
+must not claim that a summary was sent or queued.
 
 ## 10. Known gaps and sharp edges
 
@@ -678,7 +714,9 @@ An agent should distinguish deliberate demo behavior from accidental architectur
 - Board and site-asset photos remain local working copies after backup; clearing the app sandbox
   still requires a future restore workflow to bring them back.
 - Client report and photo inclusion are placeholders; toggles do not feed the exported PDF.
-- Reconciliation uses explicit searchable, path-safe choices; candidates are capped deterministically
+- Reconciliation lists only deliberately unresolved/TBC choices and uses explicit searchable,
+  path-safe choices; other readiness failures remain blocking under the separate Checks view.
+  Candidates are capped deterministically
   and large coverage/meter lists are virtualized. The physical view lists zone-contained boards and
   assets, while the electrical view keeps FED_FROM hierarchy separate from the MEASURES overlay.
 - A completed Wattwatchers installation form creates the stable operational meter and immediately
@@ -689,7 +727,7 @@ An agent should distinguish deliberate demo behavior from accidental architectur
 - Site-asset editor recovery drafts are local-only records inside the encrypted transactional store.
   They are bound to user and installation, checksum-verified, expire after seven days, are cleared
   on logout/success/explicit discard, and require explicit review if the base tree or asset changed.
-- Zone summary sending is an in-memory stub.
+- Zone summary sending needs an authenticated API destination and delivery contract.
 - Some async screen operations have minimal error handling.
 - Pure form/report/storage tests exist; integration, E2E, lint and formatter commands do not.
 - The app is called iOS-first, but Android and web scripts/configuration are present and less

@@ -27,6 +27,8 @@ export interface LocalDeletionEffects {
   plan: LocalDeletionPlan;
   deletedForms: FormSubmission[];
   protectedFormAttachmentUris: string[];
+  deletedEntityMediaUris: string[];
+  protectedEntityMediaUris: string[];
   orphanedThumbnailCacheUris: string[];
 }
 
@@ -185,6 +187,52 @@ function addRemoteUri(uris: Set<string>, value: string | null | undefined): void
   if (value && /^https?:\/\//i.test(value)) uris.add(value);
 }
 
+function addMediaUri(uris: Set<string>, value: string | null | undefined): void {
+  if (value) uris.add(value);
+}
+
+function entityMediaUris(
+  store: AppDataStore,
+  selection?: {
+    zoneIds?: Set<string>;
+    electricalAssetIds?: Set<string>;
+    siteAssetIds?: Set<string>;
+  },
+): string[] {
+  const uris = new Set<string>();
+  store.zones
+    .filter((item) => !selection?.zoneIds || selection.zoneIds.has(item.id))
+    .forEach((item) => item.photos.forEach((uri) => addMediaUri(uris, uri)));
+  store.electricalAssets
+    .filter((item) => !selection?.electricalAssetIds || selection.electricalAssetIds.has(item.id))
+    .forEach((item) => {
+      addMediaUri(uris, item.photo);
+      item.extra_photos?.forEach((uri) => addMediaUri(uris, uri));
+      item.meters.forEach((meter) => {
+        addMediaUri(uris, meter.ww_photos?.device_installed);
+        addMediaUri(uris, meter.ww_photos?.switchboard_overview);
+        addMediaUri(uris, meter.ww_photos?.labeling);
+        meter.ww_photos?.extra?.forEach((uri) => addMediaUri(uris, uri));
+      });
+    });
+  store.siteAssets
+    .filter((item) => !selection?.siteAssetIds || selection.siteAssetIds.has(item.id))
+    .forEach((item) => {
+      addMediaUri(uris, item.location_photo);
+      item.extra_photos?.forEach((uri) => addMediaUri(uris, uri));
+    });
+  store.meterDevices
+    .filter((item) => !selection?.electricalAssetIds
+      || selection.electricalAssetIds.has(item.installedOnBoardId))
+    .forEach((meter) => {
+      addMediaUri(uris, meter.wwPhotos?.deviceInstalled);
+      addMediaUri(uris, meter.wwPhotos?.switchboardOverview);
+      addMediaUri(uris, meter.wwPhotos?.labeling);
+      meter.wwPhotos?.extra?.forEach((uri) => addMediaUri(uris, uri));
+    });
+  return [...uris];
+}
+
 /** Returns the remote evidence that remains referenced by one local tree. */
 export function referencedRemoteMediaUris(
   store: AppDataStore,
@@ -239,6 +287,11 @@ function queueEntityStillExists(
       (entity) => entity.id === item.entity_id && entity.audit_id === item.installation_id,
     );
   }
+  if (item.entity_type === 'meter_device') {
+    return store.meterDevices.some(
+      (entity) => entity.id === item.entity_id && entity.installationId === item.installation_id,
+    );
+  }
   return store.formSubmissions.some(
     (entity) =>
       entity.id === item.entity_id &&
@@ -283,6 +336,11 @@ export function applyLocalDeletionPlan(
   const siteAssetIds = new Set(plan.siteAssetIds);
   const formIds = new Set(plan.formIds);
   const deletedForms = store.formSubmissions.filter((item) => formIds.has(item.id));
+  const deletedEntityMediaUris = entityMediaUris(store, {
+    zoneIds,
+    electricalAssetIds,
+    siteAssetIds,
+  });
 
   store.installations = store.installations.filter(
     (item) => !installationIds.has(item.id),
@@ -410,6 +468,8 @@ export function applyLocalDeletionPlan(
     deletedForms,
     protectedFormAttachmentUris: store.formSubmissions.flatMap((item) =>
       item.attachments.map((attachment) => attachment.uri)),
+    deletedEntityMediaUris,
+    protectedEntityMediaUris: entityMediaUris(store),
     orphanedThumbnailCacheUris: orphanedThumbnailCacheUris(
       removedThumbnails,
       store.cloudSync.thumbnail_queue,

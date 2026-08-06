@@ -5,6 +5,7 @@ import type {
   MeterDevice,
   SiteAssetTypeCode,
 } from '../types';
+import { defaultMeterCustomName } from './namingV2';
 
 const CANONICAL_BOARD_ANSWER_KEYS = new Set([
   'auditor.switchboard_name',
@@ -43,6 +44,8 @@ const FORM_LOAD_BY_CANONICAL: Partial<Record<SiteAssetTypeCode, string>> = {
   EXHAUST_FAN_SYSTEM: 'Other',
   POWER_OUTLET: 'General Power',
   HEATER_GEYSER: 'Hot Water',
+  REFRIGERATION: 'Other',
+  COMPRESSED_AIR: 'Other',
   OTHER: 'Other',
 };
 
@@ -56,6 +59,8 @@ const LEGACY_LOAD_BY_CANONICAL: Record<SiteAssetTypeCode, string> = {
   EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
   POWER_OUTLET: 'General Power',
   HEATER_GEYSER: 'Hot Water',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
   OTHER: 'Other',
 };
 
@@ -89,7 +94,13 @@ export function installationFormAnswersForMeter(
 ): Record<string, FormValue> {
   const answers: Record<string, FormValue> = {
     'device.id': meter.serialNumber,
-    'device.number': meter.serialNumber,
+    'device.number': meter.deviceNumber?.trim() || meter.serialNumber,
+    'device.name': meter.customName?.trim()
+      || defaultMeterCustomName(
+        meter.deviceModel,
+        meter.customModelName,
+        meter.customManufacturerName,
+      ),
   };
   if (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M') {
     answers['device.type'] = meter.deviceModel;
@@ -130,6 +141,21 @@ export function installationFormAnswersForMeter(
     if (channel.description !== undefined) {
       answers[`${prefix}.description`] = channel.description;
     }
+  }
+  return answers;
+}
+
+/** Prefill a Comms Fault draft without collapsing a distinct field device
+ * number into the serial identity. */
+export function commsFaultIdentityAnswersForMeter(
+  meter: Pick<MeterDevice, 'deviceModel' | 'deviceNumber' | 'serialNumber'>,
+): Record<string, FormValue> {
+  const answers: Record<string, FormValue> = {
+    'existing.device_id': meter.serialNumber,
+    'existing.device_number': meter.deviceNumber?.trim() || meter.serialNumber,
+  };
+  if (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M') {
+    answers['existing.device_type'] = meter.deviceModel;
   }
   return answers;
 }

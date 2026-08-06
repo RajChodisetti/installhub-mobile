@@ -35,12 +35,18 @@ import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { searchEligibleMeters } from '../domain/meterSearch';
 import {
+  partitionReadinessIssues,
   readinessIssueKey,
   reconciliationProgress,
 } from '../domain/reconciliationWorkflow';
+import {
+  energyFlowLabel,
+  meterChannelPurposeLabel,
+  phaseGroupingLabel,
+} from '../domain/meterCommissioning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DataView'>;
-type ViewMode = 'RECONCILIATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
+type ViewMode = 'RECONCILIATION' | 'VALIDATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
 const METER_RESULT_LIMIT = 100;
 type DataViewResumeState = {
   mode: ViewMode;
@@ -52,7 +58,7 @@ type DataViewResumeState = {
 const dataViewResumeByInstallation = new Map<string, DataViewResumeState>();
 
 export function DataViewScreen({ navigation, route }: Props) {
-  const { installationId } = route.params;
+  const { installationId, initialMode } = route.params;
   const resumeState = dataViewResumeByInstallation.get(installationId);
   const { colors } = useTheme();
   const {
@@ -67,7 +73,9 @@ export function DataViewScreen({ navigation, route }: Props) {
     loading,
     refresh,
   } = useInstallation(installationId);
-  const [mode, setMode] = useState<ViewMode>(resumeState?.mode ?? 'RECONCILIATION');
+  const [mode, setMode] = useState<ViewMode>(
+    initialMode ?? resumeState?.mode ?? 'RECONCILIATION',
+  );
   const [search, setSearch] = useState(resumeState?.search ?? '');
   const [treeRows, setTreeRows] = useState<ElectricalTreeRow[]>([]);
   const [meteringRows, setMeteringRows] = useState<AllAssetMeteringRow[]>([]);
@@ -98,13 +106,20 @@ export function DataViewScreen({ navigation, route }: Props) {
     });
   }, [installationId, item?.tree_revision]);
 
+  const issuePartition = useMemo(
+    () => partitionReadinessIssues(readiness?.issues ?? [], {
+      siteAssets,
+      measurementAssignments,
+    }),
+    [measurementAssignments, readiness?.issues, siteAssets],
+  );
   const currentIssueKeys = useMemo(
-    () => (readiness?.issues ?? []).map(readinessIssueKey),
-    [readiness?.issues],
+    () => issuePartition.reconciliation.map(readinessIssueKey),
+    [issuePartition.reconciliation],
   );
   const issueCodes = useMemo(
-    () => [...new Set((readiness?.issues ?? []).map((issue) => issue.code))].sort(),
-    [readiness?.issues],
+    () => [...new Set(issuePartition.reconciliation.map((issue) => issue.code))].sort(),
+    [issuePartition.reconciliation],
   );
   useEffect(() => {
     if (readiness && baselineIssueKeys === null) setBaselineIssueKeys(currentIssueKeys);
@@ -174,7 +189,7 @@ export function DataViewScreen({ navigation, route }: Props) {
 
   const query = search.trim().toLocaleLowerCase();
   const visibleIssues = useMemo(
-    () => (readiness?.issues ?? []).filter((issue) => {
+    () => issuePartition.reconciliation.filter((issue) => {
       const context = issueContext(issue);
       const zoneMatches = reconcileZoneId === 'ALL' || context.zoneId === reconcileZoneId;
       const issueTypeMatches = reconcileIssueCode === 'ALL' || issue.code === reconcileIssueCode;
@@ -189,9 +204,27 @@ export function DataViewScreen({ navigation, route }: Props) {
       measurementAssignments,
       meterDevices,
       query,
-      readiness?.issues,
+      issuePartition.reconciliation,
       reconcileIssueCode,
       reconcileZoneId,
+      siteAssets,
+      zones,
+    ],
+  );
+  const visibleValidationIssues = useMemo(
+    () => issuePartition.validation.filter((issue) => {
+      const context = issueContext(issue);
+      return !query || `${issue.code} ${issue.message} ${issue.entityId} ${context.title} ${context.detail}`
+        .toLocaleLowerCase().includes(query);
+    }),
+    [
+      boards,
+      gridSupplies,
+      issuePartition.validation,
+      item?.site_name,
+      measurementAssignments,
+      meterDevices,
+      query,
       siteAssets,
       zones,
     ],
@@ -282,7 +315,7 @@ export function DataViewScreen({ navigation, route }: Props) {
         {item.site_name} · revision {readiness.treeRevision}
       </Text>
       <View style={styles.modeRow} accessibilityRole="tablist">
-        {(['RECONCILIATION', 'COVERAGE', 'ELECTRICAL', 'PHYSICAL'] as const).map((value) => (
+        {(['RECONCILIATION', 'VALIDATION', 'COVERAGE', 'ELECTRICAL', 'PHYSICAL'] as const).map((value) => (
           <Pressable
             key={value}
             accessibilityRole="tab"
@@ -296,6 +329,8 @@ export function DataViewScreen({ navigation, route }: Props) {
             <Text style={{ color: mode === value ? colors.primaryForeground : colors.foreground, fontWeight: '700', fontSize: 12 }}>
               {value === 'RECONCILIATION'
                 ? 'Reconcile'
+                : value === 'VALIDATION'
+                  ? 'Checks'
                 : value === 'COVERAGE'
                   ? 'Coverage'
                   : value === 'ELECTRICAL'
@@ -327,15 +362,15 @@ export function DataViewScreen({ navigation, route }: Props) {
           <Card style={{ marginBottom: spacing.md }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
               <View style={{ flex: 1 }}>
-                <Text style={[typography.subheading, { color: colors.foreground }]}>Readiness workflow</Text>
+                <Text style={[typography.subheading, { color: colors.foreground }]}>Items left to confirm</Text>
                 <Text
-                  accessibilityRole={readiness.readyToComplete ? 'summary' : 'alert'}
-                  accessibilityLiveRegion={readiness.readyToComplete ? 'polite' : 'assertive'}
+                  accessibilityRole={issuePartition.reconciliation.length ? 'alert' : 'summary'}
+                  accessibilityLiveRegion={issuePartition.reconciliation.length ? 'assertive' : 'polite'}
                   style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}
                 >
-                  {readiness.readyToComplete
-                    ? 'Locally ready. Cloud validation is still required to complete.'
-                    : `${readiness.issues.filter((issue) => issue.severity === 'ERROR').length} blocking · ${readiness.issues.filter((issue) => issue.severity === 'WARNING').length} warning · showing ${visibleIssues.length}`}
+                  {issuePartition.reconciliation.length
+                    ? `${issuePartition.reconciliation.length} explicit TBC choice${issuePartition.reconciliation.length === 1 ? '' : 's'} remain · showing ${visibleIssues.length}`
+                    : 'Every explicitly deferred choice has been confirmed.'}
                 </Text>
                 <Text
                   accessibilityRole="progressbar"
@@ -355,7 +390,10 @@ export function DataViewScreen({ navigation, route }: Props) {
                   </Text>
                 ) : null}
               </View>
-              <Badge label={readiness.readyToComplete ? 'READY' : 'RECONCILE'} tone={readiness.readyToComplete ? 'success' : 'tbc'} />
+              <Badge
+                label={issuePartition.reconciliation.length ? 'RECONCILE' : 'CONFIRMED'}
+                tone={issuePartition.reconciliation.length ? 'tbc' : 'success'}
+              />
             </View>
             <Button
               title="Reset progress baseline"
@@ -365,6 +403,26 @@ export function DataViewScreen({ navigation, route }: Props) {
             />
           </Card>
         </>
+      ) : mode === 'VALIDATION' ? (
+        <Card style={{ marginBottom: spacing.md }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={[typography.subheading, { color: colors.foreground }]}>Completion checks</Text>
+              <Text
+                accessibilityRole={issuePartition.validation.length ? 'alert' : 'summary'}
+                style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}
+              >
+                {issuePartition.validation.length
+                  ? `${issuePartition.validation.filter((issue) => issue.severity === 'ERROR').length} blocking · ${issuePartition.validation.filter((issue) => issue.severity === 'WARNING').length} warning · showing ${visibleValidationIssues.length}. These checks still affect readiness but are not TBC reconciliation.`
+                  : 'No additional local completion checks need attention.'}
+              </Text>
+            </View>
+            <Badge
+              label={issuePartition.validation.length ? 'CHECKS' : 'CLEAR'}
+              tone={issuePartition.validation.some((issue) => issue.severity === 'ERROR') ? 'danger' : 'success'}
+            />
+          </View>
+        </Card>
       ) : mode === 'PHYSICAL' ? (
         <Card style={{ marginBottom: spacing.md }}>
           <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Physical inventory</Text>
@@ -517,7 +575,29 @@ export function DataViewScreen({ navigation, route }: Props) {
           keyExtractor={(issue, index) => `${issue.code}:${issue.entityId}:${issue.field ?? ''}:${index}`}
           renderItem={issueRow}
           ListHeaderComponent={header}
-          ListEmptyComponent={<EmptyState title="No readiness issues" subtitle="The local graph is ready for Cloud validation." />}
+          ListEmptyComponent={(
+            <EmptyState
+              title="Nothing left to confirm"
+              subtitle={issuePartition.validation.length
+                ? 'Explicit TBC choices are resolved. Open Checks for other completion issues.'
+                : 'All local choices are confirmed.'}
+            />
+          )}
+          contentContainerStyle={styles.pad}
+          keyboardShouldPersistTaps="handled"
+        />
+      ) : mode === 'VALIDATION' ? (
+        <FlatList
+          data={visibleValidationIssues}
+          keyExtractor={(issue, index) => `${issue.code}:${issue.entityId}:${issue.field ?? ''}:${index}`}
+          renderItem={issueRow}
+          ListHeaderComponent={header}
+          ListEmptyComponent={(
+            <EmptyState
+              title="No completion checks"
+              subtitle="No non-TBC local validation issues need attention."
+            />
+          )}
           contentContainerStyle={styles.pad}
           keyboardShouldPersistTaps="handled"
         />
@@ -779,7 +859,7 @@ export function DataViewScreen({ navigation, route }: Props) {
 
       <FormModal
         visible={Boolean(mappingAsset)}
-        title="Map exact measurement"
+        title="Choose meter channels for this asset"
         onClose={() => setMappingAsset(null)}
         scroll={false}
       >
@@ -796,7 +876,7 @@ export function DataViewScreen({ navigation, route }: Props) {
                 {mappingAsset?.display_code} · {mappingAsset?.asset_name}
               </Text>
               <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-                Only meters installed on a validated upstream electrical path are shown.
+                Record which non-spare meter channels directly measure this asset. Only meters installed on its validated upstream electrical path are shown.
               </Text>
               <SearchBar
                 value={meterSearch}
@@ -836,7 +916,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           )}
           ListFooterComponent={selectedMeter ? (
             <View style={{ marginTop: spacing.md }}>
-              <Text style={[typography.subheading, { color: colors.foreground, marginBottom: 8 }]}>Channels</Text>
+              <Text style={[typography.subheading, { color: colors.foreground, marginBottom: 8 }]}>Meter channels</Text>
               <Text
                 accessibilityLiveRegion="polite"
                 accessibilityRole="summary"
@@ -854,11 +934,11 @@ export function DataViewScreen({ navigation, route }: Props) {
                 return (
                   <Button
                     key={channel.id}
-                    title={`Ch ${channel.ordinal} · ${channel.purpose}${channel.description ? ` · ${channel.description}` : ''}${unavailable ? ' · unavailable' : ''}`}
+                    title={`Ch ${channel.ordinal} · ${meterChannelPurposeLabel(channel.purpose)}${channel.description ? ` · ${channel.description}` : ''}${unavailable ? ' · unavailable' : ''}`}
                     variant={selected ? 'primary' : 'secondary'}
                     disabled={unavailable}
                     style={{ marginBottom: 8 }}
-                    accessibilityLabel={`Channel ${channel.ordinal}, ${channel.purpose}${unavailable ? ', unavailable' : selected ? ', selected' : ', not selected'}`}
+                    accessibilityLabel={`Channel ${channel.ordinal}, ${meterChannelPurposeLabel(channel.purpose)}${unavailable ? ', unavailable' : selected ? ', selected' : ', not selected'}`}
                     accessibilityHint={`${index + 1} of ${selectedMeter.channels.length}`}
                     accessibilityState={{ selected, disabled: unavailable }}
                     onPress={() => setSelectedChannelIds((current) =>
@@ -867,31 +947,27 @@ export function DataViewScreen({ navigation, route }: Props) {
                 );
               })}
               <SelectChips
-                label="Phase mode"
+                label="Phase grouping"
                 value={phaseMode}
                 options={['SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
-                getLabel={(value) => value === 'SINGLE_PHASE'
-                  ? 'Single phase'
-                  : value === 'THREE_PHASE'
-                    ? 'Three phase'
-                    : 'Other channel group'}
+                getLabel={phaseGroupingLabel}
                 onChange={setPhaseMode}
               />
               <SelectChips
-                label="Measurement direction"
+                label="Energy flow"
                 value={direction}
                 options={['', 'CONSUMPTION', 'GENERATION', 'BIDIRECTIONAL']}
-                getLabel={(value) => value === '' ? 'Choose direction' : value.charAt(0) + value.slice(1).toLocaleLowerCase()}
+                getLabel={energyFlowLabel}
                 onChange={setDirection}
               />
               <Button
-                title="Save exact mapping"
+                title="Save channel measurement"
                 disabled={!selectedChannelIds.length}
                 style={{ marginTop: spacing.md }}
                 onPress={async () => {
                   if (!mappingAsset) return;
                   try {
-                    if (!direction) throw new Error('Choose the measurement direction explicitly.');
+                    if (!direction) throw new Error('Choose the energy flow.');
                     const assignment = createMeasurementAssignment({
                       installationId,
                       assetId: mappingAsset.id,

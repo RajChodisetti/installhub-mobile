@@ -139,7 +139,10 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
         variant="secondary"
         disabled={readOnly}
         style={{ marginTop: spacing.md }}
-        onPress={() => navigation.navigate('DataView', { installationId })}
+        onPress={() => navigation.navigate('DataView', {
+          installationId,
+          initialMode: displayedMeteringState === 'TBC' ? 'RECONCILIATION' : 'VALIDATION',
+        })}
       />
       <Button
         title="Delete asset"
@@ -207,7 +210,7 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
           onSubmit={async (values, metering) => {
             await siteAssetsRepo.saveEditor(assetId, values, metering);
             setEditOpen(false);
-            await refresh();
+            navigation.goBack();
           }}
         />
       </FormModal>

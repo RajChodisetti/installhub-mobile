@@ -4,8 +4,9 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useDeviceSearchRecords } from '../hooks';
 import { useAuth, useTheme } from '../context/AppProviders';
 import {
-  GLOBAL_DEVICE_RESULT_LIMIT,
-  searchAllDevices,
+  deviceRecordBelongsToInstallation,
+  INSTALLATION_DEVICE_RESULT_LIMIT,
+  searchInstallationDevices,
   type DeviceSearchRecord,
 } from '../domain/meterSearch';
 import { FORM_DEFINITION_BY_TYPE, createInitialFormAnswers } from '../forms/catalog';
@@ -13,19 +14,28 @@ import { formsRepo } from '../repositories';
 import { Button, Card, EmptyState, LoadingState, SearchBar } from '../components/ui';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { commsFaultIdentityAnswersForMeter } from '../domain/formMeterPrefill';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DeviceSearch'>;
 
-export function DeviceSearchScreen({ navigation }: Props) {
+export function DeviceSearchScreen({ navigation, route }: Props) {
+  const { installationId } = route.params;
   const { colors } = useTheme();
   const { user } = useAuth();
-  const { items, loading } = useDeviceSearchRecords();
+  const { items, loading } = useDeviceSearchRecords(installationId);
   const [query, setQuery] = useState('');
   const [replacingId, setReplacingId] = useState<string | null>(null);
-  const results = useMemo(() => searchAllDevices(items, query), [items, query]);
+  const results = useMemo(
+    () => searchInstallationDevices(items, installationId, query),
+    [installationId, items, query],
+  );
 
   const replaceDevice = async (record: DeviceSearchRecord) => {
     if (!user) return;
+    if (!deviceRecordBelongsToInstallation(record, installationId)) {
+      Alert.alert('Device unavailable', 'This device does not belong to the current installation.');
+      return;
+    }
     if (record.installation.status === 'Completed') {
       Alert.alert(
         'Reopen installation first',
@@ -39,11 +49,7 @@ export function DeviceSearchScreen({ navigation }: Props) {
       answers['existing.switchboard_location'] = record.board.location_description ?? '';
       answers['existing.switchboard_type'] = record.board.asset_type;
       answers['existing.site_nmi'] = record.board.site_nmi ?? '';
-      answers['existing.device_id'] = record.meter.serialNumber;
-      answers['existing.device_number'] = record.meter.serialNumber;
-      if (record.meter.deviceModel === 'A3RM' || record.meter.deviceModel === 'A6M') {
-        answers['existing.device_type'] = record.meter.deviceModel;
-      }
+      Object.assign(answers, commsFaultIdentityAnswersForMeter(record.meter));
       const sensorRating = record.meter.channels.find((channel) =>
         channel.purpose !== 'SPARE' && Boolean(channel.sensorRating?.trim()))?.sensorRating;
       if (sensorRating) answers['existing.sensor_rating'] = sensorRating;
@@ -77,16 +83,16 @@ export function DeviceSearchScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Text style={[typography.title, { color: colors.foreground }]}>Find a device</Text>
       <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, marginBottom: spacing.md, lineHeight: 20 }}>
-        Search all local installations by device ID, legacy number, name, zone, board, site, or type.
+        Search every zone in this installation by Device ID, optional site / asset tag, name, board, zone, or type.
       </Text>
       <SearchBar
         value={query}
         onChangeText={setQuery}
-        placeholder="Device ID, name, zone, board, site, or type"
+        placeholder="Device ID, site / asset tag, name, zone, board, or type"
       />
       <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-        {results.total > GLOBAL_DEVICE_RESULT_LIMIT
-          ? `Showing ${GLOBAL_DEVICE_RESULT_LIMIT} of ${results.total} matches. Refine the search.`
+        {results.total > INSTALLATION_DEVICE_RESULT_LIMIT
+          ? `Showing ${INSTALLATION_DEVICE_RESULT_LIMIT} of ${results.total} matches. Refine the search.`
           : `${results.total} matching device${results.total === 1 ? '' : 's'}.`}
       </Text>
       <FlatList
@@ -104,7 +110,7 @@ export function DeviceSearchScreen({ navigation }: Props) {
               {record.meter.displayName.value}
             </Text>
             <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
-              {record.meter.deviceModel} · ID {record.meter.serialNumber || 'not recorded'}{record.meter.deviceNumber && record.meter.deviceNumber !== record.meter.serialNumber ? ` · legacy ${record.meter.deviceNumber}` : ''}{'\n'}
+              {record.meter.deviceModel} · ID {record.meter.serialNumber || 'not recorded'}{record.meter.deviceNumber && record.meter.deviceNumber !== record.meter.serialNumber ? ` · site tag ${record.meter.deviceNumber}` : ''}{'\n'}
               {record.installation.site_name} · {record.zone.zone_name}{'\n'}
               {record.board.asset_name} · {record.board.asset_type}
             </Text>

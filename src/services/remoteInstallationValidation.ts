@@ -1,5 +1,9 @@
 import { sha256 } from 'js-sha256';
 import type { RemoteInstallationTree } from '../api/apiClient';
+import {
+  DISPLAY_CODE_MAX_LENGTH,
+  isValidZoneCode,
+} from '../domain/namingV2';
 
 const text = (record: Record<string, unknown>, camel: string, snake?: string): string =>
   String(record[camel] ?? (snake ? record[snake] : '') ?? '');
@@ -9,7 +13,8 @@ const BOARD_TYPE_CODES = [
 ] as const;
 const SITE_ASSET_TYPE_CODES = [
   'PV', 'HVAC', 'LIGHTING', 'EV_CHARGER', 'VEHICLE_HOIST', 'FORKLIFT',
-  'EXHAUST_FAN_SYSTEM', 'POWER_OUTLET', 'HEATER_GEYSER', 'OTHER',
+  'EXHAUST_FAN_SYSTEM', 'POWER_OUTLET', 'HEATER_GEYSER', 'REFRIGERATION',
+  'COMPRESSED_AIR', 'OTHER',
 ] as const;
 const FORM_TYPES = [
   'ww-installation', 'a3rm-installation', 'a6m-installation', 'comms-fault',
@@ -399,12 +404,23 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
   const assignmentIds = assertUniqueRemoteIds(measurementAssignments, 'measurement assignment');
   const formIds = assertUniqueRemoteIds(formSubmissions, 'form');
 
+  const seenZoneCodes = new Set<string>();
   for (const zone of zones) {
     const zoneId = text(zone, 'id');
     validateInstallationOwnership(zone, installationId, `zone ${zoneId}`);
     requiredText(zone, 'zoneName', 'zone_name', `zone ${zoneId} name`);
     requiredText(zone, 'zoneDescription', 'zone_description', `zone ${zoneId} description`, true);
     requiredStringList(zone, 'photos', undefined, `zone ${zoneId} photos`);
+    const zoneCode = optionalText(zone, 'zoneCode', 'zone_code');
+    if (zoneCode) {
+      if (!isValidZoneCode(zoneCode)) {
+        throw new Error(`Cannot import canonical v2: zone ${zoneId} code is invalid.`);
+      }
+      if (seenZoneCodes.has(zoneCode)) {
+        throw new Error(`Cannot import canonical v2: duplicate zone code ${zoneCode}.`);
+      }
+      seenZoneCodes.add(zoneCode);
+    }
   }
 
   const channelIds = new Set<string>();
@@ -428,6 +444,14 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
       `meter ${meterId} device model`,
     );
     requiredText(meter, 'serialNumber', 'serial_number', `meter ${meterId} serial number`);
+    const customNameValue = property(meter, 'customName', 'custom_name');
+    if (customNameValue !== undefined && customNameValue !== null && (
+      typeof customNameValue !== 'string'
+      || !customNameValue.trim()
+      || customNameValue.length > DISPLAY_CODE_MAX_LENGTH
+    )) {
+      throw new Error(`Cannot import canonical v2: meter ${meterId} custom name is invalid.`);
+    }
     validateDisplayCode(meter, 'displayName', 'display_name', `meter ${meterId} display name`);
     if (deviceFamily === 'OTHER' || deviceModel === 'OTHER') {
       requiredText(

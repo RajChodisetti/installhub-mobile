@@ -3,6 +3,13 @@ import {
   validIanaTimezone,
   validateInstallationIdentity,
 } from './installationValidation';
+import {
+  defaultMeterCustomName,
+  namingInventoryForInstallation,
+  provisionalDisplayCodeV2,
+  resolvedZoneCodes,
+  synchronizeZoneSequenceHighWater,
+} from './namingV2';
 import type {
   AppDataStore,
   BoardType,
@@ -56,6 +63,8 @@ export const SITE_ASSET_TYPE_LABELS: Record<SiteAssetTypeCode, string> = {
   EXHAUST_FAN_SYSTEM: 'Exhaust Fan System',
   POWER_OUTLET: 'Power Outlet',
   HEATER_GEYSER: 'Heater / Geyser',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
   OTHER: 'Other',
 };
 
@@ -104,6 +113,8 @@ const SITE_CODE_TO_LEGACY: Record<SiteAssetTypeCode, SiteAssetType> = {
   EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
   POWER_OUTLET: 'Power Outlet',
   HEATER_GEYSER: 'Hot Water',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
   OTHER: 'Other',
 };
 
@@ -314,11 +325,15 @@ export function meterDeviceFromLegacy(
   installationId: string,
   board: ElectricalAsset,
   meter: Meter,
+  existing?: MeterDevice,
 ): MeterDevice {
   const model = canonicalModel(meter.device_type);
   const expected = model === 'A3RM' ? 3 : model === 'A6M' ? 6 : 0;
   const channels = [...(meter.ww_channels ?? [])];
   while (channels.length < expected) channels.push({});
+  const customName = meter.custom_name?.trim().slice(0, 64)
+    || existing?.customName?.trim().slice(0, 64)
+    || defaultMeterCustomName(model, meter.custom_model_name, meter.custom_manufacturer_name);
   const generatedName = meter.device_name.trim() || meter.device_id.trim() || meter.id;
   return {
     id: meter.id,
@@ -328,9 +343,10 @@ export function meterDeviceFromLegacy(
     deviceModel: model,
     customManufacturerName: model === 'OTHER' ? meter.custom_manufacturer_name : undefined,
     customModelName: model === 'OTHER' ? meter.custom_model_name : undefined,
-    deviceNumber: meter.device_number,
+    customName,
+    deviceNumber: meter.device_number ?? existing?.deviceNumber,
     serialNumber: meter.device_id,
-    displayName: displayCodeFromLegacy(
+    displayName: existing?.displayName ?? displayCodeFromLegacy(
       generatedName,
       meter.id,
       Boolean(meter.device_name.trim()),
@@ -397,6 +413,12 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
     }),
     id: device.id,
     device_name: device.displayName.value,
+    custom_name: device.customName
+      ?? defaultMeterCustomName(
+        device.deviceModel,
+        device.customModelName,
+        device.customManufacturerName,
+      ),
     device_id: device.serialNumber,
     device_number: device.deviceNumber,
     custom_manufacturer_name: device.customManufacturerName,
@@ -607,6 +629,9 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
 
   for (const installation of store.installations) {
     ensureInstallationMetadata(installation);
+    const installationZones = store.zones.filter((zone) => zone.audit_id === installation.id);
+    const zoneCodes = resolvedZoneCodes(installationZones);
+    for (const zone of installationZones) zone.zone_code = zoneCodes.get(zone.id);
     const grid = ensureGridSupply(store, installation);
 
     for (const board of store.electricalAssets.filter((item) => item.audit_id === installation.id)) {
@@ -614,7 +639,18 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
       if (board.type_code === 'OTHER') {
         board.custom_type_name ??= board.asset_type === 'Other' ? undefined : board.asset_type;
       }
-      board.display_code_meta ??= displayCodeFromLegacy(board.display_code);
+      board.display_code_meta ??= board.display_code.trim()
+        ? displayCodeFromLegacy(board.display_code)
+        : provisionalDisplayCodeV2(
+            installation,
+            namingInventoryForInstallation(store, installation.id),
+            {
+              zoneId: board.zone_id,
+              customName: board.asset_name,
+              fallbackType: BOARD_TYPE_LABELS[board.type_code],
+              excludeId: board.id,
+            },
+          );
       board.display_code = board.display_code_meta.value;
       board.electrical_source ??= sourceFromLegacyBoard(board, grid);
       if (board.electrical_source.kind === 'BOARD') {
@@ -632,6 +668,19 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
       }
     }
 
+    for (const meter of store.meterDevices.filter(
+      (item) => item.installationId === installation.id,
+    )) {
+      meter.customName = (
+        meter.customName?.trim()
+        || defaultMeterCustomName(
+          meter.deviceModel,
+          meter.customModelName,
+          meter.customManufacturerName,
+        )
+      ).slice(0, 64);
+    }
+
     // Seed sequence counters from every existing board/asset code before any
     // missing code is allocated, so migration never creates a duplicate.
     normalizeDisplaySequences(store, installation);
@@ -643,7 +692,16 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
       }
       asset.display_code_meta ??= asset.display_code?.trim()
         ? displayCodeFromLegacy(asset.display_code)
-        : nextDisplayCode(installation, asset.type_code);
+        : provisionalDisplayCodeV2(
+            installation,
+            namingInventoryForInstallation(store, installation.id),
+            {
+              zoneId: asset.zone_id,
+              customName: asset.asset_name,
+              fallbackType: SITE_ASSET_TYPE_LABELS[asset.type_code],
+              excludeId: asset.id,
+            },
+          );
       asset.display_code = asset.display_code_meta.value;
       asset.electrical_source ??= sourceFromLegacyAsset(asset);
       if (asset.electrical_source.kind === 'BOARD') {
@@ -673,6 +731,10 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
     }
 
     normalizeDisplaySequences(store, installation);
+    synchronizeZoneSequenceHighWater(
+      installation,
+      namingInventoryForInstallation(store, installation.id),
+    );
     projectCanonicalCompatibility(store, installation.id);
   }
 
@@ -746,8 +808,28 @@ export function replaceBoardMetersFromLegacy(
     (meter) => meter.installedOnBoardId !== board.id || incomingIds.has(meter.id),
   );
   for (const meter of meters) {
-    const canonical = meterDeviceFromLegacy(board.audit_id, board, meter);
     const index = store.meterDevices.findIndex((item) => item.id === meter.id);
+    const existing = index >= 0 ? store.meterDevices[index] : undefined;
+    const canonical = meterDeviceFromLegacy(board.audit_id, board, meter, existing);
+    const installation = store.installations.find((item) => item.id === board.audit_id);
+    if (!installation) throw new Error('Installation not found.');
+    const fallbackName = defaultMeterCustomName(
+      canonical.deviceModel,
+      canonical.customModelName,
+      canonical.customManufacturerName,
+    );
+    canonical.customName = (canonical.customName?.trim() || fallbackName).slice(0, 64);
+    canonical.displayName = provisionalDisplayCodeV2(
+      installation,
+      namingInventoryForInstallation(store, board.audit_id),
+      {
+        zoneId: board.zone_id,
+        customName: canonical.customName,
+        fallbackType: fallbackName,
+        excludeId: canonical.id,
+        current: existing?.displayName,
+      },
+    );
     if (index >= 0) store.meterDevices[index] = canonical;
     else store.meterDevices.push(canonical);
   }
@@ -1254,7 +1336,7 @@ export function installationReadiness(
     });
     if (assignment.status === 'TBC' || assignment.target.kind === 'TBC') issue(issues, {
       code: 'MEASUREMENT_TARGET_TBC', severity: 'ERROR', entityType: 'measurement_assignment',
-      entityId: assignment.id, field: 'target', message: 'Confirm the assignment measurement target.',
+      entityId: assignment.id, field: 'targetConfirmation', message: 'Confirm the assignment measurement target.',
     });
     if (assignment.target.kind === 'BOARD' && !boardById.has(assignment.target.boardId)) issue(issues, {
       code: 'MEASUREMENT_TARGET_TBC', severity: 'ERROR', entityType: 'measurement_assignment',
@@ -1373,7 +1455,8 @@ export function installationReadiness(
     });
     else if (state.kind === 'UNMETERED' && targetAssignments.length) issue(issues, {
       code: 'METERING_STATE_INVALID', severity: 'ERROR', entityType: 'site_asset', entityId: asset.id,
-      field: 'meteringState', message: 'This asset is marked unmetered but still has assignments.',
+      field: 'meteringState.measurementAssignmentIds',
+      message: 'This asset is marked unmetered but still has assignments.',
     });
     else if (state.kind === 'METERED') {
       const ids = new Set(state.measurementAssignmentIds);

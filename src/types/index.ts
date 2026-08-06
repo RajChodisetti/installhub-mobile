@@ -45,6 +45,8 @@ export type SiteAssetTypeCode =
   | 'EXHAUST_FAN_SYSTEM'
   | 'POWER_OUTLET'
   | 'HEATER_GEYSER'
+  | 'REFRIGERATION'
+  | 'COMPRESSED_AIR'
   | 'OTHER';
 
 export interface DisplayCode {
@@ -132,6 +134,7 @@ export interface MeterDevice {
   deviceModel: 'A3RM' | 'A6M' | 'OTHER';
   customManufacturerName?: string;
   customModelName?: string;
+  customName?: string;
   deviceNumber?: string;
   serialNumber: string;
   displayName: DisplayCode;
@@ -372,6 +375,12 @@ export interface Installation {
   server_tree_revision?: number;
   record_version_number?: number;
   display_code_sequences?: Partial<Record<BoardTypeCode | SiteAssetTypeCode, number>>;
+  /**
+   * Local high-water marks for naming-rule-v2 allocations. Keys are stable
+   * zone IDs so renaming a zone never makes an offline sequence reusable.
+   * The server remains authoritative when concurrent devices sync.
+   */
+  display_code_zone_sequences?: Record<string, number>;
   completed_at?: string;
   completed_from_revision?: number;
   reopened_at?: string;
@@ -416,6 +425,7 @@ export interface Installation {
 export interface Zone {
   id: string;
   audit_id: string;
+  zone_code?: string;
   zone_name: string;
   zone_description: string;
   photos: string[];
@@ -482,9 +492,11 @@ export interface WattwatcherPhotos {
 export interface Meter {
   id: string;
   device_name: string;
+  /** Editable human suffix used by naming-rule-v2. */
+  custom_name?: string;
   device_type: MeterDeviceType;
   device_id: string;
-  /** Optional field tag / device number (barcode-scannable). */
+  /** Optional site / asset tag (barcode-scannable), distinct from the serial identity. */
   device_number?: string;
   custom_manufacturer_name?: string;
   custom_model_name?: string;
@@ -574,6 +586,10 @@ export interface SiteAssetEditorDraftRecord {
     displayCode: string;
     customCode: boolean;
     locationDescription: string;
+    /** Optional for compatibility with recovery drafts created before asset media was editable. */
+    locationPhoto?: string;
+    /** Optional for compatibility with recovery drafts created before asset media was editable. */
+    extraPhotos?: string[];
     sourceKey: string;
     sourceBoardSearch: string;
     meteringKind: 'METERED' | 'UNMETERED' | 'TBC';
@@ -651,5 +667,7 @@ export const SITE_ASSET_TYPE_CODES: SiteAssetTypeCode[] = [
   'EXHAUST_FAN_SYSTEM',
   'POWER_OUTLET',
   'HEATER_GEYSER',
+  'REFRIGERATION',
+  'COMPRESSED_AIR',
   'OTHER',
 ];

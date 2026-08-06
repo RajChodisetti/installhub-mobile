@@ -42,11 +42,41 @@ type Props = NativeStackScreenProps<RootStackParamList, 'FormsList'>;
 
 export function FormsListScreen({ navigation, route }: Props) {
   const { installationId } = route.params;
-  const { items, loading } = useForms(installationId);
+  const { items, loading, refresh } = useForms(installationId);
   const { colors } = useTheme();
   const { triggerSync } = useSyncStatus();
   const [pdfBusyFormId, setPdfBusyFormId] = useState<string | null>(null);
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
   const [pdfStatus, setPdfStatus] = useState('');
+
+  const confirmDeleteDraft = (form: FormSubmission) => {
+    if (form.status !== 'Draft') return;
+    Alert.alert(
+      'Delete draft?',
+      'This removes the draft and its unshared on-device evidence. Completed records remain protected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete draft',
+          style: 'destructive',
+          onPress: () => { void (async () => {
+            setDeletingDraftId(form.id);
+            try {
+              await formsRepo.removeDraft(form.id);
+              await refresh();
+            } catch (error) {
+              Alert.alert(
+                'Draft not deleted',
+                error instanceof Error ? error.message : 'The draft could not be deleted.',
+              );
+            } finally {
+              setDeletingDraftId(null);
+            }
+          })(); },
+        },
+      ],
+    );
+  };
 
   const confirmCloudBackupOptIn = (): Promise<boolean> =>
     new Promise((resolve) => {
@@ -289,8 +319,17 @@ export function FormsListScreen({ navigation, route }: Props) {
               <Button
                 title={form.status === 'Completed' ? 'View record' : 'Continue draft'}
                 variant="secondary"
+                disabled={deletingDraftId === form.id}
                 onPress={() => navigation.navigate('FormEditor', { formId: form.id })}
               />
+              {form.status === 'Draft' ? (
+                <Button
+                  title={deletingDraftId === form.id ? 'Deleting draft…' : 'Delete draft'}
+                  variant="danger"
+                  disabled={deletingDraftId != null}
+                  onPress={() => confirmDeleteDraft(form)}
+                />
+              ) : null}
               {form.status === 'Completed' ? (
                 <>
                   <Button

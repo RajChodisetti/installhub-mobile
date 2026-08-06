@@ -16,8 +16,14 @@ import { createInitialFormAnswers } from '../forms/catalog';
 import { useInstallation } from '../hooks';
 import { ElectricalAssetForm, FormModal, SelectChips } from '../components/forms';
 import { SOURCE_BOARD_RESULT_LIMIT, searchSourceBoards } from '../domain/sourcePicker';
-import { isFormTypeAvailableForContext } from '../domain/formPickerContext';
-import { installationFormAnswersForMeter } from '../domain/formMeterPrefill';
+import {
+  isFormTypeAvailableForContext,
+  needsWattwatchersSwitchboard,
+} from '../domain/formPickerContext';
+import {
+  commsFaultIdentityAnswersForMeter,
+  installationFormAnswersForMeter,
+} from '../domain/formMeterPrefill';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
@@ -38,6 +44,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
   const [boardSearch, setBoardSearch] = useState('');
   const [newBoardOpen, setNewBoardOpen] = useState(false);
   const [newBoardZoneId, setNewBoardZoneId] = useState(zoneId ?? '');
+  const [switchboardPickerRequested, setSwitchboardPickerRequested] = useState(false);
 
   useEffect(() => {
     if (!newBoardZoneId && zones.length) setNewBoardZoneId(zoneId ?? zones[0].id);
@@ -55,6 +62,9 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
     if (formType && definition.type !== formType) return false;
     return isFormTypeAvailableForContext(definition.type, { boardId, meterId, siteAssetId });
   });
+  const showSwitchboardPicker = !boardId && (
+    needsWattwatchersSwitchboard(formType) || switchboardPickerRequested
+  );
 
   return (
     <ScrollView
@@ -65,9 +75,9 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
       <Text style={{ color: colors.mutedForeground, marginTop: 6, marginBottom: spacing.lg }}>
         Choose the work record. Site and installer details will be prefilled.
       </Text>
-      {!boardId ? (
+      {showSwitchboardPicker ? (
         <Card style={{ marginBottom: spacing.lg }}>
-          <Text style={[typography.subheading, { color: colors.foreground }]}>WW switchboard</Text>
+          <Text style={[typography.subheading, { color: colors.foreground }]}>Wattwatchers switchboard</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 5, marginBottom: spacing.md, lineHeight: 20 }}>
             A WW installation form belongs to one canonical switchboard. Select it now or add it without losing this screen.
           </Text>
@@ -145,18 +155,33 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
           <Button
             title={busy === definition.type
               ? 'Creating…'
-              : definition.type === 'ww-installation' && !selectedBoardId
-                ? 'Select a switchboard to start'
+              : needsWattwatchersSwitchboard(definition.type) && !selectedBoardId
+                ? showSwitchboardPicker
+                  ? 'Select a switchboard to start'
+                  : 'Choose switchboard'
                 : 'Start form'}
-            disabled={!!busy || (definition.type === 'ww-installation' && !selectedBoardId)}
+            disabled={!!busy || (
+              needsWattwatchersSwitchboard(definition.type)
+              && !selectedBoardId
+              && showSwitchboardPicker
+            )}
             style={{ marginTop: spacing.md }}
             onPress={async () => {
+              if (needsWattwatchersSwitchboard(definition.type) && !selectedBoardId) {
+                setSwitchboardPickerRequested(true);
+                return;
+              }
               setBusy(definition.type);
               try {
                 const formBoardId = ['ww-installation', 'ace-switchboard'].includes(definition.type)
                   ? selectedBoardId || boardId
                   : boardId;
                 const answers = createInitialFormAnswers(installation, user);
+                const canonicalMeter = meterId
+                  ? meterDevices.find(
+                      (item) => item.id === meterId && item.installedOnBoardId === formBoardId,
+                    )
+                  : undefined;
                 if (formBoardId) {
                   const board = await electricalAssetsRepo.getById(formBoardId);
                   if (board) {
@@ -170,17 +195,16 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                     const meter = meterId
                       ? board.meters.find((item) => item.id === meterId)
                       : undefined;
-                    if (meter) {
+                    if (canonicalMeter) {
+                      Object.assign(answers, commsFaultIdentityAnswersForMeter(canonicalMeter));
+                    } else if (meter) {
                       answers['existing.device_id'] = meter.device_id;
-                      answers['existing.device_number'] = meter.device_id;
+                      answers['existing.device_number'] = meter.device_number?.trim() || meter.device_id;
                       answers['existing.device_type'] = meter.device_type;
                     }
                   }
                 }
                 if (definition.type === 'ww-installation' && meterId) {
-                  const canonicalMeter = meterDevices.find(
-                    (item) => item.id === meterId && item.installedOnBoardId === formBoardId,
-                  );
                   if (canonicalMeter) {
                     Object.assign(answers, installationFormAnswersForMeter(canonicalMeter));
                   }

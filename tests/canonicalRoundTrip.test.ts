@@ -24,7 +24,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     }],
     gridSupplies: [{ id: 'grid', installationId: 'installation', name: 'Grid', isDefault: true }],
     zones: [{
-      id: 'zone', audit_id: 'installation', zone_name: 'Plant', zone_description: '', photos: [],
+      id: 'zone', audit_id: 'installation', zone_code: 'PLANT', zone_name: 'Plant', zone_description: '', photos: [],
       created_at: timestamp, updated_at: timestamp,
     }],
     electricalAssets: [{
@@ -60,6 +60,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     installedOnBoardId: 'board',
     deviceFamily: 'WATTWATCHERS',
     deviceModel: 'A3RM',
+    customName: 'Boiler Meter',
     serialNumber: 'SERIAL-1',
     displayName: {
       value: 'GS-A3RM-001', generatedValue: 'GS-A3RM-001',
@@ -92,6 +93,8 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
   };
   const wire = buildBackupPayload(backupTree, [], 'complete');
   assert.equal(wire.installation.siteCode, 'Legacy Site Code / 2024');
+  assert.equal(wire.zones[0]?.zoneCode, 'PLANT');
+  assert.equal(wire.meterDevices[0]?.customName, 'Boiler Meter');
   const remote = {
     ...wire,
     treeRevision: 3,

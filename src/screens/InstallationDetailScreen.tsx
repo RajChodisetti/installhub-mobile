@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
@@ -27,7 +27,15 @@ import { sha256 } from 'js-sha256';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { recordCompletionRejection } from '../services/operationalDiagnostics';
-import { summarizeReadinessIssues } from '../domain/reconciliationWorkflow';
+import {
+  partitionReadinessIssues,
+  summarizeReadinessIssues,
+} from '../domain/reconciliationWorkflow';
+import {
+  availableZoneCode,
+  isValidZoneCode,
+  ZONE_CODE_MAX_LENGTH,
+} from '../domain/namingV2';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
@@ -50,6 +58,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   } = useInstallation(installationId);
   const [zoneModal, setZoneModal] = useState(false);
   const [zoneName, setZoneName] = useState('');
+  const [zoneCode, setZoneCode] = useState('');
+  const zoneCodeEdited = useRef(false);
   const [zoneDesc, setZoneDesc] = useState('');
   const [backupChanging, setBackupChanging] = useState(false);
   const [completionBusy, setCompletionBusy] = useState(false);
@@ -78,6 +88,12 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const readOnly = authoritativeCompleted;
   const readinessSummary = summarizeReadinessIssues(readiness?.issues ?? []);
   const readinessIssueCount = readinessSummary.reduce((count, group) => count + group.count, 0);
+  const readinessPartition = partitionReadinessIssues(readiness?.issues ?? [], {
+    siteAssets,
+    measurementAssignments,
+  });
+  const reconciliationIssueCount = readinessPartition.reconciliation.length;
+  const readinessReviewMode = reconciliationIssueCount ? 'RECONCILIATION' : 'VALIDATION';
   const meteringCounts = {
     metered: siteAssets.filter((asset) => asset.metering_state?.kind === 'METERED').length,
     unmetered: siteAssets.filter((asset) => asset.metering_state?.kind === 'UNMETERED').length,
@@ -113,11 +129,19 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         readiness?.issues.find((issue) => issue.severity === 'ERROR')?.code ?? 'LOCAL_READINESS',
       );
       Alert.alert(
-        'Reconciliation required',
-        'Resolve every blocking readiness issue before completion.',
+        reconciliationIssueCount ? 'Reconciliation required' : 'Completion checks required',
+        reconciliationIssueCount
+          ? 'Confirm every explicitly deferred choice and resolve the remaining completion checks.'
+          : 'Resolve every blocking completion check before completion.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Open reconciliation', onPress: () => navigation.navigate('DataView', { installationId }) },
+          {
+            text: reconciliationIssueCount ? 'Open reconciliation' : 'Open checks',
+            onPress: () => navigation.navigate('DataView', {
+              installationId,
+              initialMode: readinessReviewMode,
+            }),
+          },
         ],
       );
       return;
@@ -378,10 +402,15 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <View
           accessibilityRole="alert"
           accessibilityLiveRegion="assertive"
-          accessibilityLabel="Reconciliation required before completion"
+          accessibilityLabel={reconciliationIssueCount
+            ? 'Reconciliation required before completion'
+            : 'Completion checks required before completion'}
           style={{ marginTop: 8 }}
         >
-          <Badge label="Reconciliation required" tone="tbc" />
+          <Badge
+            label={reconciliationIssueCount ? 'Reconciliation required' : 'Completion checks required'}
+            tone={reconciliationIssueCount ? 'tbc' : 'danger'}
+          />
         </View>
       ) : null}
       {item.status === 'Draft' && readinessIssueCount ? (
@@ -406,7 +435,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Review details"
             variant="ghost"
             style={{ marginTop: spacing.sm }}
-            onPress={() => navigation.navigate('DataView', { installationId })}
+            onPress={() => navigation.navigate('DataView', {
+              installationId,
+              initialMode: readinessReviewMode,
+            })}
           />
         </Card>
       ) : null}
@@ -428,7 +460,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Resolve metering issues"
             variant="ghost"
             style={{ marginTop: spacing.sm }}
-            onPress={() => navigation.navigate('DataView', { installationId })}
+            onPress={() => navigation.navigate('DataView', {
+              installationId,
+              initialMode: meteringCounts.tbc ? 'RECONCILIATION' : 'VALIDATION',
+            })}
           />
         ) : null}
       </Card>
@@ -500,7 +535,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <Button
           title="Search devices"
           variant="secondary"
-          onPress={() => navigation.navigate('DeviceSearch')}
+          onPress={() => navigation.navigate('DeviceSearch', { installationId })}
           style={{ flexGrow: 1 }}
         />
         <Button
@@ -666,7 +701,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       <SectionHeader title="Reports" />
       <View style={{ gap: 8 }}>
         <Button title="Field Forms / PDFs" onPress={() => navigation.navigate('FormsList', { installationId })} />
-        <Button title="Data View / TBC" variant="secondary" onPress={() => navigation.navigate('DataView', { installationId })} />
+        <Button title="Installation data & checks" variant="secondary" onPress={() => navigation.navigate('DataView', { installationId })} />
         <Button title="Metering Table" variant="secondary" onPress={() => navigation.navigate('MeteringTable', { installationId })} />
         <Button title="Full Installation Report" variant="secondary" onPress={() => navigation.navigate('InstallationReport', { installationId })} />
       </View>
@@ -676,7 +711,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       <SectionHeader
         title="Zones"
         actionLabel={readOnly ? undefined : '+ Add'}
-        onAction={readOnly ? undefined : () => setZoneModal(true)}
+        onAction={readOnly ? undefined : () => {
+          setZoneName('');
+          setZoneCode('');
+          setZoneDesc('');
+          zoneCodeEdited.current = false;
+          setZoneModal(true);
+        }}
       />
       {zones.length === 0 ? (
         <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
@@ -695,21 +736,37 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       )}
 
       <FormModal visible={zoneModal} title="New zone" onClose={() => setZoneModal(false)}>
-        <TextField label="Zone name" value={zoneName} onChangeText={setZoneName} />
+        <TextField label="Zone name" value={zoneName} onChangeText={(value) => {
+          setZoneName(value);
+          if (!zoneCodeEdited.current) setZoneCode(availableZoneCode(zones, value));
+        }} />
+        <TextField
+          label="Zone short code"
+          value={zoneCode}
+          autoCapitalize="characters"
+          maxLength={ZONE_CODE_MAX_LENGTH}
+          onChangeText={(value) => {
+            zoneCodeEdited.current = true;
+            setZoneCode(value.toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/-{2,}/g, '-'));
+          }}
+          error={zoneCode && !isValidZoneCode(zoneCode) ? 'Use uppercase letters/numbers with single internal hyphens.' : undefined}
+        />
         <TextField label="Description" value={zoneDesc} onChangeText={setZoneDesc} />
         <Button
           title="Create zone"
-          disabled={!zoneName.trim()}
+          disabled={!zoneName.trim() || !isValidZoneCode(zoneCode)}
           onPress={async () => {
-            const z = await zonesRepo.create({
+            await zonesRepo.create({
               audit_id: installationId,
+              zone_code: zoneCode,
               zone_name: zoneName.trim(),
               zone_description: zoneDesc.trim(),
             });
             setZoneModal(false);
             setZoneName('');
+            setZoneCode('');
             setZoneDesc('');
-            navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
+            await refresh();
           }}
         />
       </FormModal>

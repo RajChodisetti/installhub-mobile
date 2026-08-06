@@ -3,6 +3,7 @@ import test from 'node:test';
 import { FORM_DEFINITIONS } from '../src/forms/catalog';
 import {
   isFormTypeAvailableForContext,
+  needsWattwatchersSwitchboard,
   wwCommissioningPickerParams,
 } from '../src/domain/formPickerContext';
 
@@ -56,4 +57,15 @@ test('asset commissioning detours always target the detailed WW form', () => {
     boardId: 'board-1',
     formType: 'ww-installation',
   });
+});
+
+test('the switchboard chooser appears only inside Wattwatchers commissioning', () => {
+  assert.equal(needsWattwatchersSwitchboard('ww-installation'), true);
+  assert.equal(needsWattwatchersSwitchboard('a3rm-installation'), true);
+  assert.equal(needsWattwatchersSwitchboard('a6m-installation'), true);
+  assert.equal(needsWattwatchersSwitchboard('ace-switchboard'), false);
+  assert.equal(needsWattwatchersSwitchboard('honeywell-q400'), false);
+  assert.equal(needsWattwatchersSwitchboard('captis-logger'), false);
+  assert.equal(needsWattwatchersSwitchboard('sums-logger'), false);
+  assert.equal(needsWattwatchersSwitchboard(undefined), false);
 });

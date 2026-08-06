@@ -116,8 +116,9 @@ Installation (id)
   entry as a fallback and keep SUMS serial fields enabled for both barcode and
   QR scanning.
 - New WW and replacement-device authoring exposes one required Device ID/serial
-  field. `device_number` answer/property aliases remain readable and are mirrored
-  invisibly for compatibility; never ask the installer for the same identity twice.
+  field. The optional `device_number` value is labelled as a distinct site/asset
+  tag, remains readable and is mirrored for compatibility only while blank; never
+  describe it as a second serial identity.
 - Board, asset, and device names accept 1–64 visible characters. Stable record
   IDs and serials remain separate identities, while duplicate names are rejected
   installation-wide.

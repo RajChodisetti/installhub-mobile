@@ -72,11 +72,20 @@ export function BoardDetailScreen({ navigation, route }: Props) {
             })
           }
         />
+        <Button
+          title="Add Other Meter"
+          variant="secondary"
+          disabled={readOnly}
+          onPress={() => navigation.navigate('MeterForm', {
+            boardId,
+            deviceType: 'Other',
+          })}
+        />
       </View>
 
       <SectionHeader title={`Meters (${board.meters.length})`} />
       {board.meters.length === 0 ? (
-        <Text style={{ color: colors.mutedForeground }}>No Wattwatcher devices on this board.</Text>
+        <Text style={{ color: colors.mutedForeground }}>No metering devices on this board.</Text>
       ) : (
         board.meters.map((m) => (
           <Card key={m.id} style={{ marginBottom: 8 }}>
@@ -166,7 +175,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               meters: options.removeMeters ? [] : board.meters,
             });
             setEditOpen(false);
-            await refresh();
+            navigation.goBack();
           }}
         />
       </FormModal>

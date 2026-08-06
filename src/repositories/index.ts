@@ -26,6 +26,7 @@ import {
 } from './deletionIntegrity';
 import {
   allAssetMeteringRows,
+  BOARD_TYPE_LABELS,
   boardIsOnAssetSupplyPath,
   boardTypeCode,
   bumpTreeRevision,
@@ -34,18 +35,40 @@ import {
   installationReadiness,
   isValidInstallationSiteCode,
   meteringInventorySummary,
-  nextDisplayCode,
   normalizeCanonicalStore,
   primaryGridSupplyId,
   projectCanonicalCompatibility,
   replaceBoardMetersFromLegacy,
   replaceMeterMeasurementAssignments,
   setAssetMeteringState,
+  SITE_ASSET_TYPE_LABELS,
   siteAssetTypeCode,
   type AllAssetMeteringRow,
   type ElectricalTreeRow,
   type MeteringInventorySummary,
 } from '../domain/installationV2';
+import {
+  availableZoneCode,
+  defaultMeterCustomName,
+  namingInventoryForInstallation,
+  normalizedZoneCode,
+  provisionalDisplayCodeV2,
+} from '../domain/namingV2';
+
+function boardDefaultName(typeCode: ReturnType<typeof boardTypeCode>, customTypeName?: string): string {
+  return typeCode === 'OTHER'
+    ? customTypeName?.trim() || BOARD_TYPE_LABELS[typeCode]
+    : BOARD_TYPE_LABELS[typeCode];
+}
+
+function siteAssetDefaultName(
+  typeCode: ReturnType<typeof siteAssetTypeCode>,
+  customTypeName?: string,
+): string {
+  return typeCode === 'OTHER'
+    ? customTypeName?.trim() || SITE_ASSET_TYPE_LABELS[typeCode]
+    : SITE_ASSET_TYPE_LABELS[typeCode];
+}
 
 export * from './cloudSyncRepository';
 export * from './deletionIntegrity';
@@ -348,20 +371,28 @@ export const zonesRepo: ZonesRepository = {
     return getStore().zones.find((z) => z.id === id) ?? null;
   },
   async create(input) {
-    const record: Zone = {
-      ...input,
-      photos: input.photos ?? [],
-      id: createId('zone'),
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    };
+    let record: Zone | null = null;
     await updateStore((s) => {
       const installation = s.installations.find((item) => item.id === input.audit_id);
+      if (!installation) throw new Error('Installation not found.');
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
+      const installationZones = s.zones.filter((zone) => zone.audit_id === input.audit_id);
+      const zoneCode = availableZoneCode(
+        installationZones,
+        normalizedZoneCode(input.zone_code?.trim() || input.zone_name),
+      );
+      record = {
+        ...input,
+        zone_code: zoneCode,
+        photos: input.photos ?? [],
+        id: createId('zone'),
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
       s.zones.push(record);
       bumpTreeRevision(s, input.audit_id);
     });
-    return record;
+    return record!;
   },
   async update(id, patch) {
     let updated: Zone | null = null;
@@ -369,9 +400,90 @@ export const zonesRepo: ZonesRepository = {
       const idx = s.zones.findIndex((z) => z.id === id);
       if (idx < 0) throw new Error('Zone not found');
       const installation = s.installations.find((item) => item.id === s.zones[idx].audit_id);
+      if (!installation) throw new Error('Installation not found.');
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
-      updated = { ...s.zones[idx], ...patch, id, updated_at: nowIso() };
+      const previous = s.zones[idx];
+      const installationZones = s.zones.filter((zone) => zone.audit_id === previous.audit_id);
+      const shouldResolveCode = Object.prototype.hasOwnProperty.call(patch, 'zone_code')
+        || !previous.zone_code;
+      const zoneCode = shouldResolveCode
+        ? availableZoneCode(
+            installationZones,
+            normalizedZoneCode(patch.zone_code?.trim() || patch.zone_name || previous.zone_name),
+            id,
+          )
+        : previous.zone_code;
+      updated = { ...previous, ...patch, zone_code: zoneCode, id, updated_at: nowIso() };
       s.zones[idx] = updated;
+
+      if (previous.zone_code !== updated.zone_code) {
+        const inventory = namingInventoryForInstallation(s, updated.audit_id);
+        const boards = s.electricalAssets.filter(
+          (board) => board.audit_id === updated!.audit_id && board.zone_id === id,
+        );
+        for (const board of boards) {
+          const typeCode = board.type_code ?? boardTypeCode(board.asset_type);
+          board.display_code_meta = provisionalDisplayCodeV2(
+            installation!,
+            inventory,
+            {
+              zoneId: id,
+              customName: board.asset_name,
+              fallbackType: boardDefaultName(typeCode, board.custom_type_name),
+              excludeId: board.id,
+              current: board.display_code_meta,
+              previousZoneCode: previous.zone_code,
+            },
+          );
+          board.display_code = board.display_code_meta.value;
+        }
+        for (const asset of s.siteAssets.filter(
+          (item) => item.audit_id === updated!.audit_id && item.zone_id === id,
+        )) {
+          const typeCode = asset.type_code ?? siteAssetTypeCode(asset.asset_type);
+          asset.display_code_meta = provisionalDisplayCodeV2(
+            installation!,
+            inventory,
+            {
+              zoneId: id,
+              customName: asset.asset_name,
+              fallbackType: siteAssetDefaultName(typeCode, asset.custom_type_name),
+              excludeId: asset.id,
+              current: asset.display_code_meta,
+              previousZoneCode: previous.zone_code,
+            },
+          );
+          asset.display_code = asset.display_code_meta.value;
+        }
+        for (const meter of s.meterDevices.filter((device) =>
+          device.installationId === updated!.audit_id
+          && boards.some((board) => board.id === device.installedOnBoardId))) {
+          const customName = meter.customName?.trim().slice(0, 64)
+            || defaultMeterCustomName(
+              meter.deviceModel,
+              meter.customModelName,
+              meter.customManufacturerName,
+            );
+          meter.customName = customName;
+          meter.displayName = provisionalDisplayCodeV2(
+            installation!,
+            inventory,
+            {
+              zoneId: id,
+              customName,
+              fallbackType: defaultMeterCustomName(
+                meter.deviceModel,
+                meter.customModelName,
+                meter.customManufacturerName,
+              ),
+              excludeId: meter.id,
+              current: meter.displayName,
+              previousZoneCode: previous.zone_code,
+            },
+          );
+        }
+        projectCanonicalCompatibility(s, updated.audit_id);
+      }
       bumpTreeRevision(s, updated.audit_id);
     });
     return updated!;
@@ -401,15 +513,31 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
       if (!installation) throw new Error('Installation not found');
       if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const typeCode = input.type_code ?? boardTypeCode(input.asset_type);
-      const generated = nextDisplayCode(installation, typeCode);
+      const fallbackName = boardDefaultName(typeCode, input.custom_type_name);
+      const customName = input.asset_name.trim() || fallbackName;
       const requested = input.display_code?.trim();
-      const displayCode = input.display_code_meta ?? {
-        ...generated,
-        value: requested || generated.value,
-        isOverridden: Boolean(requested && requested !== generated.value),
-      };
+      const current = input.display_code_meta ?? (requested ? {
+        value: requested,
+        generatedValue: requested,
+        isOverridden: true,
+        ruleVersion: 1,
+        provisional: true,
+      } : undefined);
+      const id = createId('board');
+      const displayCode = provisionalDisplayCodeV2(
+        installation,
+        namingInventoryForInstallation(s, input.audit_id),
+        {
+          zoneId: input.zone_id,
+          customName,
+          fallbackType: fallbackName,
+          excludeId: id,
+          current,
+        },
+      );
       record = {
         ...input,
+        asset_name: customName,
         type_code: typeCode,
         display_code_meta: displayCode,
         display_code: displayCode.value,
@@ -425,7 +553,7 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
         meters: input.meters ?? [],
         extra_photos: input.extra_photos ?? [],
         meter_present: input.meter_present ?? (input.meters?.length ?? 0) > 0,
-        id: createId('board'),
+        id,
         created_at: nowIso(),
         updated_at: nowIso(),
       };
@@ -441,16 +569,47 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
       const idx = s.electricalAssets.findIndex((e) => e.id === id);
       if (idx < 0) throw new Error('Electrical asset not found');
       const installation = s.installations.find((item) => item.id === s.electricalAssets[idx].audit_id);
+      if (!installation) throw new Error('Installation not found.');
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const previous = s.electricalAssets[idx];
-      const typeCode = patch.type_code ?? (patch.asset_type ? boardTypeCode(patch.asset_type) : previous.type_code);
-      const displayCodeMeta = patch.display_code_meta ?? (patch.display_code !== undefined
-        ? {
-            ...(previous.display_code_meta ?? { generatedValue: previous.display_code, ruleVersion: 1 as const, provisional: true }),
-            value: patch.display_code.trim(),
-            isOverridden: patch.display_code.trim() !== (previous.display_code_meta?.generatedValue ?? previous.display_code),
-          }
-        : previous.display_code_meta);
+      const typeCode = patch.type_code
+        ?? (patch.asset_type ? boardTypeCode(patch.asset_type) : undefined)
+        ?? previous.type_code
+        ?? boardTypeCode(previous.asset_type);
+      const fallbackName = boardDefaultName(typeCode, patch.custom_type_name ?? previous.custom_type_name);
+      const customName = patch.asset_name?.trim() || previous.asset_name.trim() || fallbackName;
+      const explicitDisplayCode = patch.display_code?.trim();
+      const currentDisplayCode = patch.display_code_meta ?? (
+        explicitDisplayCode && explicitDisplayCode !== previous.display_code
+          ? {
+              ...(previous.display_code_meta ?? {
+                generatedValue: previous.display_code,
+                ruleVersion: 1,
+                provisional: true,
+              }),
+              value: explicitDisplayCode,
+              isOverridden: true,
+            }
+          : previous.display_code_meta ?? {
+              value: previous.display_code,
+              generatedValue: previous.display_code,
+              isOverridden: false,
+              ruleVersion: 1,
+              provisional: true,
+            }
+      );
+      const zoneId = patch.zone_id ?? previous.zone_id;
+      const displayCodeMeta = provisionalDisplayCodeV2(
+        installation!,
+        namingInventoryForInstallation(s, previous.audit_id),
+        {
+          zoneId,
+          customName,
+          fallbackType: fallbackName,
+          excludeId: id,
+          current: currentDisplayCode,
+        },
+      );
       const electricalSource = patch.electrical_source ?? (
         patch.electrical_parent_tbc
           ? { kind: 'TBC' as const }
@@ -461,8 +620,10 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
       updated = {
         ...previous,
         ...patch,
+        asset_name: customName,
         type_code: typeCode,
         display_code_meta: displayCodeMeta,
+        display_code: displayCodeMeta.value,
         electrical_source: electricalSource,
         id,
         updated_at: nowIso(),
@@ -540,27 +701,45 @@ export const siteAssetsRepo: SiteAssetsRepository = {
         throw new Error('Reopen this completed installation before editing it.');
       }
       const typeCode = input.type_code ?? siteAssetTypeCode(input.asset_type);
-      const generated = previous
-        ? previous.display_code_meta ?? {
-            value: previous.display_code ?? '',
-            generatedValue: previous.display_code ?? '',
-            isOverridden: false,
-            ruleVersion: 1 as const,
-            provisional: true,
-          }
-        : nextDisplayCode(installation, typeCode);
+      const fallbackName = siteAssetDefaultName(typeCode, input.custom_type_name);
+      const customName = input.asset_name.trim() || previous?.asset_name.trim() || fallbackName;
       const requested = input.display_code?.trim();
-      const displayCode = input.display_code_meta ?? {
-        ...generated,
-        value: requested || generated.value,
-        isOverridden: Boolean(requested && requested !== generated.generatedValue),
-      };
+      const currentDisplayCode = input.display_code_meta ?? (
+        requested && requested !== previous?.display_code
+          ? {
+              value: requested,
+              generatedValue: previous?.display_code_meta?.generatedValue ?? requested,
+              isOverridden: true,
+              ruleVersion: previous?.display_code_meta?.ruleVersion ?? 1,
+              provisional: previous?.display_code_meta?.provisional ?? true,
+            }
+          : previous?.display_code_meta ?? (previous?.display_code ? {
+              value: previous.display_code,
+              generatedValue: previous.display_code,
+              isOverridden: false,
+              ruleVersion: 1,
+              provisional: true,
+            } : undefined)
+      );
+      const recordId = previous?.id ?? createId('site');
+      const displayCode = provisionalDisplayCodeV2(
+        installation,
+        namingInventoryForInstallation(store, installationId),
+        {
+          zoneId: input.zone_id,
+          customName,
+          fallbackType: fallbackName,
+          excludeId: recordId,
+          current: currentDisplayCode,
+        },
+      );
       const timestamp = nowIso();
       saved = {
         ...(previous ?? {}),
         ...input,
-        id: previous?.id ?? createId('site'),
+        id: recordId,
         audit_id: installationId,
+        asset_name: customName,
         type_code: typeCode,
         display_code_meta: displayCode,
         display_code: displayCode.value,
@@ -627,15 +806,31 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       if (!installation) throw new Error('Installation not found');
       if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const typeCode = input.type_code ?? siteAssetTypeCode(input.asset_type);
-      const generated = nextDisplayCode(installation, typeCode);
+      const fallbackName = siteAssetDefaultName(typeCode, input.custom_type_name);
+      const customName = input.asset_name.trim() || fallbackName;
       const requested = input.display_code?.trim();
-      const displayCode = input.display_code_meta ?? {
-        ...generated,
-        value: requested || generated.value,
-        isOverridden: Boolean(requested && requested !== generated.value),
-      };
+      const current = input.display_code_meta ?? (requested ? {
+        value: requested,
+        generatedValue: requested,
+        isOverridden: true,
+        ruleVersion: 1,
+        provisional: true,
+      } : undefined);
+      const id = createId('site');
+      const displayCode = provisionalDisplayCodeV2(
+        installation,
+        namingInventoryForInstallation(s, input.audit_id),
+        {
+          zoneId: input.zone_id,
+          customName,
+          fallbackType: fallbackName,
+          excludeId: id,
+          current,
+        },
+      );
       record = {
         ...input,
+        asset_name: customName,
         type_code: typeCode,
         display_code_meta: displayCode,
         display_code: displayCode.value,
@@ -648,7 +843,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
         extra_photos: input.extra_photos ?? [],
         meter_channels: input.meter_channels ?? [],
         meter_present: input.meter_present ?? false,
-        id: createId('site'),
+        id,
         created_at: nowIso(),
         updated_at: nowIso(),
       };
@@ -664,6 +859,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       if (idx < 0) throw new Error('Site asset not found');
       const previous = s.siteAssets[idx];
       const installation = s.installations.find((item) => item.id === previous.audit_id);
+      if (!installation) throw new Error('Installation not found.');
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       if (
         patch.metering_state &&
@@ -674,14 +870,43 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       if (patch.meter_present !== undefined && patch.meter_present !== previous.meter_present) {
         throw new Error('Use the atomic metering reconciliation action to change meter coverage.');
       }
-      const typeCode = patch.type_code ?? (patch.asset_type ? siteAssetTypeCode(patch.asset_type) : previous.type_code);
-      const displayCodeMeta = patch.display_code_meta ?? (patch.display_code !== undefined
-        ? {
-            ...(previous.display_code_meta ?? { generatedValue: previous.display_code ?? '', ruleVersion: 1 as const, provisional: true }),
-            value: patch.display_code.trim(),
-            isOverridden: patch.display_code.trim() !== (previous.display_code_meta?.generatedValue ?? previous.display_code),
-          }
-        : previous.display_code_meta);
+      const typeCode = patch.type_code
+        ?? (patch.asset_type ? siteAssetTypeCode(patch.asset_type) : undefined)
+        ?? previous.type_code
+        ?? siteAssetTypeCode(previous.asset_type);
+      const fallbackName = siteAssetDefaultName(typeCode, patch.custom_type_name ?? previous.custom_type_name);
+      const customName = patch.asset_name?.trim() || previous.asset_name.trim() || fallbackName;
+      const explicitDisplayCode = patch.display_code?.trim();
+      const currentDisplayCode = patch.display_code_meta ?? (
+        explicitDisplayCode && explicitDisplayCode !== previous.display_code
+          ? {
+              ...(previous.display_code_meta ?? {
+                generatedValue: previous.display_code ?? '',
+                ruleVersion: 1,
+                provisional: true,
+              }),
+              value: explicitDisplayCode,
+              isOverridden: true,
+            }
+          : previous.display_code_meta ?? (previous.display_code ? {
+              value: previous.display_code,
+              generatedValue: previous.display_code,
+              isOverridden: false,
+              ruleVersion: 1,
+              provisional: true,
+            } : undefined)
+      );
+      const displayCodeMeta = provisionalDisplayCodeV2(
+        installation,
+        namingInventoryForInstallation(s, previous.audit_id),
+        {
+          zoneId: patch.zone_id ?? previous.zone_id,
+          customName,
+          fallbackType: fallbackName,
+          excludeId: id,
+          current: currentDisplayCode,
+        },
+      );
       const electricalSource = patch.electrical_source ?? (
         patch.electrical_board_tbc
           ? { kind: 'TBC' as const }
@@ -692,8 +917,10 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       updated = {
         ...previous,
         ...patch,
+        asset_name: customName,
         type_code: typeCode,
         display_code_meta: displayCodeMeta,
+        display_code: displayCodeMeta.value,
         electrical_source: electricalSource,
         id,
         updated_at: nowIso(),

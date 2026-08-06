@@ -51,6 +51,27 @@ test('legacy A3RM and A6M form types remain readable', () => {
   assert.equal(FORM_DEFINITION_BY_TYPE['a6m-installation'].availableForNew, false);
 });
 
+test('optional field identity is presented as a distinct site or asset tag', () => {
+  const installation = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const deviceTag = installation.sections
+    .flatMap((section) => section.fields)
+    .find((field) => field.key === 'device.number');
+  assert.equal(
+    deviceTag?.label,
+    'Site / asset tag (optional; not the Device ID / serial)',
+  );
+  assert.equal(deviceTag?.required, false);
+
+  const replacement = FORM_DEFINITION_BY_TYPE['comms-fault'].sections
+    .flatMap((section) => section.fields)
+    .find((field) => field.key === 'works.new_device_number');
+  assert.equal(
+    replacement?.label,
+    'New site / asset tag (optional; not the Device ID / serial)',
+  );
+  assert.equal(replacement?.required, false);
+});
+
 test('the full mobile catalog matches the audited portal contract fingerprint', () => {
   const sectionCount = FORM_DEFINITIONS.reduce(
     (count, definition) => count + definition.sections.length,
@@ -68,10 +89,10 @@ test('the full mobile catalog matches the audited portal contract fingerprint', 
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 387);
+  assert.equal(fieldCount, 391);
   assert.equal(
     fingerprint,
-    '2e4f4ee4756a717a75b3b9ba646606ef5e293e1ddaf11ce2fbb6274de8857568',
+    '37ed7096f2d4b72cac799ad99c56e646c466c141e2727395c44579b27ac3f023',
   );
 });
 
@@ -85,21 +106,37 @@ test('Installation form dynamically exposes exact A3RM and A6M options', () => {
   )!;
   assert.equal(channels.length, 6);
   assert.deepEqual(optionsForField(firstRating, { 'device.type': 'A3RM' }), [
-    '3000A - 9cm',
-    '3000A - 20cm',
-    '3000A - 29cm',
+    '10cm-200A',
+    '10cm-333mV',
+    '20cm-3000A',
+    '30cm-3000A',
+    '45cm-3000A',
+    'Not Used',
   ]);
   assert.deepEqual(optionsForField(firstRating, { 'device.type': 'A6M' }), [
-    '60A',
-    '120A',
-    '200A',
-    '400A',
-    '600A',
+    'CT-60A',
+    'CT-120A',
+    'CT-250A',
+    'CT-400A',
+    'CT-600A',
+    'Not Used',
   ]);
+  assert.deepEqual(
+    optionsForField(firstRating, {
+      'device.type': 'A3RM',
+      'channel.1.rating': '3000A - 9cm',
+    }),
+    [
+      '10cm-200A', '10cm-333mV', '20cm-3000A', '30cm-3000A',
+      '45cm-3000A', 'Not Used', '3000A - 9cm',
+    ],
+  );
   assert.equal(isSectionVisible(channels[2], { 'device.type': 'A3RM' }), true);
   assert.equal(isSectionVisible(channels[3], { 'device.type': 'A3RM' }), false);
   assert.equal(isSectionVisible(channels[5], { 'device.type': 'A6M' }), true);
-  assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, ['60A', '120A', '200A', '400A', '600A']);
+  assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, [
+    'CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used',
+  ]);
 });
 
 test('WW channel contract matches the API and portal parity signature', () => {
@@ -125,7 +162,7 @@ test('WW channel contract matches the API and portal parity signature', () => {
 
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
+    'bb7094caa4216367ff11fd1083130ac46109672d05cea366a31bdeb31433f3f7',
   );
 });
 
@@ -370,7 +407,7 @@ test('Comms replacement rebuilds channel count and sensor representation', () =>
   assert.equal(replacement.device_name, 'A3RM - NEW-ID');
   assert.equal(replacement.device_type, 'A3RM');
   assert.equal(replacement.device_id, 'NEW-ID');
-  assert.equal(replacement.device_number, 'NEW-ID');
+  assert.equal(replacement.device_number, 'NEW-NUMBER');
   assert.equal(replacement.ww_channels?.length, 3);
   assert.equal(replacement.ww_channels?.[0]?.load_type, 'Mains Supply');
   assert.equal(replacement.ww_channels?.[0]?.rogowski_size, '3000A - 20cm');
@@ -464,8 +501,10 @@ test('scanner requirements are attached to every ingestion field', () => {
   );
   for (const key of [
     'ww-installation:device.id',
+    'ww-installation:device.number',
     'comms-fault:existing.device_id',
     'comms-fault:works.new_device_id',
+    'comms-fault:works.new_device_number',
     'ace-switchboard:job.number',
     'ace-switchboard:install.ct_serial_a',
     'ace-switchboard:install.ct_serial_b',
@@ -477,9 +516,7 @@ test('scanner requirements are attached to every ingestion field', () => {
     assert.deepEqual(fields[key]?.scanModes, ['barcode'], key);
   }
   for (const removedCompatibilityField of [
-    'ww-installation:device.number',
     'comms-fault:existing.device_number',
-    'comms-fault:works.new_device_number',
   ]) {
     assert.equal(fields[removedCompatibilityField], undefined, removedCompatibilityField);
   }
@@ -494,11 +531,42 @@ test('scanner requirements are attached to every ingestion field', () => {
   );
 });
 
-test('device identity authoring mirrors one visible ID into legacy compatibility aliases', () => {
+test('device identity authoring seeds blank compatibility numbers but preserves distinct values', () => {
   const ww = FORM_DEFINITION_BY_TYPE['ww-installation'];
   assert.deepEqual(
     answersAfterChange(ww, {}, 'device.id', 'SERIAL-100'),
     { 'device.id': 'SERIAL-100', 'device.number': 'SERIAL-100' },
+  );
+  assert.deepEqual(
+    answersAfterChange(
+      ww,
+      { 'device.number': 'FIELD-100' },
+      'device.id',
+      'SERIAL-100',
+    ),
+    { 'device.id': 'SERIAL-100', 'device.number': 'FIELD-100' },
+  );
+  assert.equal(
+    answersAfterChange(ww, {}, 'device.type', 'A3RM')['device.name'],
+    'A3RM Meter',
+  );
+  assert.equal(
+    answersAfterChange(
+      ww,
+      { 'device.type': 'A3RM', 'device.name': 'A3RM Meter' },
+      'device.type',
+      'A6M',
+    )['device.name'],
+    'A6M Meter',
+  );
+  assert.equal(
+    answersAfterChange(
+      ww,
+      { 'device.type': 'A3RM', 'device.name': 'Boiler Meter' },
+      'device.type',
+      'A6M',
+    )['device.name'],
+    'Boiler Meter',
   );
 
   const comms = FORM_DEFINITION_BY_TYPE['comms-fault'];
@@ -655,6 +723,39 @@ test('numeric required fields reject non-numeric values', () => {
   assert.ok(validateForm(submission).some((error) => error.includes('must be a number')));
 });
 
+test('A6M clamp current accepts the observed Not Connected state while A3RM stays numeric', () => {
+  const base: FormSubmission = {
+    id: 'a6-current-observation',
+    form_type: 'ww-installation',
+    schema_version: 2,
+    status: 'Draft',
+    installation_id: 'installation-1',
+    answers: {
+      'device.type': 'A6M',
+      'channel.1.purpose': 'Sub-circuit / asset',
+      'channel.1.load': 'HVAC',
+      'channel.1.rating': 'CT-60A',
+      'commissioning.channel_1_current': 'Not Connected',
+    },
+    attachments: [],
+    created_at: '2026-08-05T00:00:00.000Z',
+    updated_at: '2026-08-05T00:00:00.000Z',
+  };
+  assert.equal(
+    validateForm(base).some((error) =>
+      error.includes('Channel 1 current - AC clamp tester must be a number')),
+    false,
+  );
+  assert.equal(
+    validateForm({
+      ...base,
+      answers: { ...base.answers, 'device.type': 'A3RM' },
+    }).some((error) =>
+      error.includes('Channel 1 current - AC clamp tester must be a number')),
+    true,
+  );
+});
+
 test('optional numeric and select values are validated when provided', () => {
   const honeywell: FormSubmission = {
     id: 'form-optional-number',
@@ -683,6 +784,17 @@ test('optional numeric and select values are validated when provided', () => {
     validateForm(comms).some((error) =>
       error.includes('Existing signal strength has an invalid selection'),
     ),
+  );
+
+  const savedLegacySignal: FormSubmission = {
+    ...comms,
+    id: 'form-legacy-select',
+    answers: { 'existing.signal': 'Excellent' },
+  };
+  assert.equal(
+    validateForm(savedLegacySignal).some((error) =>
+      error.includes('Existing signal strength has an invalid selection')),
+    false,
   );
 });
 
