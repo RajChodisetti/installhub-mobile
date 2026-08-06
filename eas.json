@@ -6,12 +6,18 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SYNC_API_URL": "https://ecoaudit-qa.170.64.154.143.sslip.io"
+      },
       "ios": {
         "simulator": false,
         "distribution": "internal"
       }
     },
     "simulator": {
+      "env": {
+        "EXPO_PUBLIC_SYNC_API_URL": "https://ecoaudit-qa.170.64.154.143.sslip.io"
+      },
       "ios": {
         "simulator": true
       }
