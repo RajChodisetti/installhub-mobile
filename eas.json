@@ -27,9 +27,19 @@
       "ios": {
         "distribution": "store"
       }
+    },
+    "testflight": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SYNC_API_URL": "https://ecoaudit-qa.170.64.154.143.sslip.io"
+      },
+      "ios": {
+        "distribution": "store"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {},
+    "testflight": {}
   }
 }
