@@ -100,9 +100,11 @@ index.ts
            └─ restore ih_cloud_jwt / ih_cloud_refresh
               -> AppShell
                  ├─ StatusBar follows theme
-                 └─ RootNavigator
-                    ├─ Login when signed out
-                    └─ MainTabs + feature stack when signed in
+                 └─ PushNotificationProvider
+                    └─ AuditWorkTrackingProvider
+                       └─ RootNavigator
+                          ├─ Login when signed out
+                          └─ MainTabs + feature stack when signed in
 ```
 
 `AppProviders` owns:
@@ -152,12 +154,15 @@ AsyncStorage keys:
 | `installhub.mobile.store.v3.generation.*` | `data/storePersistence.ts` | bounded chunks of the generation document |
 | `installhub.mobile.store.v3.recovery` | `data/seed.ts` | metadata for a temporary encrypted pre-migration recovery copy; never its key |
 | `installhub.mobile.operational-diagnostics.v1` | `operationalDiagnostics.ts` | bounded local-only, privacy-projected reliability events |
+| `installhub.mobile.active-time.v1` | `activeTimeOutbox.ts` | versioned, actor-partitioned active installation session checkpoints and acknowledgements |
 | `installhub.theme` | `AppProviders.tsx` | `light`, `dark`, or `system` |
 | `installhub.active-report-jobs.v1` | `reportJobs.ts` | active form/installation API PDF job IDs |
 | `ih_cloud_jwt` | Expo SecureStore | short-lived Field App Complete access token |
 | `ih_cloud_refresh` | Expo SecureStore | rotating refresh token |
 | `ih_cloud_user` | Expo SecureStore | cached offline session identity |
 | `ih_last_synced_at` | Expo SecureStore | last successful backup timestamp |
+| `installhub.notifications.device-id.v1` | Expo SecureStore | stable random device identity used to upsert/delete this installation's push token |
+| `installhub.notifications.registration-generation.v1` | Expo SecureStore | monotonic lifecycle fence shared by notification registration and logout |
 
 The store initializes once per process. A v3 write stages and verifies every chunk before one
 manifest-pointer flip, then verifies the active document before retiring the prior generation.
@@ -176,6 +181,35 @@ to `cloud_backup_enabled=false`, so no installation is uploaded without explicit
 
 The fixtures currently seed one demo user, three installations, four zones, four electrical
 boards, and four site assets.
+
+### Active installation time
+
+Active installation time is collected without user-facing logs. `RootNavigator` reports only the
+currently focused leaf route from `NavigationContainer.onReady`/`onStateChange`; it never infers an
+installation from a covered route lower in the native stack. Every installation-scoped child route,
+including `MeterForm` and `FormEditor`, therefore carries and validates `installationId` directly.
+
+`AuditWorkTrackingProvider` counts only an authenticated user's local `Draft` installation while
+React Native `AppState` is exactly `active`. Android `blur` also pauses the clock while the
+notification drawer or another non-interactive surface has focus. Navigation to another
+installation, a non-installation route, completion, deletion, logout, inactive/background, or
+Android blur closes the current session at that event's captured monotonic cutoff. Moving between
+screens for the same installation keeps one session. Reopening a completed installation as Draft
+starts a fresh session.
+
+The tracker checkpoints about every 15 seconds into the separate
+`installhub.mobile.active-time.v1` outbox. It never changes `Installation.updated_at`,
+`tree_revision`, the canonical backup payload, or immutable record versions. A restart closes any
+interrupted session at its last durable checkpoint and never infers the background/restart gap.
+Rows are partitioned by API actor and use increasing client revisions; an acknowledgement retires
+only the exact revision sent, so a heartbeat written while a request is in flight stays pending.
+
+Delivery uses
+`PUT /v1/installhub/installations/:installationId/active-time/sessions/:sessionId` with cumulative
+active milliseconds and stable start/end boundaries. Sessions remain local until Cloud Backup is
+enabled and a server installation revision confirms the parent exists. Network, authorization,
+missing-parent, and lifecycle failures remain pending. Delivery retries after checkpoints,
+foregrounding, and Cloud Backup; the API update does not mutate the installation tree revision.
 
 ### Canonical installation v2
 
@@ -272,6 +306,20 @@ Browse Cloud Backups
   -> durably cache authenticated 400 px previews
   -> expose the copy on Home after required previews are ready
 ```
+
+Scheduler/portal assignment uses a separate checkout path. On authenticated
+mount, foreground, manual refresh, and the normal sync interval, the app pulls
+the caller's accessible owned/assigned inventory. Draft installations that
+are not already local are materialized with the exact server installation,
+child, form, attachment, and tree-revision identities; they are not renamed or
+converted into `cpN` copies. They are immediately cloud-enabled and their pull
+watermark prevents an unchanged checkout from being pushed back. Offline edits
+then follow the normal Cloud Backup path. If a later complete inventory no
+longer contains an externally assigned Draft installation, a local-only
+visibility tombstone removes it from the dashboard and stops timing/uploads
+while retaining the entire tree and any unsent edits for recovery. Completed
+work remains visible as history even if it drops out of the active assignment
+inventory. A later reassignment to the same actor reactivates that checkout.
 
 Before any ID remapping or local write, import validates the complete canonical-v2 graph: stable IDs
 must be non-empty and unique, canonical arrays must be present, source/target/status/phase/direction
@@ -444,7 +492,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `ZoneWorkspace` | `zoneId`, `installationId` | Zone edit/photos, boards/assets, coverage and unresolved summary |
 | `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list; start WW commissioning or add an Other Meter |
 | `SiteAssetDetail` | `assetId`, `installationId`, `zoneId` | Site asset edit/delete |
-| `MeterForm` | `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments; Other Meter captures manufacturer, model, classification, coverage and explicit channel capabilities |
+| `MeterForm` | `installationId`, `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments; Other Meter captures manufacturer, model, classification, coverage and explicit channel capabilities |
 | `DataView` | `installationId`, optional `initialMode` | Explicit TBC reconciliation, separate non-TBC completion checks, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
 | `MeteringTable` | `installationId` | Combined board-meter/site-asset metering rows |
 | `InstallationReport` | `installationId` | Summary and PDF export/share |
@@ -452,7 +500,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `PhotoPreview` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
 | `FormsList` | `installationId` | List drafts/completed forms, export or amend |
 | `FormTypePicker` | installation plus optional entity links | Central/contextual six-form catalog |
-| `FormEditor` | `formId` | Autosave, validation, location, evidence, completion and PDF |
+| `FormEditor` | `installationId`, `formId` | Autosave, validation, location, evidence, completion and PDF |
 | `RemoteInstallations` | none | Browse accessible Cloud Backups and import a fresh-ID `cpN` copy |
 | `UserManagement` | none | Admin-only Field App Complete account list |
 | `UserEditor` | optional `userId` | Admin create/update/deactivate/reactivate/password reset |
@@ -581,6 +629,9 @@ tree.
 | `expo-file-system ~57.0.1` | Durable form-media storage and PDF image embedding |
 | `expo-image-manipulator ~57.0.6` | Resize/compress evidence before durable storage |
 | `expo-location ~57.0.6` | Capture installation coordinates with manual fallback |
+| `expo-constants ~57.0.11` | Read the configured EAS project ID used for Expo push-token exchange |
+| `expo-device ~57.0.1` | Prevent remote push registration on simulators and emulators |
+| `expo-notifications ~57.0.11` | Notification permission, Expo push tokens, Android channel, rotation listener and foreground presentation |
 | `expo-secure-store ~57.0.1` | Store JWT, refresh token, and cached cloud identity |
 | `expo-background-task ~57.0.6` | Opportunistic OS-scheduled Cloud Backup |
 | `expo-task-manager ~57.0.6` | Define the background task at module scope |
@@ -598,11 +649,13 @@ diagnostics tests use Node's test runner via `tsx`.
 
 `app.json` defines:
 
-- App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`.
+- App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`;
+  the notification-enabled native build is iOS build `2` / Android versionCode `2`.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
 - Camera and photo-library usage descriptions.
-- Expo plugins for sharing, camera/barcode scanning, and image picker.
+- Expo plugins for sharing, camera/barcode scanning, image picker, and notifications. Notifications
+  reuse the existing monochrome Android asset and declare `scheduler` as the default channel.
 - App/splash/favicon/Android adaptive-icon assets.
 
 `eas.json` defines:
@@ -631,6 +684,37 @@ EAS CLI commands are not wrapped as package scripts. Signing credentials and loc
 files must never be committed.
 
 ## 9. Device capabilities and side effects
+
+### Push notifications
+
+`PushNotificationProvider` is mounted for the app lifetime but performs remote registration only
+for an authenticated user on a physical iOS or Android device while the app is active. Android
+creates the high-importance `scheduler` channel before checking permission. The provider requests
+notification permission, reads the existing EAS `projectId`, exchanges the native device token for
+an Expo push token, and securely creates or reuses one random
+`installhub.notifications.device-id.v1` value. Each authenticated provider lifecycle also
+serially increments and securely persists
+`installhub.notifications.registration-generation.v1` before registration. Retries and native
+token rotations within that lifecycle reuse the same positive integer; a remount, later login, or
+process restart increments it again. The app then calls
+`PUT /v1/notifications/devices/:deviceId` with `expoPushToken`, `platform`, `projectId`, and
+`registrationGeneration`.
+
+Permission denial, simulators/emulators, missing project configuration, and registration/network
+errors are silent, non-auth failures. An unsuccessful registration is eligible for another attempt
+on a later foreground; a successful registration is not repeated on every foreground. Expo's
+native push-token listener is treated only as a rotation signal: the supplied native token is
+explicitly re-exchanged through `getExpoPushTokenAsync({ projectId, devicePushToken })` before the
+new Expo token is PUT. It is never uploaded directly.
+
+Foreground notifications show a banner/list entry and play sound; there is no notification log or
+history UI and no deep-link behavior. Logout first captures that lifecycle's generation,
+invalidates/aborts pending registration work, and makes a bounded best-effort
+`DELETE /v1/notifications/devices/:deviceId?registrationGeneration=N` while credentials still
+exist. This generation fence prevents a delayed logout from disabling a newer login's device
+registration. A rejected same-generation retry does not mint another generation; only a new
+provider lifecycle does. Registration queue or DELETE failures/timeouts never prevent credential
+clearing or logout.
 
 ### Photos
 
@@ -711,6 +795,8 @@ An agent should distinguish deliberate demo behavior from accidental architectur
 - Cloud browsing imports a fresh-ID copy; there is no in-place overwrite/restore operation.
 - OS background scheduling is opportunistic and unavailable in Expo Go and iOS Simulator;
   foreground and explicit backup triggers remain authoritative for testing.
+- Remote push registration requires a physical development/EAS build; Expo Go and simulators are
+  not authoritative notification-delivery test environments.
 - Board and site-asset photos remain local working copies after backup; clearing the app sandbox
   still requires a future restore workflow to bring them back.
 - Client report and photo inclusion are placeholders; toggles do not feed the exported PDF.

@@ -64,7 +64,10 @@ export function DeviceSearchScreen({ navigation, route }: Props) {
         meter_id: record.meter.id,
         answers,
       });
-      navigation.navigate('FormEditor', { formId: form.id });
+      navigation.navigate('FormEditor', {
+        formId: form.id,
+        installationId: record.installation.id,
+      });
     } catch (error) {
       Alert.alert(
         'Replacement form not started',
@@ -120,6 +123,7 @@ export function DeviceSearchScreen({ navigation, route }: Props) {
                 variant="secondary"
                 style={styles.action}
                 onPress={() => navigation.navigate('MeterForm', {
+                  installationId: record.installation.id,
                   boardId: record.board.id,
                   meterId: record.meter.id,
                   deviceType: record.meter.deviceModel === 'OTHER' ? 'Other' : record.meter.deviceModel,

@@ -1,5 +1,10 @@
 import React from 'react';
-import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  DarkTheme,
+  DefaultTheme,
+  useNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Alert, Text, View } from 'react-native';
@@ -31,6 +36,7 @@ import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
 import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
+import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabParamList>();
@@ -75,6 +81,8 @@ export function RootNavigator() {
     restoreStorage,
   } = useAuth();
   const { colors, resolvedMode } = useTheme();
+  const navigationRef = useNavigationContainerRef<RootStackParamList>();
+  const { setFocusedRoute } = useAuditWorkTracking();
 
   if (isLoading) {
     return <LoadingState />;
@@ -143,7 +151,12 @@ export function RootNavigator() {
   };
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer
+      ref={navigationRef}
+      theme={navTheme}
+      onReady={() => setFocusedRoute(navigationRef.getCurrentRoute())}
+      onStateChange={() => setFocusedRoute(navigationRef.getCurrentRoute())}
+    >
       <Stack.Navigator
         screenOptions={{
           headerStyle: { backgroundColor: colors.card },

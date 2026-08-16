@@ -306,7 +306,10 @@ export async function listInstallationsNeedingBackup(): Promise<InstallationBack
   const forced = new Set(store.cloudSync.force_dirty_installation_ids);
   const pendingComplete = new Set(Object.keys(store.cloudSync.pending_complete_attempts ?? {}));
   return store.installations
-    .filter((installation) => installation.cloud_backup_enabled)
+    .filter((installation) => (
+      installation.cloud_backup_enabled
+      && installation.assigned_work_state !== 'inactive'
+    ))
     .map((installation) => buildInstallationBackupTree(store, installation))
     .filter((tree) => {
       const syncedAt = store.cloudSync.synced_at_by_installation[tree.installation.id];

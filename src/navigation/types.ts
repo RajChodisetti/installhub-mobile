@@ -10,6 +10,7 @@ export type RootStackParamList = {
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };
   MeterForm: {
+    installationId: string;
     boardId: string;
     meterId?: string;
     deviceType?: 'A3RM' | 'A6M' | 'Other';
@@ -32,7 +33,7 @@ export type RootStackParamList = {
     siteAssetId?: string;
     formType?: FormType;
   };
-  FormEditor: { formId: string };
+  FormEditor: { formId: string; installationId: string };
   RemoteInstallations: undefined;
   UserManagement: undefined;
   UserEditor: {

@@ -229,7 +229,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   site_asset_id: siteAssetId,
                   answers,
                 });
-                navigation.replace('FormEditor', { formId: form.id });
+                navigation.replace('FormEditor', { formId: form.id, installationId });
               } catch (error) {
                 Alert.alert(
                   'Form not started',

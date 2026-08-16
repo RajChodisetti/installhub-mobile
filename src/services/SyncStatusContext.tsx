@@ -10,10 +10,15 @@ import { AppState, type AppStateStatus } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AppProviders';
 import { subscribeStore } from '../data/seed';
-import { hasStoredCloudSession } from '../api/apiClient';
+import {
+  NetworkError,
+  cloudConnectionErrorMessage,
+  hasStoredCloudSession,
+} from '../api/apiClient';
 import { runCloudBackup, type SyncProgress } from './syncService';
-import { resetFailedUploadsForRetry } from '../repositories';
+import { resetFailedUploadsForRetry, syncAssignedInstallations } from '../repositories';
 import { runThumbnailDownloadWorker } from './thumbnailCache';
+import { syncActiveTimeSessions } from './activeTimeSync';
 
 const LAST_SYNCED_KEY = 'ih_last_synced_at';
 const defaultProgress: SyncProgress = {
@@ -62,7 +67,25 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
       if (!user || !await hasStoredCloudSession()) return defaultProgress;
       setSyncing(true);
       try {
+        let assignmentError: unknown;
+        try {
+          await syncAssignedInstallations(user.id);
+        } catch (error) {
+          assignmentError = error;
+        }
         const result = await runCloudBackup(setProgress);
+        void syncActiveTimeSessions(user.id);
+        if (assignmentError && result.phase === 'done') {
+          const assignmentProgress: SyncProgress = {
+            phase: assignmentError instanceof NetworkError ? 'offline' : 'error',
+            uploaded: result.uploaded,
+            total: result.total,
+            failedCount: result.failedCount,
+            lastError: cloudConnectionErrorMessage(assignmentError),
+          };
+          setProgress(assignmentProgress);
+          return assignmentProgress;
+        }
         if (result.phase === 'done') {
           const now = new Date().toISOString();
           setLastSyncedAt(now);

@@ -358,6 +358,12 @@ export interface User {
 
 export interface Installation {
   id: string;
+  /** Server ownership metadata used to separate local work from assigned work. */
+  created_by_user_id?: string;
+  assigned_inspector_user_id?: string;
+  /** Local visibility tombstone; never included in canonical backup payloads. */
+  assigned_work_state?: 'none' | 'active' | 'inactive';
+  assigned_work_actor_user_id?: string;
   client_name: string;
   site_name: string;
   site_address: string;

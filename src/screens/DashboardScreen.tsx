@@ -10,12 +10,18 @@ import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { getLocalDeletionPreview, installationsRepo } from '../repositories';
 import type { Installation } from '../types';
+import {
+  resumeAuditWorkForInstallation,
+  suspendAuditWorkForInstallation,
+} from '../services/auditWorkTrackingBridge';
+import { useSyncStatus } from '../services/SyncStatusContext';
 
 type Props = { navigation: NativeStackNavigationProp<RootStackParamList> };
 
 export function DashboardScreen({ navigation }: Props) {
   const { colors } = useTheme();
   const { items, loading, refresh } = useInstallations();
+  const { triggerSync } = useSyncStatus();
   const [query, setQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const filtered = useMemo(
@@ -49,7 +55,12 @@ export function DashboardScreen({ navigation }: Props) {
         );
       });
       if (!confirmed) return;
-      await installationsRepo.remove(installation.id);
+      await suspendAuditWorkForInstallation(installation.id).catch(() => {});
+      try {
+        await installationsRepo.remove(installation.id);
+      } finally {
+        await resumeAuditWorkForInstallation(installation.id).catch(() => {});
+      }
       await refresh();
     } catch (error) {
       Alert.alert(
@@ -89,7 +100,13 @@ export function DashboardScreen({ navigation }: Props) {
         <FlatList
           data={filtered}
           keyExtractor={(item) => item.id}
-          refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={colors.primary} />}
+          refreshControl={(
+            <RefreshControl
+              refreshing={loading}
+              onRefresh={() => { void triggerSync().finally(refresh); }}
+              tintColor={colors.primary}
+            />
+          )}
           ListEmptyComponent={
             <EmptyState title="No installations" subtitle="Create a site installation to get started." />
           }

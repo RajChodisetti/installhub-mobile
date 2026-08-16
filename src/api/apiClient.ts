@@ -25,6 +25,7 @@ import {
   installationReportVersionFields,
   type ReportVersionSelection,
 } from '../services/reportVersioning';
+import { buildNotificationDeviceDeletePath } from '../services/pushNotificationRegistration';
 export type { CloudUser } from '../services/authSession';
 
 const ACCESS_TOKEN_KEY = 'ih_cloud_jwt';
@@ -481,6 +482,7 @@ async function request<T>(
   body?: unknown,
   retried = false,
   providedSession?: StoredCloudSessionSnapshot,
+  signal?: AbortSignal,
 ): Promise<T> {
   const session = providedSession ?? await captureStoredCloudSession();
   if (!session?.accessToken) {
@@ -497,6 +499,7 @@ async function request<T>(
   try {
     const response = await fetch(`${SYNC_API_URL}${path}`, {
       method,
+      signal,
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -514,6 +517,7 @@ async function request<T>(
           body,
           true,
           { ...session, accessToken: refresh.accessToken },
+          signal,
         );
       }
       if (refresh.status === 'offline') {
@@ -656,6 +660,26 @@ export interface InstallationLifecycleResponse {
   readiness: InstallationReadiness;
 }
 
+export interface ActiveTimeSessionInput {
+  revision: number;
+  activeMilliseconds: number;
+  startedAt: string;
+  lastActiveAt: string;
+  endedAt: string | null;
+}
+
+export interface ActiveTimeSessionResponse extends ActiveTimeSessionInput {
+  sessionId: string;
+  applied: boolean;
+}
+
+export interface NotificationDeviceInput {
+  expoPushToken: string;
+  platform: 'ios' | 'android';
+  projectId: string;
+  registrationGeneration: number;
+}
+
 export interface InstallHubPullResponse {
   installations: RemoteInstallationTree[];
   pulledAt: string;
@@ -716,6 +740,46 @@ export const apiClient = {
     `/v1/installhub/installations/${encodeURIComponent(installationId)}/reopen`,
     input,
   ),
+
+  putInstallationActiveTimeSession: (
+    installationId: string,
+    sessionId: string,
+    input: ActiveTimeSessionInput,
+  ) => request<ActiveTimeSessionResponse>(
+    'PUT',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/active-time/sessions/${
+      encodeURIComponent(sessionId)
+    }`,
+    input,
+  ),
+
+  putNotificationDevice: (
+    deviceId: string,
+    input: NotificationDeviceInput,
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(
+      'PUT',
+      `/v1/notifications/devices/${encodeURIComponent(deviceId)}`,
+      input,
+      false,
+      undefined,
+      signal,
+    ),
+
+  deleteNotificationDevice: (
+    deviceId: string,
+    registrationGeneration: number,
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(
+      'DELETE',
+      buildNotificationDeviceDeletePath(deviceId, registrationGeneration),
+      undefined,
+      false,
+      undefined,
+      signal,
+    ),
 
   checkPhoto: (identity: PhotoIdentity & { checksum: string }) =>
     request<{ exists: boolean; remoteUrl?: string; treeRevision?: number }>(

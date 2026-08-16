@@ -262,7 +262,9 @@ async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void>
 export const installationsRepo: InstallationsRepository = {
   async list() {
     await initStore();
-    return [...getStore().installations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return getStore().installations
+      .filter((installation) => installation.assigned_work_state !== 'inactive')
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   },
   async getById(id) {
     await initStore();

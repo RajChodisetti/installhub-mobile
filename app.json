@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tuvi.installhub",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "config": {
         "usesNonExemptEncryption": false
       },
@@ -27,6 +27,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.tuvi.installhub",
+      "versionCode": 2,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
@@ -72,6 +73,14 @@
       ],
       "expo-asset",
       "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-monochrome.png",
+          "color": "#26997A",
+          "defaultChannel": "scheduler"
+        }
+      ],
       "expo-background-task"
     ],
     "extra": {

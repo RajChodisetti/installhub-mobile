@@ -21,6 +21,8 @@ import {
   type CloudLoginSource,
 } from '../services/authSession';
 import { clearSiteAssetEditorDraftsForUser } from '../services/siteAssetEditorDraft';
+import { closeAuditWorkBeforeLogout } from '../services/auditWorkTrackingBridge';
+import { unregisterPushDeviceBeforeLogout } from '../services/pushNotifications';
 
 const THEME_KEY = 'installhub.theme';
 
@@ -151,6 +153,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    await closeAuditWorkBeforeLogout().catch(() => {});
+    await unregisterPushDeviceBeforeLogout().catch(() => {});
     if (user) await clearSiteAssetEditorDraftsForUser(user.id);
     setUser(null);
     await logoutFromCloud();

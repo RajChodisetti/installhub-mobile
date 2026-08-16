@@ -19,6 +19,10 @@ import type {
 import { createId, nowIso } from '../utils';
 import { enqueueThumbnailDownloads } from './cloudSyncRepository';
 import { runThumbnailDownloadWorker } from '../services/thumbnailCache';
+import {
+  resumeAuditWorkForInstallation,
+  suspendAuditWorkForInstallation,
+} from '../services/auditWorkTrackingBridge';
 import { remoteInstallationTreeRevision } from '../services/remoteInstallationRevision';
 import { copyName, nextCopyIndex } from './copyNaming';
 import {
@@ -33,6 +37,11 @@ import {
   remoteAttachmentCopyId,
   validateCanonicalRemoteTreeIds,
 } from '../services/remoteInstallationValidation';
+import {
+  materializedRecordId,
+  mergeAssignedInstallationServerState,
+  planAssignedInstallationPull,
+} from '../services/assignedWorkPolicy';
 
 export {
   assertUniqueRemoteIds,
@@ -348,11 +357,20 @@ export async function listRemoteInstallations(): Promise<RemoteInstallationSumma
   }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+type MaterializeOptions = {
+  tree?: RemoteInstallationTree;
+  assignedActorUserId?: string;
+  pulledAt?: string;
+};
+
 export async function importRemoteInstallationAsCopy(
   serverInstallationId: string,
+  options: MaterializeOptions = {},
 ): Promise<string> {
   await initStore();
-  const response = await apiClient.pull('1970-01-01T00:00:00.000Z', serverInstallationId);
+  const response = options.tree
+    ? { installations: [options.tree], pulledAt: options.pulledAt ?? nowIso() }
+    : await apiClient.pull('1970-01-01T00:00:00.000Z', serverInstallationId);
   const tree = response.installations[0];
   if (!tree) throw new Error('Installation is no longer available.');
   validateCanonicalRemoteTreeIds(tree);
@@ -363,14 +381,21 @@ export async function importRemoteInstallationAsCopy(
     tree.installation.recordVersionNumber ??
     tree.installation.record_version_number,
   );
-
   const source = tree.installation;
+  const completedFromRevisionValue =
+    source.completedFromRevision ?? source.completed_from_revision;
   assertRemoteInstallationIdentity(tree, serverInstallationId);
+  const isAssignedMaterialization = Boolean(options.assignedActorUserId);
   const existingCopies = getStore().installations.filter(
     (item) => item.import_source_server_id === serverInstallationId,
   );
-  const copyIndex = nextCopyIndex(existingCopies);
-  const installationId = createId('inst');
+  const copyIndex = isAssignedMaterialization ? undefined : nextCopyIndex(existingCopies);
+  const installationId = isAssignedMaterialization ? serverInstallationId : createId('inst');
+  const mappedId = (prefix: string, remoteId: string): string => materializedRecordId(
+    isAssignedMaterialization,
+    remoteId,
+    () => createId(prefix),
+  );
   const zoneIds = new Map<string, string>();
   const boardIds = new Map<string, string>();
   const siteAssetIds = new Map<string, string>();
@@ -379,63 +404,140 @@ export async function importRemoteInstallationAsCopy(
   const channelIds = new Map<string, string>();
   const assignmentIds = new Map<string, string>();
   const formIds = new Map<string, string>();
-  (tree.gridSupplies ?? []).forEach((grid) => gridIds.set(text(grid, 'id'), createId('grid')));
-  tree.zones.forEach((zone) => zoneIds.set(text(zone, 'id'), createId('zone')));
-  tree.electricalAssets.forEach((board) => boardIds.set(text(board, 'id'), createId('board')));
+  (tree.gridSupplies ?? []).forEach((grid) => {
+    const id = text(grid, 'id');
+    gridIds.set(id, mappedId('grid', id));
+  });
+  tree.zones.forEach((zone) => {
+    const id = text(zone, 'id');
+    zoneIds.set(id, mappedId('zone', id));
+  });
+  tree.electricalAssets.forEach((board) => {
+    const id = text(board, 'id');
+    boardIds.set(id, mappedId('board', id));
+  });
   if (!canonicalV2) {
     tree.electricalAssets.forEach((board) => {
       array<Record<string, unknown>>(board, 'meters').forEach((meter) => {
         const remoteId = text(meter, 'id');
-        if (!meterIds.has(remoteId)) meterIds.set(remoteId, createId('meter'));
+        if (!meterIds.has(remoteId)) meterIds.set(remoteId, mappedId('meter', remoteId));
       });
     });
   }
   (tree.meterDevices ?? []).forEach((meter) => {
     const remoteMeterId = text(meter, 'id');
-    if (!meterIds.has(remoteMeterId)) meterIds.set(remoteMeterId, createId('meter'));
+    if (!meterIds.has(remoteMeterId)) meterIds.set(remoteMeterId, mappedId('meter', remoteMeterId));
     array<Record<string, unknown>>(meter, 'channels').forEach((channel) => {
-      channelIds.set(text(channel, 'id'), createId('channel'));
+      const id = text(channel, 'id');
+      channelIds.set(id, mappedId('channel', id));
     });
   });
   (tree.measurementAssignments ?? []).forEach((assignment) => {
-    assignmentIds.set(text(assignment, 'id'), createId('assignment'));
+    const id = text(assignment, 'id');
+    assignmentIds.set(id, mappedId('assignment', id));
   });
-  tree.siteAssets.forEach((asset) => siteAssetIds.set(text(asset, 'id'), createId('asset')));
-  tree.formSubmissions.forEach((form) => formIds.set(text(form, 'id'), createId('form')));
+  tree.siteAssets.forEach((asset) => {
+    const id = text(asset, 'id');
+    siteAssetIds.set(id, mappedId('asset', id));
+  });
+  tree.formSubmissions.forEach((form) => {
+    const id = text(form, 'id');
+    formIds.set(id, mappedId('form', id));
+  });
   const photoUris = collectRemotePhotoUris(tree, canonicalV2);
-  const now = nowIso();
+  const now = isAssignedMaterialization ? response.pulledAt : nowIso();
 
-  const copiedSiteName = copyName(text(source, 'siteName', 'site_name'), copyIndex);
+  const sourceSiteName = text(source, 'siteName', 'site_name');
+  const copiedSiteName = isAssignedMaterialization
+    ? sourceSiteName
+    : copyName(sourceSiteName, copyIndex!);
   const sourceSiteCode = optionalText(source, 'siteCode', 'site_code');
+  const serverTreeRevision = Number(tree.treeRevision ?? source.treeRevision ?? source.tree_revision);
+  const assignedActorUserId = options.assignedActorUserId;
+  const createdByUserId = optionalText(source, 'createdByUserId', 'created_by_user_id');
+  const assignedInspectorUserId = optionalText(
+    source,
+    'assignedInspectorUserId',
+    'assigned_inspector_user_id',
+  );
+  const isExternalAssignment = Boolean(
+    assignedActorUserId
+    && assignedInspectorUserId === assignedActorUserId
+    && createdByUserId !== assignedActorUserId,
+  );
   const installation: Installation = {
     id: installationId,
+    created_by_user_id: createdByUserId,
+    assigned_inspector_user_id: assignedInspectorUserId,
+    assigned_work_state: isExternalAssignment ? 'active' : 'none',
+    assigned_work_actor_user_id: isExternalAssignment ? assignedActorUserId : undefined,
     client_name: text(source, 'clientName', 'client_name'),
     site_name: copiedSiteName,
     site_address: text(source, 'siteAddress', 'site_address'),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     audit_date: text(source, 'auditDate', 'audit_date'),
-    // A copied record has fresh local identity and no authoritative server pin.
-    status: text(source, 'status') === 'Completed' ? 'Draft' : 'Draft',
+    // Assigned work keeps the canonical server identity. Explicit cloud-copy
+    // imports remain fresh local Draft records.
+    status: isAssignedMaterialization
+      ? text(source, 'status') as Installation['status']
+      : 'Draft',
     tree_schema_version: 2,
-    tree_revision: 0,
-    external_key: `local:${installationId}`,
-    site_code: installationSiteCodeForNewCopy(sourceSiteCode, copiedSiteName),
+    tree_revision: isAssignedMaterialization && Number.isSafeInteger(serverTreeRevision)
+      ? serverTreeRevision
+      : 0,
+    ...(isAssignedMaterialization && Number.isSafeInteger(serverTreeRevision)
+      ? { server_tree_revision: serverTreeRevision }
+      : {}),
+    ...(isAssignedMaterialization && importSourceRecordVersionNumber !== undefined
+      ? { record_version_number: importSourceRecordVersionNumber }
+      : {}),
+    ...(isAssignedMaterialization && optionalText(source, 'completedAt', 'completed_at')
+      ? { completed_at: optionalText(source, 'completedAt', 'completed_at') }
+      : {}),
+    ...(isAssignedMaterialization
+      && completedFromRevisionValue !== null
+      && completedFromRevisionValue !== undefined
+      && completedFromRevisionValue !== ''
+      && Number.isSafeInteger(
+        Number(completedFromRevisionValue),
+      )
+      && Number(completedFromRevisionValue) >= 0
+      ? {
+          completed_from_revision: Number(completedFromRevisionValue),
+        }
+      : {}),
+    external_key: isAssignedMaterialization
+      ? optionalText(source, 'externalKey', 'external_key') ?? `server:${installationId}`
+      : `local:${installationId}`,
+    site_code: isAssignedMaterialization
+      ? sourceSiteCode
+      : installationSiteCodeForNewCopy(sourceSiteCode, copiedSiteName),
     timezone: optionalText(source, 'timezone'),
-    legacy_completed_unpinned: text(source, 'status') === 'Completed',
-    cloud_backup_enabled: false,
-    is_imported_copy: true,
-    import_source_server_id: serverInstallationId,
-    ...(importSourceRecordVersionNumber !== undefined
+    ...(isAssignedMaterialization
+      ? {}
+      : { legacy_completed_unpinned: text(source, 'status') === 'Completed' }),
+    cloud_backup_enabled: isAssignedMaterialization,
+    is_imported_copy: !isAssignedMaterialization,
+    ...(!isAssignedMaterialization ? { import_source_server_id: serverInstallationId } : {}),
+    ...(!isAssignedMaterialization && importSourceRecordVersionNumber !== undefined
       ? { import_source_record_version_number: importSourceRecordVersionNumber }
       : {}),
-    import_provenance_watermark: now,
-    import_source_tree_revision: remoteInstallationTreeRevision(tree),
-    copy_index: copyIndex,
-    thumbnail_status: photoUris.length ? 'pending' : 'ready',
-    thumbnail_total: photoUris.length,
+    ...(!isAssignedMaterialization
+      ? {
+          import_provenance_watermark: now,
+          import_source_tree_revision: remoteInstallationTreeRevision(tree),
+          copy_index: copyIndex,
+        }
+      : {}),
+    thumbnail_status: !isAssignedMaterialization && photoUris.length ? 'pending' : 'ready',
+    thumbnail_total: isAssignedMaterialization ? 0 : photoUris.length,
     thumbnail_ready: 0,
-    created_at: now,
-    updated_at: now,
+    created_at: isAssignedMaterialization
+      ? optionalText(source, 'createdAt', 'created_at') ?? now
+      : now,
+    updated_at: isAssignedMaterialization
+      ? optionalText(source, 'updatedAt', 'updated_at') ?? now
+      : now,
   };
   const zones: Zone[] = tree.zones.map((zone) => ({
     id: zoneIds.get(text(zone, 'id'))!,
@@ -507,7 +609,10 @@ export async function importRemoteInstallationAsCopy(
     meters: canonicalV2
       ? []
       : array<Record<string, unknown>>(board, 'meters').map(
-          (meter) => mapMeter(meter, meterIds.get(text(meter, 'id')) ?? createId('meter')),
+          (meter) => {
+            const remoteId = text(meter, 'id');
+            return mapMeter(meter, meterIds.get(remoteId) ?? mappedId('meter', remoteId));
+          },
         ),
     sub_circuits_description: optionalText(board, 'subCircuitsDescription', 'sub_circuits_description'),
     comments: optionalText(board, 'comments'),
@@ -686,7 +791,7 @@ export async function importRemoteInstallationAsCopy(
         return {
           id: canonicalV2
             ? channelIds.get(text(channel, 'id'))!
-            : channelIds.get(text(channel, 'id')) ?? createId('channel'),
+            : channelIds.get(text(channel, 'id')) ?? mappedId('channel', text(channel, 'id')),
           ordinal: canonicalV2
             ? channel.ordinal as number
             : Number(channel.ordinal ?? index + 1),
@@ -746,8 +851,10 @@ export async function importRemoteInstallationAsCopy(
     },
   );
   const formSubmissions: FormSubmission[] = tree.formSubmissions.map((form) => ({
-    id: canonicalV2 ? formIds.get(text(form, 'id'))! : formIds.get(text(form, 'id')) ?? createId('form'),
-    import_source_server_id: text(form, 'id'),
+    id: canonicalV2
+      ? formIds.get(text(form, 'id'))!
+      : formIds.get(text(form, 'id')) ?? mappedId('form', text(form, 'id')),
+    ...(!isAssignedMaterialization ? { import_source_server_id: text(form, 'id') } : {}),
     form_type: text(form, 'formType', 'form_type') as FormSubmission['form_type'],
     schema_version: Number(canonicalV2
       ? form.schemaVersion ?? form.schema_version
@@ -763,12 +870,14 @@ export async function importRemoteInstallationAsCopy(
     site_asset_id: siteAssetIds.get(text(form, 'siteAssetId', 'site_asset_id')),
     answers: (canonicalV2 ? form.answers : form.answers ?? {}) as FormSubmission['answers'],
     attachments: array<Record<string, unknown>>(form, 'attachments').map((attachment, index) => ({
-      id: remoteAttachmentCopyId(
-        installationId,
-        text(form, 'id'),
-        text(attachment, 'id'),
-        index,
-      ),
+      id: isAssignedMaterialization && text(attachment, 'id')
+        ? text(attachment, 'id')
+        : remoteAttachmentCopyId(
+            installationId,
+            text(form, 'id'),
+            text(attachment, 'id'),
+            index,
+          ),
       slot: text(attachment, 'slot'),
       uri: text(attachment, 'uri'),
       mime_type: canonicalV2
@@ -779,14 +888,19 @@ export async function importRemoteInstallationAsCopy(
         ? text(attachment, 'capturedAt', 'captured_at')
         : text(attachment, 'capturedAt', 'captured_at') || now,
     } satisfies FormAttachment)),
-    created_at: now,
-    updated_at: now,
+    created_at: isAssignedMaterialization
+      ? optionalText(form, 'createdAt', 'created_at') ?? now
+      : now,
+    updated_at: isAssignedMaterialization
+      ? optionalText(form, 'updatedAt', 'updated_at') ?? now
+      : now,
     completed_at: optionalText(form, 'completedAt', 'completed_at'),
     supersedes_id: formIds.get(text(form, 'supersedesId', 'supersedes_id')),
     historical_meter_removed: (form.historicalMeterRemoved ?? form.historical_meter_removed) as boolean,
   }));
 
   await updateStore((store) => {
+    if (store.installations.some((item) => item.id === installationId)) return;
     store.installations.unshift(installation);
     store.gridSupplies.push(...gridSupplies);
     store.zones.push(...zones);
@@ -795,8 +909,146 @@ export async function importRemoteInstallationAsCopy(
     store.meterDevices.push(...meterDevices);
     store.measurementAssignments.push(...measurementAssignments);
     store.formSubmissions.push(...formSubmissions);
+    if (isAssignedMaterialization) {
+      store.cloudSync.synced_at_by_installation[installationId] = response.pulledAt;
+      store.cloudSync.force_dirty_installation_ids = store.cloudSync.force_dirty_installation_ids
+        .filter((id) => id !== installationId);
+    }
   });
-  await enqueueThumbnailDownloads(installationId, photoUris);
-  void runThumbnailDownloadWorker();
+  if (!isAssignedMaterialization) {
+    await enqueueThumbnailDownloads(installationId, photoUris);
+    void runThumbnailDownloadWorker();
+  }
   return installationId;
+}
+
+/**
+ * Pulls the caller's complete accessible inventory and checks out owned or
+ * assigned Draft or Completed installations using their canonical server IDs.
+ * Losing a Draft assignment hides its local checkout but never deletes pending
+ * offline work; completed work remains visible as read-only history.
+ */
+export async function syncAssignedInstallations(
+  actorUserId: string,
+): Promise<{ hydrated: number; activeAssigned: number; hidden: number }> {
+  await initStore();
+  const response = await apiClient.pull('1970-01-01T00:00:00.000Z');
+  const previouslyActiveIds = getStore().installations.flatMap((installation) => (
+    installation.assigned_work_state === 'active'
+      && installation.assigned_work_actor_user_id === actorUserId
+      && installation.status === 'Draft'
+      ? [installation.id]
+      : []
+  ));
+  const plan = planAssignedInstallationPull(
+    actorUserId,
+    response.installations,
+    previouslyActiveIds,
+  );
+  plan.trees.forEach((tree) => validateCanonicalRemoteTreeIds(tree));
+  const activeIds = new Set(plan.activeAssignedIds);
+
+  const localBefore = new Map(getStore().installations.map((installation) => [
+    installation.id,
+    {
+      status: installation.status,
+      assignedWorkState: installation.assigned_work_state,
+    },
+  ]));
+  const suspendIds = new Set(plan.inactiveAssignedIds);
+  plan.trees.forEach((tree) => {
+    const id = text(tree.installation, 'id');
+    if (text(tree.installation, 'status') === 'Completed' && localBefore.has(id)) {
+      suspendIds.add(id);
+    }
+  });
+  const attemptedSuspendIds: string[] = [];
+
+  try {
+    for (const id of suspendIds) {
+      // The bridge installs its in-memory gate before awaiting persistence, so
+      // record each attempt first and unwind it if either suspension or the
+      // following durable store mutation fails.
+      attemptedSuspendIds.push(id);
+      await suspendAuditWorkForInstallation(id);
+    }
+
+    await updateStore((store) => {
+      plan.inactiveAssignedIds.forEach((id) => {
+        const installation = store.installations.find((item) => item.id === id);
+        if (
+          installation?.assigned_work_actor_user_id === actorUserId
+          && installation.assigned_work_state === 'active'
+          && installation.status === 'Draft'
+        ) installation.assigned_work_state = 'inactive';
+      });
+      plan.trees.forEach((tree) => {
+        const remote = tree.installation;
+        const id = text(remote, 'id');
+        const local = store.installations.find((item) => item.id === id);
+        if (!local) return;
+        const serverState = mergeAssignedInstallationServerState(local, tree);
+        const isAssigned = activeIds.has(id);
+        local.status = serverState.status;
+        local.created_by_user_id = optionalText(
+          remote,
+          'createdByUserId',
+          'created_by_user_id',
+        ) ?? local.created_by_user_id;
+        local.assigned_inspector_user_id = serverState.assignedInspectorUserId ?? undefined;
+        local.assigned_work_state = isAssigned ? 'active' : 'none';
+        local.assigned_work_actor_user_id = isAssigned ? actorUserId : undefined;
+        local.cloud_backup_enabled = true;
+        if (serverState.recordVersionNumber !== undefined) {
+          local.record_version_number = serverState.recordVersionNumber;
+        }
+        if (serverState.completedAt !== undefined) {
+          local.completed_at = serverState.completedAt;
+        }
+        if (serverState.completedFromRevision !== undefined) {
+          local.completed_from_revision = serverState.completedFromRevision;
+        }
+        if (serverState.status === 'Completed') {
+          local.pending_completion = undefined;
+          local.legacy_completed_unpinned = false;
+        }
+      });
+    });
+  } catch (error) {
+    for (const id of attemptedSuspendIds) {
+      const local = localBefore.get(id);
+      if (local?.status === 'Draft' && local.assignedWorkState !== 'inactive') {
+        await resumeAuditWorkForInstallation(id).catch(() => undefined);
+      }
+    }
+    throw error;
+  }
+
+  for (const tree of plan.trees) {
+    const id = text(tree.installation, 'id');
+    const local = localBefore.get(id);
+    const current = getStore().installations.find((item) => item.id === id);
+    if (
+      local?.assignedWorkState === 'inactive'
+      && current?.status === 'Draft'
+    ) await resumeAuditWorkForInstallation(id);
+  }
+
+  let hydrated = 0;
+  for (const tree of plan.trees) {
+    const installationId = text(tree.installation, 'id');
+    if (getStore().installations.some((item) => item.id === installationId)) continue;
+    await importRemoteInstallationAsCopy(installationId, {
+      tree,
+      assignedActorUserId: actorUserId,
+      pulledAt: response.pulledAt,
+    });
+    hydrated += 1;
+  }
+
+  return {
+    hydrated,
+    activeAssigned: plan.activeAssignedIds.length,
+    hidden: plan.inactiveAssignedIds.length,
+  };
 }

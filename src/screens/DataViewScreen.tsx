@@ -505,6 +505,7 @@ export function DataViewScreen({ navigation, route }: Props) {
         });
       } else if (context.meter && context.meterBoard) {
         navigation.navigate('MeterForm', {
+          installationId,
           boardId: context.meterBoard.id,
           meterId: context.meter.id,
         });

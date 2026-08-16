@@ -2,6 +2,8 @@ import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import { hasStoredCloudSession } from '../api/apiClient';
 import { runCloudBackup } from './syncService';
+import { getStore, initStore } from '../data/seed';
+import { syncActiveTimeSessions } from './activeTimeSync';
 
 const TASK_NAME = 'installhub-cloud-backup';
 
@@ -12,6 +14,10 @@ if (!TaskManager.isTaskDefined(TASK_NAME)) {
         return BackgroundTask.BackgroundTaskResult.Success;
       }
       const result = await runCloudBackup();
+      if (result.phase === 'done') {
+        await initStore();
+        await syncActiveTimeSessions(getStore().user.id);
+      }
       return result.phase === 'done'
         ? BackgroundTask.BackgroundTaskResult.Success
         : BackgroundTask.BackgroundTaskResult.Failed;

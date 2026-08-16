@@ -36,6 +36,10 @@ import {
   isValidZoneCode,
   ZONE_CODE_MAX_LENGTH,
 } from '../domain/namingV2';
+import {
+  resumeAuditWorkForInstallation,
+  suspendAuditWorkForInstallation,
+} from '../services/auditWorkTrackingBridge';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
@@ -120,6 +124,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   async function completeInstallation() {
     if (!item) return;
     let rejectionRecorded = false;
+    let trackingSuspended = false;
+    let completionAccepted = false;
     const recordRejection = (code: string) => {
       rejectionRecorded = true;
       void recordCompletionRejection(code);
@@ -197,10 +203,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         record_version_number: latest.record_version_number,
         pending_completion: pendingCompletion,
       });
+      await suspendAuditWorkForInstallation(installationId).catch(() => {});
+      trackingSuspended = true;
       const response = await apiClient.completeInstallation(installationId, {
         baseTreeRevision,
         idempotencyKey: pendingCompletion.idempotencyKey,
       });
+      completionAccepted = true;
       if (!response.completedAt || !response.recordVersionNumber) {
         recordRejection('AUDIT_METADATA_MISSING');
         throw new Error(
@@ -217,9 +226,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         pending_completion: undefined,
         legacy_completed_unpinned: false,
       });
+      await resumeAuditWorkForInstallation(installationId).catch(() => {});
       await refresh();
       Alert.alert('Installation completed', `Authoritative version ${response.recordVersionNumber ?? 'created'} is pinned.`);
     } catch (error) {
+      if (trackingSuspended && !completionAccepted) {
+        await resumeAuditWorkForInstallation(installationId).catch(() => {});
+      }
       if (!rejectionRecorded) {
         recordRejection(
           error instanceof ApiError ? `COMPLETION_HTTP_${error.status}` : 'COMPLETION_FAILED',
@@ -789,8 +802,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
               text: 'Delete local copy',
               style: 'destructive',
               onPress: async () => {
-                await installationsRepo.remove(installationId);
-                navigation.popToTop();
+                await suspendAuditWorkForInstallation(installationId).catch(() => {});
+                try {
+                  await installationsRepo.remove(installationId);
+                  navigation.popToTop();
+                } finally {
+                  await resumeAuditWorkForInstallation(installationId).catch(() => {});
+                }
               },
             },
             ],

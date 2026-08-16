@@ -132,7 +132,7 @@ function ChoiceRow({
 }
 
 export function FormEditorScreen({ navigation, route }: Props) {
-  const { formId } = route.params;
+  const { formId, installationId } = route.params;
   const { colors } = useTheme();
   const { triggerSync } = useSyncStatus();
   const [form, setForm] = useState<FormSubmission | null>(null);
@@ -197,6 +197,13 @@ export function FormEditorScreen({ navigation, route }: Props) {
     initialized.current = false;
     void (async () => {
       const item = await formsRepo.getById(formId);
+      if (item && item.installation_id !== installationId) {
+        if (active && mounted.current) {
+          Alert.alert('Form unavailable', 'This form does not belong to the selected installation.');
+          navigation.goBack();
+        }
+        return;
+      }
       const board = item?.board_id
         ? await electricalAssetsRepo.getById(item.board_id)
         : null;
@@ -219,7 +226,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
     return () => {
       active = false;
     };
-  }, [formId]);
+  }, [formId, installationId, navigation]);
 
   useEffect(() => {
     if (!initialized.current || !form || form.status === 'Completed') return;
@@ -836,7 +843,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
             style={{ marginTop: spacing.md }}
             onPress={() => {
               void formsRepo.cloneAmendment(form.id).then((draft) =>
-                navigation.replace('FormEditor', { formId: draft.id }),
+                navigation.replace('FormEditor', { formId: draft.id, installationId }),
               );
             }}
           />
@@ -874,6 +881,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
                   .includes(completed.form_type);
                 if (commissionsMeter && completed.board_id && completed.meter_id) {
                   navigation.replace('MeterForm', {
+                    installationId,
                     boardId: completed.board_id,
                     meterId: completed.meter_id,
                     finishChannelMapping: true,

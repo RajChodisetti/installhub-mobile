@@ -8,6 +8,10 @@ import type { Installation } from '../types';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import {
+  resumeAuditWorkForInstallation,
+  suspendAuditWorkForInstallation,
+} from '../services/auditWorkTrackingBridge';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationForm'>;
 
@@ -56,8 +60,13 @@ export function InstallationFormScreen({ navigation, route }: Props) {
                   text: 'Delete',
                   style: 'destructive',
                   onPress: async () => {
-                    await installationsRepo.remove(id);
-                    navigation.popToTop();
+                    await suspendAuditWorkForInstallation(id).catch(() => {});
+                    try {
+                      await installationsRepo.remove(id);
+                      navigation.popToTop();
+                    } finally {
+                      await resumeAuditWorkForInstallation(id).catch(() => {});
+                    }
                   },
                 },
               ]);

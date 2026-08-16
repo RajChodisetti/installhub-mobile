@@ -96,6 +96,7 @@ export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
     installations: (value.installations ?? []).map((installation) => ({
       ...installation,
       cloud_backup_enabled: installation.cloud_backup_enabled ?? false,
+      assigned_work_state: installation.assigned_work_state ?? 'none',
       // A completed legacy watermark proves a retained server copy existed.
       cloud_backup_retained:
         installation.cloud_backup_retained ??
