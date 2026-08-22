@@ -82,7 +82,17 @@ test('explicit newer server reopen returns a pinned completion to Draft', () => 
   };
 
   assert.equal(remoteTreeIsAuthoritativeReopen(local, reopened), true);
-  assert.deepEqual(mergeAssignedInstallationServerState(local, reopened), {
+  const reopenedState = mergeAssignedInstallationServerState(local, reopened);
+  assert.deepEqual({
+    status: reopenedState.status,
+    assignedInspectorUserId: reopenedState.assignedInspectorUserId,
+    recordVersionNumber: reopenedState.recordVersionNumber,
+    completionNotes: reopenedState.completionNotes,
+    authoritativeReopen: reopenedState.authoritativeReopen,
+    reopenedAt: reopenedState.reopenedAt,
+    reopenReason: reopenedState.reopenReason,
+    serverTreeRevision: reopenedState.serverTreeRevision,
+  }, {
     status: 'Draft',
     assignedInspectorUserId: null,
     recordVersionNumber: 3,
@@ -92,6 +102,12 @@ test('explicit newer server reopen returns a pinned completion to Draft', () => 
     reopenReason: 'Scheduler correction',
     serverTreeRevision: 9,
   });
+  assert.equal(reopenedState.refreshConflict, null);
+  assert.equal(reopenedState.serverMetadataBase?.site_name, 'Site');
+  assert.equal(
+    reopenedState.serverTreeFingerprint,
+    remoteInstallationWorkTreeFingerprint(reopened),
+  );
 
   assert.equal(remoteTreeIsAuthoritativeReopen({
     ...local,
@@ -606,13 +622,13 @@ test('remote completion metadata cannot advance the existing checkout CAS base',
     recordVersionNumber: 8,
   });
 
-  assert.deepEqual(result, {
-    status: 'Completed',
-    assignedInspectorUserId: 'field-1',
-    recordVersionNumber: 8,
-    completedAt: '2026-08-15T01:00:00.000Z',
-    completedFromRevision: 6,
-  });
+  assert.equal(result.status, 'Completed');
+  assert.equal(result.assignedInspectorUserId, 'field-1');
+  assert.equal(result.recordVersionNumber, 8);
+  assert.equal(result.completedAt, '2026-08-15T01:00:00.000Z');
+  assert.equal(result.completedFromRevision, 6);
+  assert.equal(result.refreshConflict?.remote_tree_changed, true);
+  assert.equal(result.refreshConflict?.remote_tree_revision, 7);
   assert.equal('siteName' in result, false);
   assert.equal('serverTreeRevision' in result, false);
   assert.equal(local.server_tree_revision, 4);

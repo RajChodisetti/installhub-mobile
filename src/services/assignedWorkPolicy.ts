@@ -589,7 +589,27 @@ export function mergeAssignedInstallationServerState(
     const storedBase = local.assigned_work_server_metadata_base;
     const storedTreeFingerprint = local.assigned_work_server_tree_fingerprint;
 
-    if (localBaseTreeRevision === incomingTreeRevision) {
+    if (authoritativeReopen) {
+      // A pinned Completed checkout is immutable locally. An explicit newer
+      // reopen therefore makes the returned server tree the authoritative
+      // Draft baseline, including scheduler-owned root metadata. Anchoring the
+      // fingerprint here keeps the reopened job usable without weakening the
+      // unknown-revision fence for ordinary Draft pulls.
+      const incoming = assignedWorkServerMetadataFromRemote(remote, current);
+      const metadataPatch: Partial<AssignedWorkServerMetadataSnapshot> = {};
+      for (const field of ASSIGNED_WORK_SERVER_METADATA_FIELDS) {
+        if (!sameMetadataValue(current[field], incoming[field])) {
+          Object.assign(metadataPatch, { [field]: incoming[field] });
+        }
+      }
+      metadataState = {
+        ...(Object.keys(metadataPatch).length ? { metadataPatch } : {}),
+        serverMetadataBase: incoming,
+        serverTreeRevision: incomingTreeRevision,
+        serverTreeFingerprint: incomingTreeFingerprint,
+        refreshConflict: null,
+      };
+    } else if (localBaseTreeRevision === incomingTreeRevision) {
       const incoming = assignedWorkServerMetadataFromRemote(
         remote,
         storedBase ?? current,

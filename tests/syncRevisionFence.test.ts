@@ -784,7 +784,7 @@ test('held reopen response cannot regress a newer same-actor server revision', (
   assert.match(reopen, /assertCurrent: actionLease!\.assertCurrent/);
 });
 
-test('held metadata response cannot follow a mutated live tree reference', async () => {
+test('held metadata response cannot commit after the source installation changes', async () => {
   const store = offlineCaptureStore();
   const installation = store.installations[0]!;
   installation.local_owner_user_id = 'actor-a';
@@ -809,9 +809,11 @@ test('held metadata response cannot follow a mutated live tree reference', async
     });
   })();
 
-  // The backup tree points at this exact installation object. Mutate only its
-  // revision while retaining the timestamp, so the watermark stays unchanged.
-  liveTree.installation.tree_revision = snapshot.localTreeRevision + 1;
+  // Backup trees are immutable snapshots. Mutate only the source record's
+  // revision while retaining the timestamp, so the watermark stays unchanged
+  // and the independent local-revision fence must reject the held response.
+  installation.tree_revision = snapshot.localTreeRevision + 1;
+  assert.equal(liveTree.installation.tree_revision, snapshot.localTreeRevision);
   assert.equal(
     buildInstallationBackupTree(store, installation).watermark,
     snapshot.treeWatermark,
