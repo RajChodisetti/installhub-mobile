@@ -1,59 +1,83 @@
-import { apiClient } from '../api/apiClient';
+import {
+  apiClient,
+  assertCurrentCloudSessionAuthority,
+  captureCloudSessionAuthority,
+  cloudSessionAuthoritiesMatch,
+  type CloudSessionAuthority,
+} from '../api/apiClient';
 import { getStore, initStore } from '../data/seed';
 import {
   getActiveTimeOutboxStore,
   type StoredActiveTimeSession,
 } from './activeTimeOutbox';
+import { dispatchAndAcknowledgeActiveTimeForAuthority } from './activeTimeDispatchFence';
+import {
+  activeTimeServerParentIsReady,
+  activeTimeSessionMayDeliverFromLocalState,
+} from './activeTimeDeliveryPolicy';
 
 interface ActorSyncState {
-  flight: Promise<void> | null;
+  authority: CloudSessionAuthority;
+  flight: Promise<void>;
   rerun: boolean;
 }
 
-const actorSyncStates = new Map<string, ActorSyncState>();
+let activeSyncState: ActorSyncState | null = null;
 
-function serverParentIsReady(installation: {
-  cloud_backup_enabled: boolean;
-  server_tree_revision?: number;
-  assigned_work_state?: 'none' | 'active' | 'inactive';
-}): boolean {
-  return installation.cloud_backup_enabled
-    && installation.assigned_work_state !== 'inactive'
-    && Number.isSafeInteger(installation.server_tree_revision)
-    && Number(installation.server_tree_revision) >= 0;
-}
-
-async function sessionMayDeliver(session: StoredActiveTimeSession): Promise<boolean> {
+async function sessionMayDeliver(
+  session: StoredActiveTimeSession,
+  authority: CloudSessionAuthority,
+): Promise<boolean> {
+  const actorUserId = authority.actorUserId;
+  assertCurrentCloudSessionAuthority(authority, actorUserId);
   await initStore();
-  const installation = getStore().installations.find(
-    (item) => item.id === session.installationId,
+  assertCurrentCloudSessionAuthority(authority, actorUserId);
+  return activeTimeSessionMayDeliverFromLocalState(
+    getStore(),
+    session,
+    actorUserId,
   );
-  if (installation) return serverParentIsReady(installation);
-  // Local deletion retains the Cloud Backup. A checkpoint that already saw a
-  // confirmed parent remains deliverable even after its local tree is removed.
-  return session.serverParentConfirmed;
 }
 
-async function refreshKnownServerParents(actorUserId: string): Promise<void> {
+async function refreshKnownServerParents(
+  authority: CloudSessionAuthority,
+): Promise<void> {
+  const actorUserId = authority.actorUserId;
+  assertCurrentCloudSessionAuthority(authority, actorUserId);
   await initStore();
+  assertCurrentCloudSessionAuthority(authority, actorUserId);
   const outbox = await getActiveTimeOutboxStore();
+  assertCurrentCloudSessionAuthority(authority, actorUserId);
   for (const installation of getStore().installations) {
+    assertCurrentCloudSessionAuthority(authority, actorUserId);
     await outbox.setServerParentConfirmed(
       actorUserId,
       installation.id,
-      serverParentIsReady(installation),
+      activeTimeServerParentIsReady(installation, actorUserId),
     );
+    assertCurrentCloudSessionAuthority(authority, actorUserId);
   }
 }
 
-async function executeActiveTimeSync(actorUserId: string): Promise<void> {
-  await refreshKnownServerParents(actorUserId);
+async function executeActiveTimeSync(authority: CloudSessionAuthority): Promise<void> {
+  const actorUserId = authority.actorUserId;
+  const assertCurrent = () => {
+    assertCurrentCloudSessionAuthority(authority, actorUserId);
+  };
+  assertCurrent();
+  await refreshKnownServerParents(authority);
+  assertCurrent();
   const outbox = await getActiveTimeOutboxStore();
+  assertCurrent();
   const pending = await outbox.pending(actorUserId);
+  assertCurrent();
   for (const session of pending) {
-    if (!await sessionMayDeliver(session)) continue;
-    try {
-      const response = await apiClient.putInstallationActiveTimeSession(
+    assertCurrent();
+    if (!await sessionMayDeliver(session, authority)) continue;
+    assertCurrent();
+    await dispatchAndAcknowledgeActiveTimeForAuthority(
+      assertCurrent,
+      () => apiClient.putInstallationActiveTimeSession(
         session.installationId,
         session.sessionId,
         {
@@ -63,8 +87,9 @@ async function executeActiveTimeSync(actorUserId: string): Promise<void> {
           lastActiveAt: session.lastActiveAt,
           endedAt: session.endedAt,
         },
-      );
-      if (
+        authority,
+      ),
+      (response) => !(
         response.sessionId !== session.sessionId
         || response.startedAt !== session.startedAt
         || response.revision < session.revision
@@ -77,43 +102,62 @@ async function executeActiveTimeSync(actorUserId: string): Promise<void> {
             || response.endedAt !== session.endedAt
           )
         )
-      ) continue;
-      await outbox.acknowledge(
+      ),
+      (response, dispatchAuthority) => outbox.acknowledge(
         actorUserId,
         session.sessionId,
         session.revision,
         response.revision,
-      );
-    } catch {
-      // Network/auth failures, a missing parent (404), and lifecycle conflicts
-      // all remain durable. A later Cloud Backup/foreground pass retries them.
-    }
+        dispatchAuthority,
+      ),
+    );
   }
 }
 
-export function syncActiveTimeSessions(actorUserId: string): Promise<void> {
-  if (!actorUserId) return Promise.resolve();
-  const existing = actorSyncStates.get(actorUserId);
-  if (existing?.flight) {
-    existing.rerun = true;
-    return existing.flight;
+async function runActiveTimeSyncAuthority(
+  authority: CloudSessionAuthority,
+): Promise<void> {
+  const existing = activeSyncState;
+  if (existing) {
+    if (cloudSessionAuthoritiesMatch(existing.authority, authority)) {
+      existing.rerun = true;
+      return existing.flight;
+    }
+    await existing.flight.catch(() => undefined);
+    assertCurrentCloudSessionAuthority(authority, authority.actorUserId);
+    return runActiveTimeSyncAuthority(authority);
   }
 
-  const state: ActorSyncState = { flight: null, rerun: false };
+  const state: ActorSyncState = {
+    authority,
+    flight: Promise.resolve(),
+    rerun: false,
+  };
   const operation = (async () => {
     do {
       state.rerun = false;
-      try {
-        await executeActiveTimeSync(actorUserId);
-      } catch {
-        // Storage initialization and queue reads are also retryable. Tracking
-        // delivery must never surface as an unhandled app-level failure.
-      }
+      await executeActiveTimeSync(authority);
     } while (state.rerun);
   })();
   state.flight = operation;
-  actorSyncStates.set(actorUserId, state);
+  activeSyncState = state;
   return operation.finally(() => {
-    if (actorSyncStates.get(actorUserId) === state) actorSyncStates.delete(actorUserId);
+    if (activeSyncState === state) activeSyncState = null;
   });
+}
+
+export async function syncActiveTimeSessions(
+  actorUserId: string,
+  providedAuthority?: CloudSessionAuthority,
+): Promise<void> {
+  if (!actorUserId) return;
+  try {
+    const authority = providedAuthority ?? await captureCloudSessionAuthority();
+    if (!authority) return;
+    assertCurrentCloudSessionAuthority(authority, actorUserId);
+    await runActiveTimeSyncAuthority(authority);
+  } catch {
+    // Storage, network, and exact-session failures remain durable. Tracking
+    // delivery never surfaces as an unhandled app-level failure.
+  }
 }

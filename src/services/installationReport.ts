@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import { createFormPdf } from './formReport';
 import { FORM_REPORT_THEME as theme } from './formReportTheme';
+import { buildCompletionNotesSummaryHtml } from './installationReportNotes';
 
 const MIN_VALID_PDF_BYTES = 5 * 1024;
 
@@ -57,6 +58,9 @@ export function buildInstallationSummaryHtml(input: {
   const meters = boards.flatMap((board) =>
     board.meters.map((meter) => ({ board, meter })),
   );
+  const completionNotesSection = buildCompletionNotesSummaryHtml(
+    installation.status === 'Completed' ? installation.completion_notes : null,
+  );
   const rows = (
     values: string[],
     empty: string,
@@ -90,6 +94,8 @@ export function buildInstallationSummaryHtml(input: {
     .stat-value { color: ${theme.navy}; font-size: 16pt; font-weight: 900; }
     .stat-label { color: ${theme.slate}; font-size: 7pt; font-weight: 800; text-transform: uppercase; }
     h2 { margin: 14px 0 0; padding: 7px 11px; background: ${theme.navy}; color: white; font-size: 8.5pt; letter-spacing: .08em; text-transform: uppercase; break-after: avoid; }
+    .completion-notes { break-inside: avoid; margin-bottom: 15px; }
+    .completion-notes p { border: 1px solid ${theme.border}; background: ${theme.surfaceMuted}; margin: 0; padding: 9px 11px; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 13px; }
     th, td { border: 1px solid ${theme.border}; padding: 6px 8px; text-align: left; vertical-align: top; }
     th { color: ${theme.slate}; background: ${theme.surfaceMuted}; font-size: 7pt; text-transform: uppercase; letter-spacing: .04em; }
@@ -124,6 +130,7 @@ export function buildInstallationSummaryHtml(input: {
     <div class="stat"><div class="stat-value">${meters.length}</div><div class="stat-label">Meters</div></div>
     <div class="stat"><div class="stat-value">${completedForms.length}</div><div class="stat-label">Forms</div></div>
   </div>
+  ${completionNotesSection}
   <h2>Zones</h2>
   <table><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>${rows(
     zones.map((zone) => `<tr><td>${escapeHtml(zone.zone_name)}</td><td>${escapeHtml(zone.zone_description)}</td></tr>`),

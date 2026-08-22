@@ -17,6 +17,14 @@ import {
 import { Button, Card, LoadingState, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import type { RootStackParamList } from '../navigation/types';
+import {
+  captureAuthenticatedCloudActionLease,
+  type AuthenticatedCloudActionLease,
+} from '../services/authenticatedCloudAction';
+import {
+  applyLeasedCloudActionState,
+  runLeasedCloudActionStep,
+} from '../services/cloudActionLease';
 import { radii, spacing, typography } from '../theme';
 import {
   isOrphanedSourceUser,
@@ -86,22 +94,42 @@ export function InstallationAccessScreen({ route }: Props) {
   const unchanged = selectedUserId === (access?.assignedInspectorUserId ?? null);
 
   const save = async () => {
+    const actionLeasePromise = captureAuthenticatedCloudActionLease();
+    const requestedAssignedInspectorUserId = selectedUserId;
+    let actionLease: AuthenticatedCloudActionLease | null = null;
     setSaving(true);
     try {
-      const updated = await apiClient.setInstallationAccess(
-        installationId,
-        selectedUserId,
+      actionLease = await actionLeasePromise;
+      const updated = await runLeasedCloudActionStep(
+        actionLease,
+        () => apiClient.setInstallationAccess(
+          installationId,
+          requestedAssignedInspectorUserId,
+          actionLease!.cloudAuthority,
+        ),
       );
-      setAccess(updated);
-      setSelectedUserId(updated.assignedInspectorUserId);
-      Alert.alert(
-        'Access updated',
-        updated.assignedInspector
-          ? `${userLabel(updated.assignedInspector)} can now see and import this cloud backup.`
-          : 'This cloud backup is no longer assigned to another user.',
-      );
+      applyLeasedCloudActionState(actionLease, () => {
+        setAccess(updated);
+        setSelectedUserId(updated.assignedInspectorUserId);
+        Alert.alert(
+          'Access updated',
+          updated.assignedInspector
+            ? `${userLabel(updated.assignedInspector)} can now see and import this cloud backup.`
+            : 'This cloud backup is no longer assigned to another user.',
+        );
+      });
     } catch (error) {
-      Alert.alert('Could not update access', cloudConnectionErrorMessage(error));
+      let canReport = true;
+      if (actionLease) {
+        try {
+          actionLease.assertCurrent();
+        } catch {
+          canReport = false;
+        }
+      }
+      if (canReport) {
+        Alert.alert('Could not update access', cloudConnectionErrorMessage(error));
+      }
     } finally {
       setSaving(false);
     }

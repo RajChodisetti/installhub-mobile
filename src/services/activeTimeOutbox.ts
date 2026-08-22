@@ -34,6 +34,7 @@ export interface ActiveTimeOutboxStore {
     sessionId: string,
     sentRevision: number,
     serverRevision: number,
+    assertCurrent?: () => void,
   ): Promise<void>;
   read(): Promise<ActiveTimeOutboxDocument>;
 }
@@ -199,9 +200,11 @@ export function createActiveTimeOutboxStore(
       });
     },
 
-    acknowledge(actorUserId, sessionId, sentRevision, serverRevision) {
+    acknowledge(actorUserId, sessionId, sentRevision, serverRevision, assertCurrent) {
       return run(async () => {
+        assertCurrent?.();
         const document = await readWithinOperation();
+        assertCurrent?.();
         const index = document.sessions.findIndex((session) => (
           session.actorUserId === actorUserId && session.sessionId === sessionId
         ));
@@ -217,6 +220,7 @@ export function createActiveTimeOutboxStore(
         if (current.endedAt && current.acknowledgedRevision >= current.revision) {
           document.sessions.splice(index, 1);
         }
+        assertCurrent?.();
         await writeWithinOperation(document);
       });
     },

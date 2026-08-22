@@ -356,14 +356,38 @@ export interface User {
   source_state?: UserSourceState;
 }
 
+export interface AssignedWorkPrestartAcknowledgement {
+  actor_user_id: string;
+  assigned_job_summary_sha256: string;
+  acknowledged_at: string;
+}
+
+/** Local-only scheduler summary captured independently from the editable installation tree. */
+export interface AssignedWorkJobSummarySnapshot {
+  actor_user_id: string;
+  assigned_inspector_user_id: string;
+  client_name: string;
+  site_name: string;
+  site_address: string;
+  audit_date: string;
+  inspector_name: string;
+  pulled_at: string;
+}
+
 export interface Installation {
   id: string;
+  /** Local-only durable owner used to fence shared-device data between logins. */
+  local_owner_user_id?: string;
   /** Server ownership metadata used to separate local work from assigned work. */
   created_by_user_id?: string;
   assigned_inspector_user_id?: string;
   /** Local visibility tombstone; never included in canonical backup payloads. */
   assigned_work_state?: 'none' | 'active' | 'inactive';
   assigned_work_actor_user_id?: string;
+  /** Last scheduler summary pulled for this assigned actor; excluded from canonical backup payloads. */
+  assigned_work_job_summary?: AssignedWorkJobSummarySnapshot;
+  /** Local-only acknowledgement for the current assigned actor and pulled summary. */
+  assigned_work_prestart_acknowledgement?: AssignedWorkPrestartAcknowledgement;
   client_name: string;
   site_name: string;
   site_address: string;
@@ -389,14 +413,22 @@ export interface Installation {
   display_code_zone_sequences?: Record<string, number>;
   completed_at?: string;
   completed_from_revision?: number;
+  /** Optional technician note captured by the authoritative completion action. */
+  completion_notes?: string | null;
   reopened_at?: string;
   reopen_reason?: string;
   /** Preserves evidence that a schema-v1 client had marked this locally complete. */
   legacy_completed_unpinned?: boolean;
   pending_completion?: {
     baseTreeRevision: number;
+    /** Exact local mutation revision validated after backup/readiness. */
+    localTreeRevision?: number;
+    /** Exact whole-tree watermark validated inside the serialized dispatch fence. */
+    treeWatermark?: string;
     idempotencyKey: string;
     createdAt: string;
+    /** Exact normalized value replayed with the same completion idempotency key. */
+    completionNotes?: string | null;
   };
   backup_conflict?: BackupConflictState;
   /** Generated display codes changed by the server during the latest sync. */
@@ -610,6 +642,39 @@ export interface SiteAssetEditorDraftRecord {
   checksum: string;
 }
 
+/**
+ * Local-only, inert snapshot retained when a canonical assigned checkout is
+ * reassigned to another actor on the same device. Records in this envelope are
+ * excluded from normal repositories and cloud dispatch, but remain available
+ * for actor-scoped recovery/support without colliding with the clean canonical
+ * checkout materialized for the replacement actor.
+ */
+export interface AssignedWorkRecoveryCheckout {
+  version: 1;
+  id: string;
+  actor_user_id: string;
+  replacement_actor_user_id: string;
+  canonical_installation_id: string;
+  quarantined_at: string;
+  installation: Installation;
+  gridSupplies: GridSupply[];
+  zones: Zone[];
+  electricalAssets: ElectricalAsset[];
+  siteAssets: SiteAsset[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
+  formSubmissions: FormSubmission[];
+  siteAssetEditorDrafts: SiteAssetEditorDraftRecord[];
+  cloudSync: {
+    synced_at?: string;
+    force_dirty: boolean;
+    pending_complete_attempt?: PendingCompleteBackupAttempt;
+    conflicted_complete_attempt?: ConflictedCompleteBackupAttempt;
+    upload_queue: CloudUploadQueueItem[];
+    thumbnail_queue: ThumbnailDownloadQueueItem[];
+  };
+}
+
 export interface AppDataStore {
   schemaVersion?: 3;
   user: User;
@@ -623,6 +688,8 @@ export interface AppDataStore {
   formSubmissions: FormSubmission[];
   /** Encrypted, local-only recovery state; never included in canonical API trees. */
   siteAssetEditorDrafts?: SiteAssetEditorDraftRecord[];
+  /** Actor-owned reassignment recovery snapshots; never included in API trees. */
+  assignedWorkRecoveryCheckouts?: AssignedWorkRecoveryCheckout[];
   cloudSync: CloudSyncState;
 }
 

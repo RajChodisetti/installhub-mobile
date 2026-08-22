@@ -1,6 +1,24 @@
+import type {
+  AuditWorkResumeAuthority,
+  AuditWorkSuspensionReason,
+  AuditWorkSuspensionToken,
+} from './auditWorkTrackingResume';
+
 interface AuditWorkTrackingRuntime {
-  suspendInstallation(installationId: string): Promise<void>;
-  resumeInstallation(installationId: string): Promise<void>;
+  suspendInstallation(
+    installationId: string,
+    authority?: AuditWorkResumeAuthority,
+    reason?: AuditWorkSuspensionReason,
+  ): Promise<AuditWorkSuspensionToken | null>;
+  resumeInstallation(
+    target: string | AuditWorkSuspensionToken,
+    authority?: AuditWorkResumeAuthority,
+  ): Promise<boolean>;
+  resumeInstallationReasons(
+    installationId: string,
+    reasons: ReadonlySet<AuditWorkSuspensionReason>,
+    authority: AuditWorkResumeAuthority,
+  ): Promise<number>;
   closeBeforeLogout(): Promise<void>;
 }
 
@@ -15,12 +33,29 @@ export function registerAuditWorkTrackingRuntime(
   };
 }
 
-export function suspendAuditWorkForInstallation(installationId: string): Promise<void> {
-  return runtime?.suspendInstallation(installationId) ?? Promise.resolve();
+export function suspendAuditWorkForInstallation(
+  installationId: string,
+  authority?: AuditWorkResumeAuthority,
+  reason?: AuditWorkSuspensionReason,
+): Promise<AuditWorkSuspensionToken | null> {
+  return runtime?.suspendInstallation(installationId, authority, reason)
+    ?? Promise.resolve(null);
 }
 
-export function resumeAuditWorkForInstallation(installationId: string): Promise<void> {
-  return runtime?.resumeInstallation(installationId) ?? Promise.resolve();
+export function resumeAuditWorkSuspensionsForInstallationReasons(
+  installationId: string,
+  reasons: ReadonlySet<AuditWorkSuspensionReason>,
+  authority: AuditWorkResumeAuthority,
+): Promise<number> {
+  return runtime?.resumeInstallationReasons(installationId, reasons, authority)
+    ?? Promise.resolve(0);
+}
+
+export function resumeAuditWorkForInstallation(
+  target: string | AuditWorkSuspensionToken,
+  authority?: AuditWorkResumeAuthority,
+): Promise<boolean> {
+  return runtime?.resumeInstallation(target, authority) ?? Promise.resolve(false);
 }
 
 export function closeAuditWorkBeforeLogout(): Promise<void> {

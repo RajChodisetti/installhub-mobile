@@ -1,4 +1,10 @@
-import { apiClient, type RemoteInstallationTree } from '../api/apiClient';
+import {
+  apiClient,
+  assertCurrentCloudSessionAuthority,
+  captureCloudSessionAuthority,
+  type CloudSessionAuthority,
+  type RemoteInstallationTree,
+} from '../api/apiClient';
 import { getStore, initStore, updateStore } from '../data/seed';
 import type {
   DisplayCode,
@@ -19,10 +25,13 @@ import type {
 import { createId, nowIso } from '../utils';
 import { enqueueThumbnailDownloads } from './cloudSyncRepository';
 import { runThumbnailDownloadWorker } from '../services/thumbnailCache';
+import { bindAuthenticatedCloudActionLease } from '../services/authenticatedCloudAction';
 import {
+  resumeAuditWorkSuspensionsForInstallationReasons,
   resumeAuditWorkForInstallation,
   suspendAuditWorkForInstallation,
 } from '../services/auditWorkTrackingBridge';
+import type { AuditWorkSuspensionReason } from '../services/auditWorkTrackingResume';
 import { remoteInstallationTreeRevision } from '../services/remoteInstallationRevision';
 import { copyName, nextCopyIndex } from './copyNaming';
 import {
@@ -38,10 +47,28 @@ import {
   validateCanonicalRemoteTreeIds,
 } from '../services/remoteInstallationValidation';
 import {
+  activeAssignedWorkCheckoutIds,
+  applyAssignedDraftLifecycleResolution,
+  assignedWorkSuspensionReasonsResolvedAfterPull,
+  assignedWorkCheckoutBelongsToDifferentActor,
+  assignedWorkTrackingShouldResumeAfterPull,
+  importedCopiesForActor,
   materializedRecordId,
   mergeAssignedInstallationServerState,
   planAssignedInstallationPull,
+  crossActorAssignedCheckoutConflictIds,
 } from '../services/assignedWorkPolicy';
+import { quarantineAssignedWorkCheckout } from '../services/assignedWorkRecovery';
+import {
+  createAssignedWorkJobSummarySnapshot,
+  reconcileAssignedWorkPrestartAcknowledgement,
+} from '../services/assignedWorkPrestart';
+import {
+  actorForCurrentAssignedWorkAuthority,
+  assertCurrentAssignedWorkAuthority,
+  captureAssignedWorkMutationAuthority,
+  type AssignedWorkMutationAuthority,
+} from '../services/assignedWorkMutationGuard';
 
 export {
   assertUniqueRemoteIds,
@@ -90,6 +117,30 @@ const objectRecord = (
     ? value as Record<string, unknown>
     : undefined;
 };
+
+function assignedWorkJobSummaryFromPull(
+  source: Record<string, unknown>,
+  actorUserId: string,
+  pulledAt: string,
+) {
+  const assignedInspectorUserId = optionalText(
+    source,
+    'assignedInspectorUserId',
+    'assigned_inspector_user_id',
+  );
+  if (!assignedInspectorUserId) {
+    throw new Error('Assigned installation is missing its assignee identity.');
+  }
+  return createAssignedWorkJobSummarySnapshot({
+    actor_user_id: actorUserId,
+    assigned_inspector_user_id: assignedInspectorUserId,
+    client_name: text(source, 'clientName', 'client_name'),
+    site_name: text(source, 'siteName', 'site_name'),
+    site_address: text(source, 'siteAddress', 'site_address'),
+    audit_date: text(source, 'auditDate', 'audit_date'),
+    inspector_name: text(source, 'inspectorName', 'inspector_name'),
+  }, pulledAt);
+}
 
 function mapDisplayCode(
   source: Record<string, unknown>,
@@ -328,9 +379,31 @@ function collectRemotePhotoUris(
 }
 
 export async function listRemoteInstallations(): Promise<RemoteInstallationSummary[]> {
+  const authority = captureAssignedWorkMutationAuthority();
+  const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
+  if (!actorUserId) {
+    throw new Error('Sign in again before browsing cloud installations.');
+  }
+  const cloudAuthority = await captureCloudSessionAuthority();
+  if (!cloudAuthority) {
+    throw new Error('Cloud Backup is not connected.');
+  }
+  const assertCurrentSession = () => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    assertCurrentCloudSessionAuthority(cloudAuthority, actorUserId);
+  };
+  assertCurrentSession();
   await initStore();
-  const localInstallations = getStore().installations;
-  const result = await apiClient.pull('1970-01-01T00:00:00.000Z');
+  assertCurrentSession();
+  const localInstallations = getStore().installations.filter(
+    (item) => item.local_owner_user_id === actorUserId,
+  );
+  const result = await apiClient.pull(
+    '1970-01-01T00:00:00.000Z',
+    undefined,
+    cloudAuthority,
+  );
+  assertCurrentSession();
   return result.installations.map(({ installation }) => {
     const id = text(installation, 'id');
     const copies = localInstallations.filter(
@@ -360,6 +433,8 @@ export async function listRemoteInstallations(): Promise<RemoteInstallationSumma
 type MaterializeOptions = {
   tree?: RemoteInstallationTree;
   assignedActorUserId?: string;
+  assignedWorkAuthority?: AssignedWorkMutationAuthority;
+  cloudAuthority?: CloudSessionAuthority;
   pulledAt?: string;
 };
 
@@ -367,10 +442,38 @@ export async function importRemoteInstallationAsCopy(
   serverInstallationId: string,
   options: MaterializeOptions = {},
 ): Promise<string> {
+  const materializationAuthority = options.assignedWorkAuthority
+    ?? captureAssignedWorkMutationAuthority();
+  const materializationActorUserId = options.assignedActorUserId
+    ?? actorForCurrentAssignedWorkAuthority(materializationAuthority);
+  const materializationCloudAuthority = options.cloudAuthority
+    ?? await captureCloudSessionAuthority();
+  const assertAssignedMaterializationSession = () => {
+    if (!materializationActorUserId) {
+      throw new Error('Cloud materialization requires an authenticated local owner.');
+    }
+    if (!materializationCloudAuthority) {
+      throw new Error('Cloud materialization requires an authenticated cloud session.');
+    }
+    assertCurrentAssignedWorkAuthority(
+      materializationAuthority,
+      materializationActorUserId,
+    );
+    assertCurrentCloudSessionAuthority(
+      materializationCloudAuthority,
+      materializationActorUserId,
+    );
+  };
   await initStore();
+  assertAssignedMaterializationSession();
   const response = options.tree
     ? { installations: [options.tree], pulledAt: options.pulledAt ?? nowIso() }
-    : await apiClient.pull('1970-01-01T00:00:00.000Z', serverInstallationId);
+    : await apiClient.pull(
+        '1970-01-01T00:00:00.000Z',
+        serverInstallationId,
+        materializationCloudAuthority!,
+      );
+  assertAssignedMaterializationSession();
   const tree = response.installations[0];
   if (!tree) throw new Error('Installation is no longer available.');
   validateCanonicalRemoteTreeIds(tree);
@@ -384,10 +487,17 @@ export async function importRemoteInstallationAsCopy(
   const source = tree.installation;
   const completedFromRevisionValue =
     source.completedFromRevision ?? source.completed_from_revision;
+  const sourceCompletionNotes = optionalText(
+    source,
+    'completionNotes',
+    'completion_notes',
+  );
   assertRemoteInstallationIdentity(tree, serverInstallationId);
   const isAssignedMaterialization = Boolean(options.assignedActorUserId);
-  const existingCopies = getStore().installations.filter(
-    (item) => item.import_source_server_id === serverInstallationId,
+  const existingCopies = importedCopiesForActor(
+    getStore().installations,
+    serverInstallationId,
+    materializationActorUserId!,
   );
   const copyIndex = isAssignedMaterialization ? undefined : nextCopyIndex(existingCopies);
   const installationId = isAssignedMaterialization ? serverInstallationId : createId('inst');
@@ -467,10 +577,20 @@ export async function importRemoteInstallationAsCopy(
   );
   const installation: Installation = {
     id: installationId,
+    local_owner_user_id: materializationActorUserId ?? undefined,
     created_by_user_id: createdByUserId,
     assigned_inspector_user_id: assignedInspectorUserId,
     assigned_work_state: isExternalAssignment ? 'active' : 'none',
     assigned_work_actor_user_id: isExternalAssignment ? assignedActorUserId : undefined,
+    ...(isExternalAssignment
+      ? {
+          assigned_work_job_summary: assignedWorkJobSummaryFromPull(
+            source,
+            assignedActorUserId!,
+            response.pulledAt,
+          ),
+        }
+      : {}),
     client_name: text(source, 'clientName', 'client_name'),
     site_name: copiedSiteName,
     site_address: text(source, 'siteAddress', 'site_address'),
@@ -493,6 +613,9 @@ export async function importRemoteInstallationAsCopy(
       : {}),
     ...(isAssignedMaterialization && optionalText(source, 'completedAt', 'completed_at')
       ? { completed_at: optionalText(source, 'completedAt', 'completed_at') }
+      : {}),
+    ...(isAssignedMaterialization && sourceCompletionNotes
+      ? { completion_notes: sourceCompletionNotes }
       : {}),
     ...(isAssignedMaterialization
       && completedFromRevisionValue !== null
@@ -900,7 +1023,23 @@ export async function importRemoteInstallationAsCopy(
   }));
 
   await updateStore((store) => {
-    if (store.installations.some((item) => item.id === installationId)) return;
+    assertAssignedMaterializationSession();
+    const existing = store.installations.find((item) => item.id === installationId);
+    if (existing) {
+      if (
+        !assignedActorUserId
+        || !assignedWorkCheckoutBelongsToDifferentActor(
+          existing,
+          assignedActorUserId,
+        )
+      ) return;
+      quarantineAssignedWorkCheckout(
+        store,
+        installationId,
+        assignedActorUserId,
+        { quarantinedAt: response.pulledAt },
+      );
+    }
     store.installations.unshift(installation);
     store.gridSupplies.push(...gridSupplies);
     store.zones.push(...zones);
@@ -916,8 +1055,20 @@ export async function importRemoteInstallationAsCopy(
     }
   });
   if (!isAssignedMaterialization) {
-    await enqueueThumbnailDownloads(installationId, photoUris);
-    void runThumbnailDownloadWorker();
+    assertAssignedMaterializationSession();
+    const thumbnailWorkerLease = bindAuthenticatedCloudActionLease(
+      materializationActorUserId!,
+      materializationAuthority,
+      materializationCloudAuthority!,
+    );
+    await enqueueThumbnailDownloads(
+      installationId,
+      photoUris,
+      thumbnailWorkerLease.actorUserId,
+      thumbnailWorkerLease.processAuthority,
+    );
+    thumbnailWorkerLease.assertCurrent();
+    void runThumbnailDownloadWorker(thumbnailWorkerLease).catch(() => {});
   }
   return installationId;
 }
@@ -930,16 +1081,37 @@ export async function importRemoteInstallationAsCopy(
  */
 export async function syncAssignedInstallations(
   actorUserId: string,
+  cloudAuthority: CloudSessionAuthority,
 ): Promise<{ hydrated: number; activeAssigned: number; hidden: number }> {
+  const authority = captureAssignedWorkMutationAuthority();
+  const assertCurrentSession = () => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    assertCurrentCloudSessionAuthority(cloudAuthority, actorUserId);
+  };
+  const trackerResumeAuthority = {
+    actorUserId,
+    isCurrent: () => {
+      try {
+        assertCurrentSession();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+  assertCurrentSession();
   await initStore();
-  const response = await apiClient.pull('1970-01-01T00:00:00.000Z');
-  const previouslyActiveIds = getStore().installations.flatMap((installation) => (
-    installation.assigned_work_state === 'active'
-      && installation.assigned_work_actor_user_id === actorUserId
-      && installation.status === 'Draft'
-      ? [installation.id]
-      : []
-  ));
+  assertCurrentSession();
+  const response = await apiClient.pull(
+    '1970-01-01T00:00:00.000Z',
+    undefined,
+    cloudAuthority,
+  );
+  assertCurrentSession();
+  const previouslyActiveIds = activeAssignedWorkCheckoutIds(
+    getStore().installations,
+    actorUserId,
+  );
   const plan = planAssignedInstallationPull(
     actorUserId,
     response.installations,
@@ -947,6 +1119,11 @@ export async function syncAssignedInstallations(
   );
   plan.trees.forEach((tree) => validateCanonicalRemoteTreeIds(tree));
   const activeIds = new Set(plan.activeAssignedIds);
+  const crossActorConflictIds = crossActorAssignedCheckoutConflictIds(
+    getStore().installations,
+    actorUserId,
+    plan.trees.map((tree) => text(tree.installation, 'id')),
+  );
 
   const localBefore = new Map(getStore().installations.map((installation) => [
     installation.id,
@@ -956,37 +1133,69 @@ export async function syncAssignedInstallations(
     },
   ]));
   const suspendIds = new Set(plan.inactiveAssignedIds);
+  crossActorConflictIds.forEach((id) => suspendIds.add(id));
   plan.trees.forEach((tree) => {
     const id = text(tree.installation, 'id');
     if (text(tree.installation, 'status') === 'Completed' && localBefore.has(id)) {
       suspendIds.add(id);
     }
   });
-  const attemptedSuspendIds: string[] = [];
+  const attemptedSuspensions = new Map<string, NonNullable<Awaited<
+    ReturnType<typeof suspendAuditWorkForInstallation>
+  >>>();
+  const resolvedSuspensionReasons = new Map<
+    string,
+    Set<AuditWorkSuspensionReason>
+  >();
+  const resolveSuspensionReason = (
+    installationId: string,
+    ...reasons: AuditWorkSuspensionReason[]
+  ) => {
+    const resolved = resolvedSuspensionReasons.get(installationId) ?? new Set();
+    reasons.forEach((reason) => resolved.add(reason));
+    resolvedSuspensionReasons.set(installationId, resolved);
+  };
 
   try {
     for (const id of suspendIds) {
       // The bridge installs its in-memory gate before awaiting persistence, so
       // record each attempt first and unwind it if either suspension or the
       // following durable store mutation fails.
-      attemptedSuspendIds.push(id);
-      await suspendAuditWorkForInstallation(id);
+      const suspension = await suspendAuditWorkForInstallation(
+        id,
+        trackerResumeAuthority,
+        'assignment-sync',
+      );
+      if (suspension) attemptedSuspensions.set(id, suspension);
+      assertCurrentSession();
     }
 
     await updateStore((store) => {
+      assertCurrentSession();
       plan.inactiveAssignedIds.forEach((id) => {
         const installation = store.installations.find((item) => item.id === id);
         if (
-          installation?.assigned_work_actor_user_id === actorUserId
-          && installation.assigned_work_state === 'active'
+          installation?.assigned_work_state === 'active'
           && installation.status === 'Draft'
-        ) installation.assigned_work_state = 'inactive';
+        ) {
+          const previous = { ...installation };
+          installation.assigned_work_state = 'inactive';
+          installation.assigned_work_prestart_acknowledgement =
+            reconcileAssignedWorkPrestartAcknowledgement(previous, installation);
+        }
       });
       plan.trees.forEach((tree) => {
         const remote = tree.installation;
         const id = text(remote, 'id');
         const local = store.installations.find((item) => item.id === id);
         if (!local) return;
+        const previous = { ...local };
+        if (assignedWorkCheckoutBelongsToDifferentActor(local, actorUserId)) {
+          // The materialization transaction below snapshots and removes this
+          // exact checkout before inserting a clean canonical tree for the
+          // replacement actor. Do not merge B's server state into A's tree.
+          return;
+        }
         const serverState = mergeAssignedInstallationServerState(local, tree);
         const isAssigned = activeIds.has(id);
         local.status = serverState.status;
@@ -998,6 +1207,9 @@ export async function syncAssignedInstallations(
         local.assigned_inspector_user_id = serverState.assignedInspectorUserId ?? undefined;
         local.assigned_work_state = isAssigned ? 'active' : 'none';
         local.assigned_work_actor_user_id = isAssigned ? actorUserId : undefined;
+        local.assigned_work_job_summary = isAssigned
+          ? assignedWorkJobSummaryFromPull(remote, actorUserId, response.pulledAt)
+          : undefined;
         local.cloud_backup_enabled = true;
         if (serverState.recordVersionNumber !== undefined) {
           local.record_version_number = serverState.recordVersionNumber;
@@ -1008,43 +1220,91 @@ export async function syncAssignedInstallations(
         if (serverState.completedFromRevision !== undefined) {
           local.completed_from_revision = serverState.completedFromRevision;
         }
+        if (serverState.completionNotes !== undefined) {
+          local.completion_notes = serverState.completionNotes;
+        }
+        if (applyAssignedDraftLifecycleResolution(
+          local,
+          serverState,
+          response.pulledAt,
+        )) {
+          if (!store.cloudSync.force_dirty_installation_ids.includes(id)) {
+            store.cloudSync.force_dirty_installation_ids.push(id);
+          }
+        }
         if (serverState.status === 'Completed') {
           local.pending_completion = undefined;
           local.legacy_completed_unpinned = false;
         }
+        local.assigned_work_prestart_acknowledgement =
+          reconcileAssignedWorkPrestartAcknowledgement(previous, local);
+        const resolvedReasons = assignedWorkSuspensionReasonsResolvedAfterPull(
+          previous,
+          local,
+          serverState,
+        );
+        if (resolvedReasons.length) {
+          // A definitive Draft pull retires an orphaned lifecycle cutoff and
+          // an exact assignment cutoff. Delete/logout locks are different
+          // reasons and remain installed.
+          resolveSuspensionReason(id, ...resolvedReasons);
+        }
       });
     });
   } catch (error) {
-    for (const id of attemptedSuspendIds) {
+    for (const [id, suspension] of attemptedSuspensions) {
       const local = localBefore.get(id);
       if (local?.status === 'Draft' && local.assignedWorkState !== 'inactive') {
-        await resumeAuditWorkForInstallation(id).catch(() => undefined);
+        await resumeAuditWorkForInstallation(suspension, trackerResumeAuthority)
+          .catch(() => undefined);
       }
     }
     throw error;
   }
 
-  for (const tree of plan.trees) {
-    const id = text(tree.installation, 'id');
-    const local = localBefore.get(id);
-    const current = getStore().installations.find((item) => item.id === id);
-    if (
-      local?.assignedWorkState === 'inactive'
-      && current?.status === 'Draft'
-    ) await resumeAuditWorkForInstallation(id);
-  }
-
   let hydrated = 0;
   for (const tree of plan.trees) {
+    assertCurrentSession();
     const installationId = text(tree.installation, 'id');
-    if (getStore().installations.some((item) => item.id === installationId)) continue;
+    const existing = getStore().installations.find(
+      (item) => item.id === installationId,
+    );
+    if (
+      existing
+      && !assignedWorkCheckoutBelongsToDifferentActor(existing, actorUserId)
+    ) continue;
     await importRemoteInstallationAsCopy(installationId, {
       tree,
       assignedActorUserId: actorUserId,
+      assignedWorkAuthority: authority,
+      cloudAuthority,
       pulledAt: response.pulledAt,
     });
+    assertCurrentSession();
     hydrated += 1;
   }
+
+  // Release only reason-labelled process tokens after the final canonical
+  // checkout exists. With no process token (for example after restart), the
+  // store subscription alone recomputes eligibility and nothing is guessed by
+  // installation ID.
+  attemptedSuspensions.forEach((_suspension, id) => {
+    resolveSuspensionReason(id, 'assignment-sync');
+  });
+  for (const [id, reasons] of resolvedSuspensionReasons) {
+    assertCurrentSession();
+    const current = getStore().installations.find((item) => item.id === id);
+    if (assignedWorkTrackingShouldResumeAfterPull(current)) {
+      await resumeAuditWorkSuspensionsForInstallationReasons(
+        id,
+        reasons,
+        trackerResumeAuthority,
+      );
+      assertCurrentSession();
+    }
+  }
+
+  assertCurrentSession();
 
   return {
     hydrated,

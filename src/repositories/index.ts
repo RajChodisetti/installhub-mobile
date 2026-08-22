@@ -14,12 +14,13 @@ import type {
   Zone,
 } from '../types';
 import { createId, nowIso } from '../utils';
-import { getStore, initStore, persistStore, resetStore, updateStore } from '../data/seed';
+import { getStore, initStore, updateStore } from '../data/seed';
 import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
 import { completeFormSubmissionInStore } from '../domain/formCompletion';
 import {
   applyLocalDeletionPlan,
+  assertLocalDeletionPlanStillAllowed,
   planLocalDeletion,
   previewLocalDeletion,
   type LocalDeletionTarget,
@@ -54,6 +55,30 @@ import {
   normalizedZoneCode,
   provisionalDisplayCodeV2,
 } from '../domain/namingV2';
+import {
+  createAssignedWorkPrestartAcknowledgement,
+  reconcileAssignedWorkPrestartAcknowledgement,
+  assignedWorkSummarySha256,
+} from '../services/assignedWorkPrestart';
+import {
+  assertCompletionAttemptInstallationState,
+  normalizeCompletionNotes,
+  pendingCompletionAttemptsMatch,
+} from '../services/installationCompletion';
+import {
+  actorForCurrentAssignedWorkAuthority,
+  assertAssignedWorkMutationAllowed,
+  assertCurrentAssignedWorkAuthority,
+  captureAssignedWorkMutationAuthority,
+  captureAssignedWorkMutationGuard,
+  type AssignedWorkMutationAuthority,
+} from '../services/assignedWorkMutationGuard';
+import { assignedWorkInstallationIsVisibleToActor } from '../services/assignedWorkPolicy';
+import {
+  applyServerResultCommitFence,
+  type ServerResultCommitFence,
+} from '../services/serverResultCommitFence';
+import { buildInstallationBackupTree } from './cloudSyncRepository';
 
 function boardDefaultName(typeCode: ReturnType<typeof boardTypeCode>, customTypeName?: string): string {
   return typeCode === 'OTHER'
@@ -79,12 +104,29 @@ export async function getLocalDeletionPreview(target: LocalDeletionTarget) {
   return previewLocalDeletion(getStore(), target);
 }
 
+export type InstallationCompletionAttempt = {
+  actorUserId: string;
+  authority: AssignedWorkMutationAuthority;
+  pendingCompletion: NonNullable<Installation['pending_completion']>;
+};
+
+function isServerResultCommitFence(
+  value: AssignedWorkMutationAuthority | ServerResultCommitFence | undefined,
+): value is ServerResultCommitFence {
+  return Boolean(value && 'expectedTreeWatermark' in value);
+}
+
 export interface InstallationsRepository {
   list(): Promise<Installation[]>;
   getById(id: string): Promise<Installation | null>;
   create(input: Omit<
     Installation,
     | 'id'
+    | 'local_owner_user_id'
+    | 'assigned_work_state'
+    | 'assigned_work_actor_user_id'
+    | 'assigned_work_job_summary'
+    | 'assigned_work_prestart_acknowledgement'
     | 'created_at'
     | 'updated_at'
     | 'status'
@@ -97,13 +139,39 @@ export interface InstallationsRepository {
     | 'thumbnail_total'
     | 'thumbnail_ready'
   > & { status?: Installation['status']; cloud_backup_enabled?: boolean }): Promise<Installation>;
-  update(id: string, patch: Partial<Installation>): Promise<Installation>;
+  update(
+    id: string,
+    patch: Partial<Installation>,
+    authority?: AssignedWorkMutationAuthority,
+  ): Promise<Installation>;
+  acknowledgeAssignedWorkPrestart(
+    id: string,
+    expectedSummarySha256: string,
+  ): Promise<Installation>;
+  setCompletionNotes(id: string, notes: string | null | undefined): Promise<Installation>;
+  prepareCompletionAttempt(
+    id: string,
+    attempt: InstallationCompletionAttempt,
+  ): Promise<Installation>;
+  assertCompletionAttemptCanDispatch(
+    id: string,
+    attempt: InstallationCompletionAttempt,
+  ): Promise<Installation>;
+  discardPreparedCompletionAttempt(
+    id: string,
+    attempt: InstallationCompletionAttempt,
+  ): Promise<Installation>;
   remove(id: string): Promise<void>;
-  setCloudBackupEnabled(id: string, enabled: boolean): Promise<Installation>;
+  setCloudBackupEnabled(
+    id: string,
+    enabled: boolean,
+    authority?: AssignedWorkMutationAuthority,
+  ): Promise<Installation>;
   applyServerState(id: string, patch: Pick<Installation,
     'status' | 'tree_revision' | 'server_tree_revision' | 'record_version_number' | 'completed_at' | 'completed_from_revision' |
     'reopened_at' | 'reopen_reason' | 'backup_conflict' | 'pending_completion' |
-    'legacy_completed_unpinned'>): Promise<Installation>;
+    'legacy_completed_unpinned' | 'completion_notes'>,
+  authority?: AssignedWorkMutationAuthority | ServerResultCommitFence): Promise<Installation>;
 }
 
 export interface ZonesRepository {
@@ -218,37 +286,25 @@ export interface FormsRepository {
   removeDraft(id: string): Promise<void>;
 }
 
-async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void> {
+async function removeLocalTreeTarget(
+  target: LocalDeletionTarget,
+  assertAssignedWorkAccess = captureAssignedWorkMutationGuard(),
+): Promise<void> {
   await initStore();
   const currentPlan = planLocalDeletion(getStore(), target);
   if (!currentPlan) return;
-  if (
-    target.kind === 'installation'
-    && getStore().cloudSync.pending_complete_attempts?.[currentPlan.installationId]
-  ) {
-    throw new Error(
-      'Confirm or resolve the pending cloud backup before deleting this installation.',
-    );
-  }
-  const installation = getStore().installations.find(
-    (item) => item.id === currentPlan.installationId,
-  );
-  if (installation?.status === 'Completed' && target.kind !== 'installation') {
-    throw new Error('Reopen this completed installation before deleting or reassigning its records.');
-  }
-  if (
-    target.kind === 'form_draft' &&
-    currentPlan.formIds.some((id) => id !== target.id)
-  ) {
-    throw new Error(
-      'This draft cannot be deleted while a later amendment refers to it.',
-    );
-  }
+  assertLocalDeletionPlanStillAllowed(getStore(), currentPlan);
 
   let effects: ReturnType<typeof applyLocalDeletionPlan> | null = null;
   await updateStore((store) => {
     const plan = planLocalDeletion(store, target);
     if (!plan) return;
+    const guardedInstallation = store.installations.find(
+      (item) => item.id === plan.installationId,
+    );
+    if (!guardedInstallation) throw new Error('Installation not found.');
+    assertAssignedWorkAccess(guardedInstallation);
+    assertLocalDeletionPlanStillAllowed(store, plan);
     effects = applyLocalDeletionPlan(store, plan, nowIso());
     if (!plan.installationIds.length) bumpTreeRevision(store, plan.installationId);
   });
@@ -259,18 +315,49 @@ async function removeLocalTreeTarget(target: LocalDeletionTarget): Promise<void>
   cleanupDeletedTreeStorage(effects);
 }
 
+function assertCompletionAttemptState(
+  store: Parameters<typeof buildInstallationBackupTree>[0],
+  installation: Installation,
+  attempt: InstallationCompletionAttempt,
+  requirePersistedPending: boolean,
+): void {
+  assertCurrentAssignedWorkAuthority(attempt.authority, attempt.actorUserId);
+  assertAssignedWorkMutationAllowed(installation, attempt.authority);
+  assertCompletionAttemptInstallationState(
+    installation,
+    attempt.pendingCompletion,
+    requirePersistedPending,
+    buildInstallationBackupTree(store, installation).watermark,
+  );
+}
+
 export const installationsRepo: InstallationsRepository = {
   async list() {
     await initStore();
+    const authority = captureAssignedWorkMutationAuthority();
+    const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
     return getStore().installations
-      .filter((installation) => installation.assigned_work_state !== 'inactive')
+      .filter((installation) => (
+        assignedWorkInstallationIsVisibleToActor(installation, actorUserId)
+      ))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   },
   async getById(id) {
     await initStore();
-    return getStore().installations.find((i) => i.id === id) ?? null;
+    const authority = captureAssignedWorkMutationAuthority();
+    const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
+    const installation = getStore().installations.find((i) => i.id === id);
+    return installation
+      && assignedWorkInstallationIsVisibleToActor(installation, actorUserId)
+      ? installation
+      : null;
   },
   async create(input) {
+    const authority = captureAssignedWorkMutationAuthority();
+    const localOwnerUserId = actorForCurrentAssignedWorkAuthority(authority);
+    if (!localOwnerUserId) {
+      throw new Error('Sign in again before creating local installation work.');
+    }
     if (input.site_code !== undefined && !isValidInstallationSiteCode(input.site_code)) {
       throw new Error(
         'Site code must be 1-16 uppercase letters/digits, with single hyphens only between groups.',
@@ -280,6 +367,8 @@ export const installationsRepo: InstallationsRepository = {
     const record: Installation = {
       ...input,
       id,
+      local_owner_user_id: localOwnerUserId,
+      assigned_work_state: 'none',
       status: input.status ?? 'Draft',
       cloud_backup_enabled: input.cloud_backup_enabled ?? false,
       tree_schema_version: 2,
@@ -296,11 +385,17 @@ export const installationsRepo: InstallationsRepository = {
     });
     return record;
   },
-  async update(id, patch) {
+  async update(id, patch, authority) {
+    const assertAssignedWorkAccess = authority
+      ? (installation: Installation) => {
+          assertAssignedWorkMutationAllowed(installation, authority);
+        }
+      : captureAssignedWorkMutationGuard();
     let updated: Installation | null = null;
     await updateStore((s) => {
       const idx = s.installations.findIndex((i) => i.id === id);
       if (idx < 0) throw new Error('Installation not found');
+      assertAssignedWorkAccess(s.installations[idx]);
       if (patch.status && patch.status !== s.installations[idx].status) {
         throw new Error('Use the validated Complete or Reopen action to change installation status.');
       }
@@ -326,15 +421,130 @@ export const installationsRepo: InstallationsRepository = {
     });
     return updated!;
   },
+  async acknowledgeAssignedWorkPrestart(id, expectedSummarySha256) {
+    const authority = captureAssignedWorkMutationAuthority();
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      const installation = store.installations[index];
+      const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
+      if (!actorUserId) {
+        throw new Error('Your authenticated session changed. Sign in again before acknowledging this job.');
+      }
+      if (
+        !installation.assigned_work_job_summary
+        || assignedWorkSummarySha256(installation.assigned_work_job_summary)
+          !== expectedSummarySha256
+      ) {
+        throw new Error(
+          'Assigned job details changed while the review was open. Review the updated details before acknowledging.',
+        );
+      }
+      updated = {
+        ...installation,
+        assigned_work_prestart_acknowledgement:
+          createAssignedWorkPrestartAcknowledgement(
+            installation,
+            actorUserId,
+            nowIso(),
+          ),
+      };
+      store.installations[index] = updated;
+    });
+    return updated!;
+  },
+  async setCompletionNotes(id, notes) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
+    const normalized = normalizeCompletionNotes(notes);
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      assertAssignedWorkAccess(store.installations[index]);
+      updated = {
+        ...store.installations[index],
+        completion_notes: normalized,
+      };
+      store.installations[index] = updated;
+    });
+    return updated!;
+  },
+  async prepareCompletionAttempt(id, attempt) {
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      const current = store.installations[index];
+      assertCompletionAttemptState(store, current, attempt, false);
+      const pendingCompletion = current.pending_completion
+        && pendingCompletionAttemptsMatch(
+          current.pending_completion,
+          attempt.pendingCompletion,
+        )
+        ? current.pending_completion
+        : { ...attempt.pendingCompletion };
+      updated = {
+        ...current,
+        pending_completion: pendingCompletion,
+        ...(Object.prototype.hasOwnProperty.call(pendingCompletion, 'completionNotes')
+          ? { completion_notes: pendingCompletion.completionNotes ?? null }
+          : {}),
+      };
+      store.installations[index] = updated;
+    });
+    return updated!;
+  },
+  async assertCompletionAttemptCanDispatch(id, attempt) {
+    let current: Installation | null = null;
+    // Serialize this final read behind assignment reconciliation and every
+    // queued repository mutation. No unrestricted server-state write can
+    // manufacture or replace the pending attempt checked here.
+    await updateStore((store) => {
+      const installation = store.installations.find((item) => item.id === id);
+      if (!installation) throw new Error('Installation not found');
+      assertCompletionAttemptState(store, installation, attempt, true);
+      current = installation;
+    });
+    return current!;
+  },
+  async discardPreparedCompletionAttempt(id, attempt) {
+    let updated: Installation | null = null;
+    await updateStore((store) => {
+      assertCurrentAssignedWorkAuthority(attempt.authority, attempt.actorUserId);
+      const index = store.installations.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error('Installation not found');
+      const current = store.installations[index];
+      assertAssignedWorkMutationAllowed(current, attempt.authority);
+      if (
+        !current.pending_completion
+        || !pendingCompletionAttemptsMatch(
+          current.pending_completion,
+          attempt.pendingCompletion,
+        )
+      ) {
+        throw new Error('The pending completion attempt changed before cleanup.');
+      }
+      updated = { ...current, pending_completion: undefined };
+      store.installations[index] = updated;
+    });
+    return updated!;
+  },
   async remove(id) {
     await removeLocalTreeTarget({ kind: 'installation', id });
   },
-  async setCloudBackupEnabled(id, enabled) {
+  async setCloudBackupEnabled(id, enabled, authority) {
+    const assertAssignedWorkAccess = authority
+      ? (installation: Installation) => {
+          assertAssignedWorkMutationAllowed(installation, authority);
+        }
+      : captureAssignedWorkMutationGuard();
     await initStore();
     let updated: Installation | null = null;
     await updateStore((store) => {
       const index = store.installations.findIndex((item) => item.id === id);
       if (index < 0) throw new Error('Installation not found');
+      assertAssignedWorkAccess(store.installations[index]);
       if (!enabled && store.cloudSync.pending_complete_attempts?.[id]) {
         throw new Error(
           'Confirm or resolve the pending cloud backup before turning backup off.',
@@ -351,13 +561,58 @@ export const installationsRepo: InstallationsRepository = {
     });
     return updated!;
   },
-  async applyServerState(id, patch) {
+  async applyServerState(id, patch, authority) {
+    if (
+      Object.prototype.hasOwnProperty.call(patch, 'pending_completion')
+      && patch.pending_completion !== undefined
+    ) {
+      throw new Error(
+        'Use the authenticated completion-attempt command to persist pending completion state.',
+      );
+    }
+    const serverResultFence = isServerResultCommitFence(authority)
+      ? authority
+      : undefined;
+    const mutationAuthority = authority && !isServerResultCommitFence(authority)
+      ? authority
+      : undefined;
+    const assertAssignedWorkAccess = mutationAuthority
+      ? (installation: Installation) => {
+          assertAssignedWorkMutationAllowed(installation, mutationAuthority);
+        }
+      : captureAssignedWorkMutationGuard();
+    serverResultFence?.assertCurrent();
     let updated: Installation | null = null;
     await updateStore((store) => {
-      const index = store.installations.findIndex((item) => item.id === id);
-      if (index < 0) throw new Error('Installation not found');
-      updated = { ...store.installations[index], ...patch, id };
-      store.installations[index] = updated;
+      const applyPatch = (current: Installation): Installation => {
+        const index = store.installations.indexOf(current);
+        if (index < 0) throw new Error('Installation not found');
+        const candidate: Installation = {
+          ...current,
+          ...patch,
+          id,
+        };
+        const next: Installation = {
+          ...candidate,
+          assigned_work_prestart_acknowledgement:
+            reconcileAssignedWorkPrestartAcknowledgement(current, candidate),
+        };
+        store.installations[index] = next;
+        return next;
+      };
+      if (serverResultFence) {
+        updated = applyServerResultCommitFence(
+          store,
+          id,
+          serverResultFence,
+          applyPatch,
+        );
+        return;
+      }
+      const current = store.installations.find((item) => item.id === id);
+      if (!current) throw new Error('Installation not found');
+      assertAssignedWorkAccess(current);
+      updated = applyPatch(current);
     });
     return updated!;
   },
@@ -373,10 +628,12 @@ export const zonesRepo: ZonesRepository = {
     return getStore().zones.find((z) => z.id === id) ?? null;
   },
   async create(input) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let record: Zone | null = null;
     await updateStore((s) => {
       const installation = s.installations.find((item) => item.id === input.audit_id);
       if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const installationZones = s.zones.filter((zone) => zone.audit_id === input.audit_id);
       const zoneCode = availableZoneCode(
@@ -397,12 +654,14 @@ export const zonesRepo: ZonesRepository = {
     return record!;
   },
   async update(id, patch) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: Zone | null = null;
     await updateStore((s) => {
       const idx = s.zones.findIndex((z) => z.id === id);
       if (idx < 0) throw new Error('Zone not found');
       const installation = s.installations.find((item) => item.id === s.zones[idx].audit_id);
       if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const previous = s.zones[idx];
       const installationZones = s.zones.filter((zone) => zone.audit_id === previous.audit_id);
@@ -509,10 +768,12 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     return getStore().electricalAssets.find((e) => e.id === id) ?? null;
   },
   async create(input) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let record: ElectricalAsset | null = null;
     await updateStore((s) => {
       const installation = s.installations.find((item) => item.id === input.audit_id);
       if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const typeCode = input.type_code ?? boardTypeCode(input.asset_type);
       const fallbackName = boardDefaultName(typeCode, input.custom_type_name);
@@ -566,12 +827,14 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     return record!;
   },
   async update(id, patch) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: ElectricalAsset | null = null;
     await updateStore((s) => {
       const idx = s.electricalAssets.findIndex((e) => e.id === id);
       if (idx < 0) throw new Error('Electrical asset not found');
       const installation = s.installations.find((item) => item.id === s.electricalAssets[idx].audit_id);
       if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const previous = s.electricalAssets[idx];
       const typeCode = patch.type_code
@@ -641,12 +904,15 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     return updated!;
   },
   async saveMeterConfiguration(boardId, meter, assignments) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: ElectricalAsset | null = null;
     await updateStore((store) => {
       const index = store.electricalAssets.findIndex((item) => item.id === boardId);
       if (index < 0) throw new Error('Switchboard not found.');
       const board = store.electricalAssets[index];
       const installation = store.installations.find((item) => item.id === board.audit_id);
+      if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') {
         throw new Error('Reopen this completed installation before editing meter mappings.');
       }
@@ -689,6 +955,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     return getStore().siteAssets.find((a) => a.id === id) ?? null;
   },
   async saveEditor(id, input, metering) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let saved: SiteAsset | null = null;
     await updateStore((store) => {
       const existingIndex = id
@@ -699,6 +966,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       const installationId = previous?.audit_id ?? input.audit_id;
       const installation = store.installations.find((item) => item.id === installationId);
       if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation.status === 'Completed') {
         throw new Error('Reopen this completed installation before editing it.');
       }
@@ -802,10 +1070,12 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     return saved!;
   },
   async create(input) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let record: SiteAsset | null = null;
     await updateStore((s) => {
       const installation = s.installations.find((item) => item.id === input.audit_id);
       if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const typeCode = input.type_code ?? siteAssetTypeCode(input.asset_type);
       const fallbackName = siteAssetDefaultName(typeCode, input.custom_type_name);
@@ -855,6 +1125,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     return record!;
   },
   async update(id, patch) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: SiteAsset | null = null;
     await updateStore((s) => {
       const idx = s.siteAssets.findIndex((a) => a.id === id);
@@ -862,6 +1133,7 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       const previous = s.siteAssets[idx];
       const installation = s.installations.find((item) => item.id === previous.audit_id);
       if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       if (
         patch.metering_state &&
@@ -937,11 +1209,14 @@ export const siteAssetsRepo: SiteAssetsRepository = {
     await removeLocalTreeTarget({ kind: 'site_asset', id });
   },
   async setMetering(id, state, assignments = []) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: SiteAsset | null = null;
     await updateStore((store) => {
       const asset = store.siteAssets.find((item) => item.id === id);
       if (!asset) throw new Error('Site asset not found');
       const installation = store.installations.find((item) => item.id === asset.audit_id);
+      if (!installation) throw new Error('Installation not found.');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       setAssetMeteringState(store, id, state, assignments);
       asset.updated_at = nowIso();
@@ -996,11 +1271,13 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
 
 export const gridSuppliesRepo: GridSuppliesRepository = {
   async create(input) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     if (!input.name.trim()) throw new Error('Grid supply name is required.');
     let created: GridSupply | null = null;
     await updateStore((store) => {
       const installation = store.installations.find((item) => item.id === input.installationId);
       if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation.status === 'Completed') throw new Error('Reopen this completed installation before editing Grid supplies.');
       const existing = store.gridSupplies.filter((item) => item.installationId === input.installationId);
       const makeDefault = input.isDefault || !existing.length;
@@ -1019,12 +1296,15 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
     return created!;
   },
   async update(id, patch) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: GridSupply | null = null;
     await updateStore((store) => {
       const index = store.gridSupplies.findIndex((item) => item.id === id);
       if (index < 0) throw new Error('Grid supply not found');
       const current = store.gridSupplies[index];
       const installation = store.installations.find((item) => item.id === current.installationId);
+      if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing Grid supplies.');
       if (patch.name !== undefined && !patch.name.trim()) throw new Error('Grid supply name is required.');
       if (patch.isDefault === false && current.isDefault) {
@@ -1065,10 +1345,13 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
     };
   },
   async remove(id, convertDependentsToTbc) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     await updateStore((store) => {
       const grid = store.gridSupplies.find((item) => item.id === id);
       if (!grid) return;
       const installation = store.installations.find((item) => item.id === grid.installationId);
+      if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before deleting a Grid supply.');
       const siblings = store.gridSupplies.filter((item) => item.installationId === grid.installationId && item.id !== id);
       if (!siblings.length) throw new Error('An installation must keep at least one Grid supply.');
@@ -1132,6 +1415,7 @@ export const formsRepo: FormsRepository = {
     return getStore().formSubmissions.find((form) => form.id === id) ?? null;
   },
   async create(input) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     const commissionsMeter = [
       'ww-installation',
       'a3rm-installation',
@@ -1159,6 +1443,7 @@ export const formsRepo: FormsRepository = {
     await updateStore((store) => {
       const installation = store.installations.find((item) => item.id === input.installation_id);
       if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before adding a form.');
       if (commissionsMeter) {
         const board = store.electricalAssets.find((item) => item.id === input.board_id);
@@ -1174,6 +1459,7 @@ export const formsRepo: FormsRepository = {
     return record;
   },
   async updateDraft(id, patch) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: FormSubmission | null = null;
     await updateStore((store) => {
       const index = store.formSubmissions.findIndex((form) => form.id === id);
@@ -1184,6 +1470,8 @@ export const formsRepo: FormsRepository = {
       const installation = store.installations.find(
         (item) => item.id === store.formSubmissions[index].installation_id,
       );
+      if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing a form.');
       updated = {
         ...store.formSubmissions[index],
@@ -1198,8 +1486,16 @@ export const formsRepo: FormsRepository = {
     return updated!;
   },
   async complete(id) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: FormSubmission | null = null;
     await updateStore((store) => {
+      const form = store.formSubmissions.find((item) => item.id === id);
+      if (!form) throw new Error('Form submission not found');
+      const installation = store.installations.find(
+        (item) => item.id === form.installation_id,
+      );
+      if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       updated = completeFormSubmissionInStore(
         store,
         id,
@@ -1210,47 +1506,61 @@ export const formsRepo: FormsRepository = {
     return updated!;
   },
   async cloneAmendment(id) {
-    const original = await this.getById(id);
-    if (!original) throw new Error('Form submission not found');
-    const timestamp = nowIso();
-    const clone: FormSubmission = {
-      ...original,
-      id: createId('form'),
-      import_source_server_id: undefined,
-      schema_version: FORM_DEFINITION_BY_TYPE[original.form_type].schemaVersion,
-      status: 'Draft',
-      attachments: original.attachments.map((item) => ({ ...item })),
-      created_at: timestamp,
-      updated_at: timestamp,
-      completed_at: undefined,
-      supersedes_id: original.id,
-    };
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
+    const observedOriginal = await this.getById(id);
+    if (!observedOriginal) throw new Error('Form submission not found');
+    if (observedOriginal.status !== 'Completed') {
+      throw new Error('Only completed forms can be amended.');
+    }
+    const cloneId = createId('form');
+    let clone: FormSubmission | null = null;
     await updateStore((store) => {
-      const installation = store.installations.find((item) => item.id === clone.installation_id);
+      const currentOriginal = store.formSubmissions.find((item) => item.id === id);
+      if (!currentOriginal) throw new Error('Form submission not found');
+      if (currentOriginal.status !== 'Completed') {
+        throw new Error('Only completed forms can be amended.');
+      }
+      const installation = store.installations.find(
+        (item) => item.id === currentOriginal.installation_id,
+      );
+      if (!installation) throw new Error('Installation not found');
+      assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before creating an amendment.');
+      const timestamp = nowIso();
+      clone = {
+        ...currentOriginal,
+        id: cloneId,
+        import_source_server_id: undefined,
+        schema_version: FORM_DEFINITION_BY_TYPE[currentOriginal.form_type].schemaVersion,
+        status: 'Draft',
+        attachments: currentOriginal.attachments.map((item) => ({ ...item })),
+        created_at: timestamp,
+        updated_at: timestamp,
+        completed_at: undefined,
+        supersedes_id: currentOriginal.id,
+      };
       store.formSubmissions.unshift(clone);
-      bumpTreeRevision(store, clone.installation_id);
+      bumpTreeRevision(store, currentOriginal.installation_id);
     });
-    return clone;
+    return clone!;
   },
   async removeDraft(id) {
+    const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     const form = await this.getById(id);
     if (form?.status === 'Completed') {
       throw new Error('Completed forms cannot be deleted');
     }
-    await removeLocalTreeTarget({ kind: 'form_draft', id });
+    await removeLocalTreeTarget(
+      { kind: 'form_draft', id },
+      assertAssignedWorkAccess,
+    );
   },
 };
 
 export async function resetDemoData() {
-  await initStore();
-  const forms = [...getStore().formSubmissions];
-  await resetStore();
-  await persistStore();
-  const { deleteFormsLocalFiles } = await import(
-    '../services/formStorageCleanup'
+  throw new Error(
+    'Fixture reset is disabled because this device can retain actor-owned recovery data.',
   );
-  deleteFormsLocalFiles(forms);
 }
 
 /**

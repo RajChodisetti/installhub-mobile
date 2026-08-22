@@ -44,10 +44,15 @@ const storageAdapter: StorePersistenceAdapter = {
 };
 
 function cloneFixtures(): AppDataStore {
+  const user = structuredClone(userFixture) as AppDataStore['user'];
   return normalizeCanonicalStore({
     schemaVersion: LOCAL_STORE_SCHEMA_VERSION,
-    user: structuredClone(userFixture) as AppDataStore['user'],
-    installations: structuredClone(installationsFixture) as AppDataStore['installations'],
+    user,
+    installations: (structuredClone(installationsFixture) as AppDataStore['installations'])
+      .map((installation) => ({
+        ...installation,
+        local_owner_user_id: user.id,
+      })),
     gridSupplies: [],
     zones: structuredClone(zonesFixture) as AppDataStore['zones'],
     electricalAssets: structuredClone(electricalAssetsFixture) as AppDataStore['electricalAssets'],
@@ -55,6 +60,7 @@ function cloneFixtures(): AppDataStore {
     meterDevices: [],
     measurementAssignments: [],
     formSubmissions: [],
+    assignedWorkRecoveryCheckouts: [],
     cloudSync: {
       synced_at_by_installation: {},
       force_dirty_installation_ids: [],
@@ -90,11 +96,21 @@ function normalizeFormSubmission(form: FormSubmission): FormSubmission {
 export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
   const fixtures = cloneFixtures();
   const syncedAtByInstallation = value.cloudSync?.synced_at_by_installation ?? {};
+  const legacyLocalOwnerUserId = typeof value.user?.id === 'string' && value.user.id.trim()
+    ? value.user.id
+    : undefined;
   return normalizeCanonicalStore({
     schemaVersion: LOCAL_STORE_SCHEMA_VERSION,
     user: value.user ?? fixtures.user,
     installations: (value.installations ?? []).map((installation) => ({
       ...installation,
+      // A pre-owner-field store is attributed to the last durably cached
+      // local user before a replacement cloud login can overwrite store.user.
+      // If even that identity is unavailable, leave it unowned and fail closed.
+      local_owner_user_id:
+        installation.local_owner_user_id
+        ?? installation.assigned_work_actor_user_id
+        ?? legacyLocalOwnerUserId,
       cloud_backup_enabled: installation.cloud_backup_enabled ?? false,
       assigned_work_state: installation.assigned_work_state ?? 'none',
       // A completed legacy watermark proves a retained server copy existed.
@@ -113,6 +129,7 @@ export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
     measurementAssignments: value.measurementAssignments ?? [],
     formSubmissions: (value.formSubmissions ?? []).map(normalizeFormSubmission),
     siteAssetEditorDrafts: value.siteAssetEditorDrafts ?? [],
+    assignedWorkRecoveryCheckouts: value.assignedWorkRecoveryCheckouts ?? [],
     cloudSync: {
       synced_at_by_installation: syncedAtByInstallation,
       force_dirty_installation_ids: value.cloudSync?.force_dirty_installation_ids ?? [],

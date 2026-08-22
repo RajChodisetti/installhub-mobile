@@ -32,6 +32,57 @@ export interface LocalDeletionEffects {
   orphanedThumbnailCacheUris: string[];
 }
 
+export function assertLocalDeletionLifecycleAllowed(
+  installationStatus: 'Draft' | 'Completed',
+  target: LocalDeletionTarget,
+): void {
+  if (installationStatus === 'Completed' && target.kind !== 'installation') {
+    throw new Error(
+      'Reopen this completed installation before deleting or reassigning its records.',
+    );
+  }
+}
+
+/**
+ * Revalidates deletion invariants against the exact store snapshot that will
+ * be mutated. Callers may perform the same checks before queueing the write
+ * for faster feedback, but this check must remain inside updateStore.
+ */
+export function assertLocalDeletionPlanStillAllowed(
+  store: AppDataStore,
+  plan: LocalDeletionPlan,
+): void {
+  const installation = store.installations.find(
+    (item) => item.id === plan.installationId,
+  );
+  if (!installation) throw new Error('Installation not found.');
+
+  assertLocalDeletionLifecycleAllowed(installation.status, plan.target);
+  if (store.cloudSync.pending_complete_attempts?.[plan.installationId]) {
+    throw new Error(
+      'Confirm or resolve the pending cloud backup before deleting from this installation.',
+    );
+  }
+  if (installation.pending_completion) {
+    throw new Error(
+      'Confirm or resolve the pending installation completion before deleting from this installation.',
+    );
+  }
+
+  if (plan.target.kind !== 'form_draft') return;
+  const targetForm = store.formSubmissions.find(
+    (item) => item.id === plan.target.id,
+  );
+  if (!targetForm || targetForm.status !== 'Draft') {
+    throw new Error('Completed forms cannot be deleted');
+  }
+  if (plan.formIds.some((id) => id !== plan.target.id)) {
+    throw new Error(
+      'This draft cannot be deleted while a later amendment refers to it.',
+    );
+  }
+}
+
 const unique = (values: Iterable<string>): string[] => [...new Set(values)];
 
 function descendantFormIds(
@@ -231,6 +282,18 @@ function entityMediaUris(
       meter.wwPhotos?.extra?.forEach((uri) => addMediaUri(uris, uri));
     });
   return [...uris];
+}
+
+function recoveryEntityMediaUris(store: AppDataStore): string[] {
+  const recoveries = store.assignedWorkRecoveryCheckouts ?? [];
+  if (!recoveries.length) return [];
+  return entityMediaUris({
+    ...store,
+    zones: recoveries.flatMap((item) => item.zones),
+    electricalAssets: recoveries.flatMap((item) => item.electricalAssets),
+    siteAssets: recoveries.flatMap((item) => item.siteAssets),
+    meterDevices: recoveries.flatMap((item) => item.meterDevices),
+  });
 }
 
 /** Returns the remote evidence that remains referenced by one local tree. */
@@ -466,13 +529,25 @@ export function applyLocalDeletionPlan(
   return {
     plan,
     deletedForms,
-    protectedFormAttachmentUris: store.formSubmissions.flatMap((item) =>
-      item.attachments.map((attachment) => attachment.uri)),
+    protectedFormAttachmentUris: [
+      ...store.formSubmissions,
+      ...(store.assignedWorkRecoveryCheckouts ?? []).flatMap(
+        (item) => item.formSubmissions,
+      ),
+    ].flatMap((item) => item.attachments.map((attachment) => attachment.uri)),
     deletedEntityMediaUris,
-    protectedEntityMediaUris: entityMediaUris(store),
+    protectedEntityMediaUris: [
+      ...entityMediaUris(store),
+      ...recoveryEntityMediaUris(store),
+    ],
     orphanedThumbnailCacheUris: orphanedThumbnailCacheUris(
       removedThumbnails,
-      store.cloudSync.thumbnail_queue,
+      [
+        ...store.cloudSync.thumbnail_queue,
+        ...(store.assignedWorkRecoveryCheckouts ?? []).flatMap(
+          (item) => item.cloudSync.thumbnail_queue,
+        ),
+      ],
     ),
   };
 }

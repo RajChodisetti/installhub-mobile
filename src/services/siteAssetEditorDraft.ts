@@ -1,5 +1,12 @@
 import { sha256 } from 'js-sha256';
 import { getStore, updateStore } from '../data/seed';
+import {
+  actorForCurrentAssignedWorkAuthority,
+  assertCurrentAssignedWorkAuthority,
+  captureAssignedWorkMutationAuthority,
+  captureAssignedWorkMutationGuard,
+  type AssignedWorkMutationAuthority,
+} from './assignedWorkMutationGuard';
 import type {
   SiteAssetEditorDraftRecord,
 } from '../types';
@@ -32,23 +39,76 @@ function withoutChecksum(
   return unsigned;
 }
 
+export function siteAssetEditorDraftRecordForActor(
+  records: SiteAssetEditorDraftRecord[],
+  scope: string,
+  actorUserId: string,
+): SiteAssetEditorDraftRecord | undefined {
+  return records.find(
+    (item) => item.scope === scope && item.userId === actorUserId,
+  );
+}
+
+export function removeSiteAssetEditorDraftForActor(
+  records: SiteAssetEditorDraftRecord[],
+  scope: string,
+  actorUserId: string,
+): SiteAssetEditorDraftRecord[] {
+  return records.filter(
+    (item) => item.scope !== scope || item.userId !== actorUserId,
+  );
+}
+
+function captureDraftActorAuthority(): {
+  authority: AssignedWorkMutationAuthority;
+  actorUserId: string;
+} {
+  const authority = captureAssignedWorkMutationAuthority();
+  const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
+  if (!actorUserId) throw new Error('Sign in again before accessing protected drafts.');
+  return { authority, actorUserId };
+}
+
+async function clearSiteAssetEditorDraftForActor(
+  scope: string,
+  authority: AssignedWorkMutationAuthority,
+  actorUserId: string,
+): Promise<void> {
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    store.siteAssetEditorDrafts = removeSiteAssetEditorDraftForActor(
+      store.siteAssetEditorDrafts ?? [],
+      scope,
+      actorUserId,
+    );
+  });
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+}
+
 export async function loadSiteAssetEditorDraft(
   scope: string,
 ): Promise<SiteAssetDraftLoadResult> {
+  const { authority, actorUserId } = captureDraftActorAuthority();
   const store = getStore();
-  const record = (store.siteAssetEditorDrafts ?? []).find((item) => item.scope === scope);
-  if (!record || record.userId !== store.user.id) return { status: 'NONE' };
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const record = siteAssetEditorDraftRecordForActor(
+    store.siteAssetEditorDrafts ?? [],
+    scope,
+    actorUserId,
+  );
+  if (!record) return { status: 'NONE' };
   if (record.checksum !== checksum(withoutChecksum(record))) {
-    await clearSiteAssetEditorDraft(scope);
+    await clearSiteAssetEditorDraftForActor(scope, authority, actorUserId);
     return { status: 'CORRUPT' };
   }
   if (!Number.isFinite(Date.parse(record.expiresAt)) || Date.parse(record.expiresAt) <= Date.now()) {
-    await clearSiteAssetEditorDraft(scope);
+    await clearSiteAssetEditorDraftForActor(scope, authority, actorUserId);
     return { status: 'EXPIRED' };
   }
   const installation = store.installations.find((item) => item.id === record.installationId);
   if (!installation) {
-    await clearSiteAssetEditorDraft(scope);
+    await clearSiteAssetEditorDraftForActor(scope, authority, actorUserId);
     return { status: 'CORRUPT' };
   }
   const asset = record.assetId
@@ -69,9 +129,11 @@ export async function saveSiteAssetEditorDraft(
     now?: string;
   },
 ): Promise<void> {
+  const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
   await updateStore((store) => {
     const installation = store.installations.find((item) => item.id === input.installationId);
     if (!installation) throw new Error('Installation not found while protecting the asset draft.');
+    assertAssignedWorkAccess(installation);
     const asset = input.assetId
       ? store.siteAssets.find((item) => item.id === input.assetId && item.audit_id === input.installationId)
       : undefined;
@@ -94,22 +156,28 @@ export async function saveSiteAssetEditorDraft(
     };
     const record: SiteAssetEditorDraftRecord = { ...unsigned, checksum: checksum(unsigned) };
     store.siteAssetEditorDrafts = [
-      ...(store.siteAssetEditorDrafts ?? []).filter((item) => item.scope !== scope),
+      ...(store.siteAssetEditorDrafts ?? []).filter(
+        (item) => item.scope !== scope || item.userId !== store.user.id,
+      ),
       record,
     ];
   });
 }
 
 export async function clearSiteAssetEditorDraft(scope: string): Promise<void> {
-  await updateStore((store) => {
-    store.siteAssetEditorDrafts = (store.siteAssetEditorDrafts ?? [])
-      .filter((item) => item.scope !== scope);
-  });
+  const { authority, actorUserId } = captureDraftActorAuthority();
+  await clearSiteAssetEditorDraftForActor(scope, authority, actorUserId);
 }
 
 export async function clearSiteAssetEditorDraftsForUser(userId: string): Promise<void> {
+  const { authority, actorUserId } = captureDraftActorAuthority();
+  if (userId !== actorUserId) {
+    throw new Error('Protected drafts can only be cleared by their owner.');
+  }
   await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
     store.siteAssetEditorDrafts = (store.siteAssetEditorDrafts ?? [])
-      .filter((item) => item.userId !== userId);
+      .filter((item) => item.userId !== actorUserId);
   });
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
 }

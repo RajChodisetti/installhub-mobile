@@ -4,7 +4,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useInstallations } from '../hooks';
 import { InstallationCard } from '../components/domain';
 import { Button, EmptyState, LoadingState, SearchBar } from '../components/ui';
-import { useTheme } from '../context/AppProviders';
+import { useAuth, useTheme } from '../context/AppProviders';
 import { searchMatch } from '../utils';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -14,12 +14,14 @@ import {
   resumeAuditWorkForInstallation,
   suspendAuditWorkForInstallation,
 } from '../services/auditWorkTrackingBridge';
+import { captureAuditWorkResumeAuthority } from '../services/assignedWorkMutationGuard';
 import { useSyncStatus } from '../services/SyncStatusContext';
 
 type Props = { navigation: NativeStackNavigationProp<RootStackParamList> };
 
 export function DashboardScreen({ navigation }: Props) {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const { items, loading, refresh } = useInstallations();
   const { triggerSync } = useSyncStatus();
   const [query, setQuery] = useState('');
@@ -35,6 +37,21 @@ export function DashboardScreen({ navigation }: Props) {
 
   const deleteInstallation = async (installation: Installation) => {
     if (deletingId) return;
+    const actorUserId = user?.id;
+    if (!actorUserId) {
+      Alert.alert('Installation not deleted', 'Sign in again before deleting local work.');
+      return;
+    }
+    let resumeAuthority: ReturnType<typeof captureAuditWorkResumeAuthority>;
+    try {
+      resumeAuthority = captureAuditWorkResumeAuthority(actorUserId);
+    } catch (error) {
+      Alert.alert(
+        'Installation not deleted',
+        error instanceof Error ? error.message : 'Your authenticated session changed.',
+      );
+      return;
+    }
     setDeletingId(installation.id);
     try {
       const preview = await getLocalDeletionPreview({ kind: 'installation', id: installation.id });
@@ -55,11 +72,17 @@ export function DashboardScreen({ navigation }: Props) {
         );
       });
       if (!confirmed) return;
-      await suspendAuditWorkForInstallation(installation.id).catch(() => {});
+      const suspension = await suspendAuditWorkForInstallation(
+        installation.id,
+        resumeAuthority,
+      );
+      if (!suspension) {
+        throw new Error('Your authenticated session changed before deletion started.');
+      }
       try {
         await installationsRepo.remove(installation.id);
       } finally {
-        await resumeAuditWorkForInstallation(installation.id).catch(() => {});
+        await resumeAuditWorkForInstallation(suspension, resumeAuthority).catch(() => false);
       }
       await refresh();
     } catch (error) {

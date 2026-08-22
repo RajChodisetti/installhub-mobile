@@ -19,11 +19,13 @@ import {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import {
   FORM_DEFINITION_BY_TYPE,
+  SAFE_TO_PROCEED_FIELD_KEY,
   answersAfterChange,
   isFieldVisible,
   isSectionVisible,
   nonNumericValuesForField,
   optionsForField,
+  requiredFormProgress,
   validateForm,
   withMirroredDeviceIdentityAnswers,
   type FormFieldDefinition,
@@ -77,6 +79,7 @@ import {
 } from '../services/draftAutosave';
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
 import { isCanonicalBoardAnswerKey } from '../domain/formMeterPrefill';
+import { isAssignedWorkAccessRequiredError } from '../services/assignedWorkMutationGuard';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
@@ -87,12 +90,14 @@ function ChoiceRow({
   value,
   onChange,
   disabled,
+  danger = false,
 }: {
   label: string;
   options: { label: string; value: string }[];
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
+  danger?: boolean;
 }) {
   const { colors } = useTheme();
   return (
@@ -110,15 +115,21 @@ function ChoiceRow({
             style={({ pressed }) => [
               styles.choice,
               {
-                borderColor: selected ? colors.primary : colors.border,
-                backgroundColor: selected ? colors.primary : colors.card,
+                borderColor: selected
+                  ? danger ? colors.destructive : colors.primary
+                  : colors.border,
+                backgroundColor: selected
+                  ? danger ? colors.destructive : colors.primary
+                  : colors.card,
                 opacity: pressed ? 0.82 : disabled ? 0.65 : 1,
               },
             ]}
           >
             <Text
               style={{
-                color: selected ? colors.primaryForeground : colors.foreground,
+                color: selected
+                  ? danger ? colors.destructiveForeground : colors.primaryForeground
+                  : colors.foreground,
                 fontWeight: '600',
               }}
             >
@@ -241,8 +252,13 @@ export function FormEditorScreen({ navigation, route }: Props) {
       .then(() => {
         if (mounted.current) setReleasedNavigationAction(data.action);
       })
-      .catch((error) => {
+      .catch(async (error) => {
         if (!mounted.current) return;
+        if (isAssignedWorkAccessRequiredError(error)) {
+          await autosave.cancelPending();
+          if (mounted.current) setReleasedNavigationAction(data.action);
+          return;
+        }
         Alert.alert(
           'Could not save form',
           error instanceof Error
@@ -263,17 +279,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
   const definition = form ? FORM_DEFINITION_BY_TYPE[form.form_type] : null;
   const progress = useMemo(() => {
     if (!form || !definition) return { done: 0, total: 0 };
-    const required = definition.sections
-      .filter((section) => isSectionVisible(section, answers))
-      .flatMap((section) =>
-        section.fields.filter((field) => field.required && isFieldVisible(field, answers)),
-      );
-    const done = required.filter((field) =>
-      field.kind === 'photo'
-        ? attachments.some((item) => item.slot === field.key)
-        : !!String(answers[field.key] ?? '').trim(),
-    ).length;
-    return { done, total: required.length };
+    return requiredFormProgress({ ...form, answers, attachments });
   }, [form, definition, answers, attachments]);
 
   if (!form || !definition) return <LoadingState />;
@@ -348,18 +354,32 @@ export function FormEditorScreen({ navigation, route }: Props) {
     if (!isFieldVisible(field, answers)) return null;
     const label = `${field.label}${field.required ? ' *' : ''}`;
     const value = String(answers[field.key] ?? '');
+    const safetyBlocked = field.key === SAFE_TO_PROCEED_FIELD_KEY && value !== 'yes';
     const fieldError = completionErrors.find((error) =>
       error.startsWith(`${sectionTitle}: ${field.label}`));
     if (canonicalBoard && isCanonicalBoardAnswerKey(form.form_type, field.key)) return null;
 
     if (field.kind === 'yesno') {
       return (
-        <View key={field.key} style={styles.fieldBlock}>
-          <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
+        <View
+          key={field.key}
+          accessibilityRole={safetyBlocked ? 'alert' : undefined}
+          accessibilityLiveRegion={safetyBlocked ? 'assertive' : undefined}
+          style={[
+            styles.fieldBlock,
+            safetyBlocked && styles.safetyStop,
+            safetyBlocked && {
+              borderColor: colors.destructive,
+              backgroundColor: `${colors.destructive}14`,
+            },
+          ]}
+        >
+          <Text style={[styles.label, { color: safetyBlocked || fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ChoiceRow
             label={field.label}
             value={value}
             disabled={readOnly}
+            danger={safetyBlocked}
             onChange={(next) => change(field.key, next)}
             options={[
               { label: 'Yes', value: 'yes' },
@@ -369,6 +389,11 @@ export function FormEditorScreen({ navigation, route }: Props) {
                 : []),
             ]}
           />
+          {safetyBlocked ? (
+            <Text style={[styles.safetyStopText, { color: colors.destructive }]}>
+              STOP: This form cannot be completed until “Can you safely proceed?” is Yes.
+            </Text>
+          ) : null}
           {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
       );
@@ -853,7 +878,25 @@ export function FormEditorScreen({ navigation, route }: Props) {
           <Button
             title="Complete Form"
             onPress={async () => {
-              await autosave.flush();
+              try {
+                await autosave.flush();
+              } catch (error) {
+                if (isAssignedWorkAccessRequiredError(error)) {
+                  await autosave.cancelPending();
+                  setReleasedNavigationAction(StackActions.popTo(
+                    'InstallationDetail',
+                    { installationId },
+                  ));
+                } else {
+                  Alert.alert(
+                    'Could not save form',
+                    error instanceof Error
+                      ? error.message
+                      : 'The latest form changes could not be saved.',
+                  );
+                }
+                return;
+              }
               const latest = await formsRepo.getById(form.id);
               if (!latest) {
                 Alert.alert('Form unavailable', 'This draft could not be found.');
@@ -940,6 +983,17 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', borderRadius: radii.full },
   fieldBlock: { marginBottom: spacing.lg },
+  safetyStop: {
+    borderWidth: 2,
+    borderRadius: radii.md,
+    padding: spacing.md,
+  },
+  safetyStopText: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '800',
+    marginTop: spacing.sm,
+  },
   label: { fontSize: 15, lineHeight: 21, fontWeight: '600', marginBottom: spacing.sm },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   choice: {

@@ -197,6 +197,25 @@ Android blur closes the current session at that event's captured monotonic cutof
 screens for the same installation keeps one session. Reopening a completed installation as Draft
 starts a fresh session.
 
+An externally assigned Draft is additionally gated by a local pre-start review of the currently
+available client, site, address, scheduled date, and technician details. Contact and scope are
+explicitly shown as not supplied by the current job contract. The acknowledgement is not a JSA and
+does not replace site safety controls. The latest assigned pull stores those displayed values in a
+local-only scheduler-summary snapshot, separate from editable installation fields and the canonical
+tree/CAS revision. The acknowledgement binds to the authenticated actor, remote assignee, and hash
+of that snapshot; routine work backup therefore does not invalidate it, while another login, a
+changed pulled summary, reopening, or an inactive/reassigned checkout cannot inherit it. Until it
+is acknowledged, both active-time tracking and all Installation Detail work controls/navigation are
+locked and any attempted work action opens the review. Locally created and non-assigned Drafts keep
+the existing behavior. A root store observer also returns an already-open child route to
+Installation Detail if a later pull invalidates its acknowledgement. Local repository writes capture
+a process-local authenticated-actor session fence before asynchronous work and validate that fence
+plus the latest persisted acknowledgement inside the serialized store mutation; queued autosaves,
+form completion, and other tree changes therefore cannot commit after invalidation or logout/login.
+The acknowledgement write additionally compares the current summary with the exact summary hash
+displayed when the user tapped acknowledge. Server pull/reconciliation writes deliberately bypass
+this local work guard so they can invalidate access without overwriting offline tree edits.
+
 The tracker checkpoints about every 15 seconds into the separate
 `installhub.mobile.active-time.v1` outbox. It never changes `Installation.updated_at`,
 `tree_revision`, the canonical backup payload, or immutable record versions. A restart closes any
@@ -235,6 +254,11 @@ transaction: the immutable Completed form receives the same stable `board_id` an
 the canonical `meterDevices` row uses. Canonical switchboard name/type/zone/location/NMI are shown
 once as concise read-only context in the form, while the same prefilled answers remain stored for
 PDF/reporting and are normalized again at completion.
+
+When a visible `prestart.safe_to_proceed` field is present, only the exact `yes` value counts toward
+required progress or permits form completion. Missing, No, or N/A values remain a prominent red
+STOP state, and the domain completion transaction rejects them before mutating the store so screen
+or future repository callers cannot bypass the safety gate.
 
 An assignment may target `BOARD`, `GRID_BOUNDARY`, `SITE_ASSET`, or explicit `TBC`. Main-supply
 channels may identify their installed-on board, an upstream Grid boundary, or TBC; sub-circuit
@@ -321,6 +345,15 @@ while retaining the entire tree and any unsent edits for recovery. Completed
 work remains visible as history even if it drops out of the active assignment
 inventory. A later reassignment to the same actor reactivates that checkout.
 
+Authoritative installation completion accepts an optional `completionNotes` string. Mobile trims
+blank input to `null`, enforces a 2,000-character limit, and persists the exact normalized value
+(including explicit `null`) beside the completion idempotency key before sending. Every retry for
+that pending attempt reuses the same value; older pending attempts without the field continue to
+omit it for backward-compatible fingerprints. The accepted note is stored locally, displayed on
+the Completed record, and included—HTML-escaped and only when nonblank—in the installation pack.
+Successful reopen clears the live Draft note and never prefills the next sign-off; the prior
+immutable server version retains its original note.
+
 Before any ID remapping or local write, import validates the complete canonical-v2 graph: stable IDs
 must be non-empty and unique, canonical arrays must be present, source/target/status/phase/direction
 enums must be explicit, channel sets must be non-empty and duplicate-free, asset metering state must
@@ -331,6 +364,10 @@ Attachment-copy IDs are deterministic SHA-256 identities, so retries are idempot
 Imported copies default to local-only. If one is later opted into backup, the API reconciles
 `photo_copy_references` so it retains immutable originals without duplicating photo bytes. Preview
 files live in the Expo cache; missing, evicted, or interrupted jobs return to the queue on foreground.
+Preview queue selection, download credentials, file commits, and status updates are partitioned by
+the current actor's installation visibility (including active assignment state) and one exact
+process/cloud session generation, so a later login or revoked checkout never joins or commits an
+earlier thumbnail worker.
 An imported form or installation pack can use persisted source IDs only while the complete cpN
 tree has an explicit import-provenance watermark matching its import-time timestamp anchor, every
 imported form retains a unique source ID, and there is no force-dirty or local-sync watermark.

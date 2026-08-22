@@ -105,6 +105,8 @@ const installerFields: FormFieldDefinition[] = [
   text('installer.electrical_license', 'Electrical licence number'),
 ];
 
+export const SAFE_TO_PROCEED_FIELD_KEY = 'prestart.safe_to_proceed';
+
 const prestartFields: FormFieldDefinition[] = [
   yes('prestart.site_inspection', 'Initial site inspection / checklist completed?', false),
   yes('prestart.site_induction', 'Is a site induction required?'),
@@ -118,7 +120,7 @@ const prestartFields: FormFieldDefinition[] = [
     kind: 'multiline',
     showWhen: { key: 'prestart.additional_hazards', equals: 'yes' },
   },
-  yes('prestart.safe_to_proceed', 'Can you safely proceed?'),
+  yes(SAFE_TO_PROCEED_FIELD_KEY, 'Can you safely proceed?'),
 ];
 
 const signalOptions = ['Low', 'Medium', 'High'];
@@ -817,6 +819,44 @@ export function isSectionVisible(
   return expected.includes(String(answers[section.showWhen.key] ?? ''));
 }
 
+export function visibleSafeToProceedCompletionError(
+  submission: FormSubmission,
+): string | null {
+  const definition = FORM_DEFINITION_BY_TYPE[submission.form_type];
+  for (const section of definition.sections) {
+    if (!isSectionVisible(section, submission.answers)) continue;
+    const field = section.fields.find(
+      (candidate) => candidate.key === SAFE_TO_PROCEED_FIELD_KEY
+        && isFieldVisible(candidate, submission.answers),
+    );
+    if (!field) continue;
+    if (String(submission.answers[field.key] ?? '').trim() === 'yes') return null;
+    return `${section.title}: ${field.label} must be Yes before the form can be completed`;
+  }
+  return null;
+}
+
+export function requiredFormProgress(
+  submission: FormSubmission,
+): { done: number; total: number } {
+  const definition = FORM_DEFINITION_BY_TYPE[submission.form_type];
+  const required = definition.sections
+    .filter((section) => isSectionVisible(section, submission.answers))
+    .flatMap((section) => section.fields.filter(
+      (field) => field.required && isFieldVisible(field, submission.answers),
+    ));
+  const done = required.filter((field) => {
+    if (field.kind === 'photo') {
+      return submission.attachments.some((item) => item.slot === field.key);
+    }
+    if (field.key === SAFE_TO_PROCEED_FIELD_KEY) {
+      return String(submission.answers[field.key] ?? '').trim() === 'yes';
+    }
+    return Boolean(String(submission.answers[field.key] ?? '').trim());
+  }).length;
+  return { done, total: required.length };
+}
+
 function authoredOptionsForField(
   field: FormFieldDefinition,
   answers: Record<string, FormValue>,
@@ -916,10 +956,13 @@ export function withMirroredDeviceIdentityAnswers(
 export function validateForm(submission: FormSubmission): string[] {
   const definition = FORM_DEFINITION_BY_TYPE[submission.form_type];
   const errors: string[] = [];
+  const safetyError = visibleSafeToProceedCompletionError(submission);
+  if (safetyError) errors.push(safetyError);
   for (const section of definition.sections) {
     if (!isSectionVisible(section, submission.answers)) continue;
     for (const field of section.fields) {
       if (!isFieldVisible(field, submission.answers)) continue;
+      if (field.key === SAFE_TO_PROCEED_FIELD_KEY) continue;
       if (field.kind === 'photo') {
         if (
           field.required &&

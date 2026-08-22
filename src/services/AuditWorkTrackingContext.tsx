@@ -18,7 +18,19 @@ import {
   type FocusedAuditRoute,
 } from './auditWorkTrackingPolicy';
 import { registerAuditWorkTrackingRuntime } from './auditWorkTrackingBridge';
+import {
+  auditWorkIsSuspendedForActor,
+  discardAuditWorkSuspensionsForOtherActors,
+  registerAuditWorkSuspension,
+  resumeAuditWorkSuspensionsByReasonForAuthority,
+  resumeSuspendedAuditWorkForAuthority,
+  suspendAuditWorkForAuthority,
+  type AuditWorkResumeAuthority,
+  type AuditWorkSuspensionRegistry,
+} from './auditWorkTrackingResume';
 import { syncActiveTimeSessions } from './activeTimeSync';
+import { installationAllowsActiveWorkTracking } from './assignedWorkPrestart';
+import { assignedWorkInstallationIsVisibleToActor } from './assignedWorkPolicy';
 
 const CHECKPOINT_INTERVAL_MS = 15_000;
 
@@ -30,18 +42,31 @@ const AuditWorkTrackingContext = createContext<AuditWorkTrackingContextValue>({
   setFocusedRoute: () => {},
 });
 
-function localServerParentIsConfirmed(installationId: string): boolean {
+function localInstallationVisibleToActor(
+  installationId: string,
+  actorUserId: string,
+) {
   try {
     const installation = getStore().installations.find((item) => item.id === installationId);
-    return Boolean(
-      installation?.cloud_backup_enabled
-      && installation.assigned_work_state !== 'inactive'
-      && Number.isSafeInteger(installation.server_tree_revision)
-      && Number(installation.server_tree_revision) >= 0,
-    );
+    return installation
+      && assignedWorkInstallationIsVisibleToActor(installation, actorUserId)
+      ? installation
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function localServerParentIsConfirmed(
+  installationId: string,
+  actorUserId: string,
+): boolean {
+  const installation = localInstallationVisibleToActor(installationId, actorUserId);
+  return Boolean(
+    installation?.cloud_backup_enabled
+    && Number.isSafeInteger(installation.server_tree_revision)
+    && Number(installation.server_tree_revision) >= 0,
+  );
 }
 
 export function AuditWorkTrackingProvider({ children }: { children: React.ReactNode }) {
@@ -50,7 +75,7 @@ export function AuditWorkTrackingProvider({ children }: { children: React.ReactN
   const focusedInstallationId = useRef<string | null>(null);
   const appState = useRef<AppStateStatus | null>(AppState.currentState);
   const windowFocused = useRef(true);
-  const suspendedInstallations = useRef(new Set<string>());
+  const suspendedInstallations = useRef<AuditWorkSuspensionRegistry>(new Map());
 
   const trackerRef = useRef<AuditWorkTracker | null>(null);
   if (!trackerRef.current) {
@@ -63,10 +88,17 @@ export function AuditWorkTrackingProvider({ children }: { children: React.ReactN
       ),
       wallTimeNow: () => new Date().toISOString(),
       persist: async (checkpoint) => {
+        if (!localInstallationVisibleToActor(
+          checkpoint.installationId,
+          checkpoint.actorUserId,
+        )) return;
         const outbox = await getActiveTimeOutboxStore();
         await outbox.save(
           checkpoint,
-          localServerParentIsConfirmed(checkpoint.installationId),
+          localServerParentIsConfirmed(
+            checkpoint.installationId,
+            checkpoint.actorUserId,
+          ),
         );
       },
       onPersisted: (checkpoint) => {
@@ -77,27 +109,36 @@ export function AuditWorkTrackingProvider({ children }: { children: React.ReactN
   const tracker = trackerRef.current;
 
   const applyEligibility = useCallback(() => {
+    const eligibilityActorUserId = actorUserId.current;
     const installationId = focusedInstallationId.current;
     let installationIsDraft = false;
-    if (installationId) {
+    if (installationId && eligibilityActorUserId) {
       try {
-        installationIsDraft = getStore().installations.some(
-          (item) => item.id === installationId
-            && item.status === 'Draft'
-            && item.assigned_work_state !== 'inactive',
+        const installation = localInstallationVisibleToActor(
+          installationId,
+          eligibilityActorUserId,
+        );
+        installationIsDraft = Boolean(
+          installation
+          && installationAllowsActiveWorkTracking(
+            installation,
+            eligibilityActorUserId,
+          ),
         );
       } catch {
         installationIsDraft = false;
       }
     }
     return tracker.setEligibility({
-      actorUserId: actorUserId.current,
+      actorUserId: eligibilityActorUserId,
       installationId,
       installationIsDraft,
       appIsActive: appState.current === 'active',
       windowIsFocused: Platform.OS !== 'android' || windowFocused.current,
-      suspended: Boolean(
-        installationId && suspendedInstallations.current.has(installationId),
+      suspended: auditWorkIsSuspendedForActor(
+        suspendedInstallations.current,
+        installationId,
+        actorUserId.current,
       ),
     });
   }, [tracker]);
@@ -111,7 +152,10 @@ export function AuditWorkTrackingProvider({ children }: { children: React.ReactN
     const nextActorUserId = user?.id ?? null;
     if (actorUserId.current !== nextActorUserId) {
       actorUserId.current = nextActorUserId;
-      suspendedInstallations.current.clear();
+      discardAuditWorkSuspensionsForOtherActors(
+        suspendedInstallations.current,
+        nextActorUserId,
+      );
     }
     void (async () => {
       if (nextActorUserId) {
@@ -163,26 +207,75 @@ export function AuditWorkTrackingProvider({ children }: { children: React.ReactN
   }, [tracker]);
 
   useEffect(() => registerAuditWorkTrackingRuntime({
-    async suspendInstallation(installationId) {
-      suspendedInstallations.current.add(installationId);
-      await applyEligibility();
-      if (actorUserId.current) {
+    async suspendInstallation(installationId, suppliedAuthority, reason) {
+      const actorAtStart = actorUserId.current;
+      if (!actorAtStart) return null;
+      const authority: AuditWorkResumeAuthority = suppliedAuthority ?? {
+        actorUserId: actorAtStart,
+        isCurrent: () => actorUserId.current === actorAtStart,
+      };
+      const token = await suspendAuditWorkForAuthority(
+        suspendedInstallations.current,
+        installationId,
+        authority,
+        () => actorUserId.current,
+        () => createId('audit_suspend'),
+        applyEligibility,
+        reason,
+      );
+      if (!token) return null;
+      if (authority.isCurrent() && actorUserId.current === actorAtStart) {
         const outbox = await getActiveTimeOutboxStore();
+        if (!authority.isCurrent() || actorUserId.current !== actorAtStart) {
+          suspendedInstallations.current.delete(token.tokenId);
+          await applyEligibility().catch(() => undefined);
+          return null;
+        }
         await outbox.setServerParentConfirmed(
-          actorUserId.current,
+          actorAtStart,
           installationId,
-          localServerParentIsConfirmed(installationId),
+          localServerParentIsConfirmed(installationId, actorAtStart),
         );
       }
-      if (actorUserId.current) void syncActiveTimeSessions(actorUserId.current);
+      if (!authority.isCurrent() || actorUserId.current !== actorAtStart) {
+        suspendedInstallations.current.delete(token.tokenId);
+        await applyEligibility().catch(() => undefined);
+        return null;
+      }
+      void syncActiveTimeSessions(actorAtStart);
+      return token;
     },
-    async resumeInstallation(installationId) {
-      suspendedInstallations.current.delete(installationId);
-      await applyEligibility();
+    async resumeInstallation(target, authority) {
+      if (!authority) return false;
+      return resumeSuspendedAuditWorkForAuthority(
+        suspendedInstallations.current,
+        target,
+        authority,
+        () => actorUserId.current,
+        applyEligibility,
+      );
+    },
+    async resumeInstallationReasons(installationId, reasons, authority) {
+      return resumeAuditWorkSuspensionsByReasonForAuthority(
+        suspendedInstallations.current,
+        installationId,
+        reasons,
+        authority,
+        () => actorUserId.current,
+        applyEligibility,
+      );
     },
     async closeBeforeLogout() {
       const installationId = focusedInstallationId.current;
-      if (installationId) suspendedInstallations.current.add(installationId);
+      if (installationId && actorUserId.current) {
+        registerAuditWorkSuspension(
+          suspendedInstallations.current,
+          installationId,
+          actorUserId.current,
+          createId('audit_logout'),
+          'logout',
+        );
+      }
       await applyEligibility();
       if (actorUserId.current) void syncActiveTimeSessions(actorUserId.current);
     },

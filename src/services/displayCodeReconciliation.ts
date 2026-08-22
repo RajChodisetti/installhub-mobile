@@ -6,6 +6,10 @@ import type {
   DisplayCode,
   ResolvedDisplayCodeChange,
 } from '../types';
+import {
+  applyServerResultCommitFence,
+  type ServerResultCommitFence,
+} from './serverResultCommitFence';
 
 function remoteRevision(tree: RemoteInstallationTree): number | undefined {
   const value = tree.treeRevision
@@ -222,17 +226,23 @@ export async function reconcileResolvedDisplayCodes(
   installationId: string,
   tree: RemoteInstallationTree,
   expectedTreeRevision: number,
+  commitFence: ServerResultCommitFence,
   replaceRecordedChanges = true,
 ): Promise<ResolvedDisplayCodeChange[]> {
   let result: ResolvedDisplayCodeChange[] = [];
   await updateStore((store) => {
-    result = mergeResolvedDisplayCodes(
+    result = applyServerResultCommitFence(
       store,
       installationId,
-      tree,
-      expectedTreeRevision,
-      new Date().toISOString(),
-      replaceRecordedChanges,
+      commitFence,
+      () => mergeResolvedDisplayCodes(
+        store,
+        installationId,
+        tree,
+        expectedTreeRevision,
+        new Date().toISOString(),
+        replaceRecordedChanges,
+      ),
     );
   });
   return result;
