@@ -198,11 +198,13 @@ screens for the same installation keeps one session. Reopening a completed insta
 starts a fresh session.
 
 An externally assigned Draft is additionally gated by a local pre-start review of the currently
-available client, site, address, scheduled date, and technician details. Contact and scope are
-explicitly shown as not supplied by the current job contract. The acknowledgement is not a JSA and
-does not replace site safety controls. The latest assigned pull stores those displayed values in a
+available client/customer, site and structured Australian address, scheduled date, technician,
+service/scope, site contact, job references, and access instructions. The acknowledgement is not a
+JSA and does not replace site safety controls. The latest assigned pull stores those displayed values in a
 local-only scheduler-summary snapshot, separate from editable installation fields and the canonical
-tree/CAS revision. The acknowledgement binds to the authenticated actor, remote assignee, and hash
+tree/CAS revision. Sensitive access information remains installation-scoped and must not be copied
+into broad job-option labels, invoices, or notifications. The acknowledgement binds to the
+authenticated actor, remote assignee, and hash
 of that snapshot; routine work backup therefore does not invalidate it, while another login, a
 changed pulled summary, reopening, or an inactive/reassigned checkout cannot inherit it. Until it
 is acknowledged, both active-time tracking and all Installation Detail work controls/navigation are
@@ -231,6 +233,15 @@ missing-parent, and lifecycle failures remain pending. Delivery retries after ch
 foregrounding, and Cloud Backup; the API update does not mutate the installation tree revision.
 
 ### Canonical installation v2
+
+Installation metadata carries nullable customer/MaaS/service/metering-plan fields, structured
+Australian address parts, site contact and access details, Fergus/quote references, job scope
+comments, and job-level installation-outcome summaries. Missing values from older clients mean
+“not supplied”; explicit `null` means “clear this value”. Boolean outcomes are tri-state so unknown
+is never silently converted to No. `planned_meter_type` is scheduling intent only: actual NMI,
+installed meter/device identity, and channel topology remain authoritative in `gridSupplies`,
+`meterDevices`, and `measurementAssignments`. Status, scheduled assignment, and completion metadata
+remain their existing lifecycle authorities rather than user-editable duplicates.
 
 `gridSupplies`, `meterDevices`, and `measurementAssignments` are first-class arrays and are the
 authoritative model. Nested legacy board meters and site-asset channel strings are compatibility

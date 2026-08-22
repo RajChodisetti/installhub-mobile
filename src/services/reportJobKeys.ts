@@ -1,3 +1,6 @@
+import { sha256 } from 'js-sha256';
+import type { InstallationReportDetailMode } from '../types';
+
 export function formReportJobKey(
   localFormId: string,
   targetInstallationId?: string,
@@ -25,6 +28,8 @@ export function installationReportJobKey(
   targetInstallationId?: string,
   revision?: string,
   recordVersionNumber?: number,
+  detailMode?: InstallationReportDetailMode,
+  selectedFormIds: string[] = [],
 ): string {
   if (!targetInstallationId || !revision) {
     return `installation:${localInstallationId}`;
@@ -37,5 +42,19 @@ export function installationReportJobKey(
     recordVersionNumber === undefined ? 'live' : `record-version-${recordVersionNumber}`,
     'revision',
     revision,
+    ...(detailMode
+      ? [
+          'detail',
+          detailMode,
+          'forms',
+          installationReportSelectionDigest(selectedFormIds),
+        ]
+      : []),
   ].join(':');
+}
+
+export function installationReportSelectionDigest(formIds: string[]): string {
+  return sha256(
+    JSON.stringify([...new Set(formIds.filter(Boolean))].sort()),
+  ).slice(0, 24);
 }

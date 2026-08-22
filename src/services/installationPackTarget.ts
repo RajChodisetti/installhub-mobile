@@ -42,21 +42,40 @@ function timestampProvenanceIsIntact(tree: InstallationBackupTree): boolean {
   );
 }
 
-function completedLocalFormIds(tree: InstallationBackupTree): string[] {
-  return tree.formSubmissions
-    .filter((form) => form.status === 'Completed')
-    .map((form) => form.id);
+function selectedCompletedForms(
+  tree: InstallationBackupTree,
+  selectedLocalFormIds?: string[],
+) {
+  const completed = tree.formSubmissions.filter(
+    (form) => form.status === 'Completed',
+  );
+  if (selectedLocalFormIds === undefined) return completed;
+  const selectedIds = [...new Set(selectedLocalFormIds.filter(Boolean))];
+  if (completed.length && !selectedIds.length) {
+    throw new Error('Select at least one completed form for the installation pack.');
+  }
+  const byId = new Map(completed.map((form) => [form.id, form]));
+  const selected = selectedIds.map((id) => byId.get(id));
+  if (selected.some((form) => !form)) {
+    throw new Error('The report selection contains a form that is missing or not Completed.');
+  }
+  return selected.filter((form): form is NonNullable<typeof form> => Boolean(form));
 }
 
 export function hasIntactImportedSourceProvenance(
   tree: InstallationBackupTree,
   syncMetadata: InstallationSyncMetadata,
 ): boolean {
+  const sourceWasExplicitlyDraft =
+    tree.installation.legacy_completed_unpinned === false;
   if (
     tree.installation.is_imported_copy !== true ||
     tree.installation.cloud_backup_enabled ||
     !tree.installation.import_source_server_id ||
-    validRecordVersionNumber(tree.installation.import_source_record_version_number) === undefined ||
+    (!sourceWasExplicitlyDraft &&
+      validRecordVersionNumber(
+        tree.installation.import_source_record_version_number,
+      ) === undefined) ||
     tree.installation.import_provenance_watermark !==
       tree.installation.created_at
   ) {
@@ -92,20 +111,21 @@ export function resolveInstallationPackServerTarget(
   tree: InstallationBackupTree,
   syncMetadata: InstallationSyncMetadata,
   remoteSourceRevisionMatches = false,
+  selectedLocalFormIds?: string[],
 ): InstallationPackServerTarget {
+  const selectedForms = selectedCompletedForms(tree, selectedLocalFormIds);
   const localTarget = (
     reason: Exclude<
       InstallationPackServerTarget['reason'],
       'original-import-provenance'
     >,
   ): InstallationPackServerTarget => {
-    const version = selectReportVersion(
-      tree.installation.record_version_number,
-      tree.installation.status === 'Completed',
-    );
+    const version = tree.installation.status === 'Completed'
+      ? selectReportVersion(tree.installation.record_version_number, true)
+      : { liveMode: true as const };
     return {
       installationId: tree.installation.id,
-      formSubmissionIds: completedLocalFormIds(tree),
+      formSubmissionIds: selectedForms.map((form) => form.id),
       usesOriginalImportedRecord: false,
       reason,
       ...version,
@@ -129,13 +149,20 @@ export function resolveInstallationPackServerTarget(
     return localTarget('remote-source-divergence');
   }
 
-  return {
+  const originalSource = {
     installationId: tree.installation.import_source_server_id,
-    formSubmissionIds: tree.formSubmissions
-      .filter((form) => form.status === 'Completed')
-      .map((form) => form.import_source_server_id!),
+    formSubmissionIds: selectedForms.map((form) => form.import_source_server_id!),
     usesOriginalImportedRecord: true,
-    reason: 'original-import-provenance',
+    reason: 'original-import-provenance' as const,
+  };
+  // Imported copies are always locally Draft. The import-time discriminator
+  // tells us whether the source itself was Draft: use its current diagnostic
+  // tree even if a reopened source still carries an older immutable pin.
+  if (tree.installation.legacy_completed_unpinned === false) {
+    return { ...originalSource, liveMode: true };
+  }
+  return {
+    ...originalSource,
     recordVersionNumber: validRecordVersionNumber(
       tree.installation.import_source_record_version_number,
     )!,

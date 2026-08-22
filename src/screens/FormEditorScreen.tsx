@@ -33,6 +33,7 @@ import {
 import { BarcodeScanField } from '../components/BarcodeScanField';
 import {
   electricalAssetsRepo,
+  canonicalInstallationRepo,
   formsRepo,
   getInstallationBackupTree,
   getInstallationSyncMetadata,
@@ -80,6 +81,7 @@ import {
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
 import { isCanonicalBoardAnswerKey } from '../domain/formMeterPrefill';
 import { isAssignedWorkAccessRequiredError } from '../services/assignedWorkMutationGuard';
+import { canonicalNmiForBoard } from '../domain/gridSupplyContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
@@ -151,6 +153,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
   const [attachments, setAttachments] = useState<FormAttachment[]>([]);
   const [canonicalBoard, setCanonicalBoard] = useState<ElectricalAsset | null>(null);
   const [canonicalZoneName, setCanonicalZoneName] = useState('');
+  const [canonicalNmi, setCanonicalNmi] = useState('');
   const [saving, setSaving] = useState(false);
   const [addingSlot, setAddingSlot] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -219,17 +222,23 @@ export function FormEditorScreen({ navigation, route }: Props) {
         ? await electricalAssetsRepo.getById(item.board_id)
         : null;
       const zone = board ? await zonesRepo.getById(board.zone_id) : null;
+      const gridSupplies = board
+        ? await canonicalInstallationRepo.gridSupplies(installationId)
+        : [];
+      const electricityNmi = board ? canonicalNmiForBoard(board, gridSupplies) : '';
       if (!active || !mounted.current) return;
       const initialAnswers = item && board && item.status === 'Draft' &&
         ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(item.form_type)
         ? answersWithCanonicalBoardContext(
             withMirroredDeviceIdentityAnswers(item.answers),
             board,
+            electricityNmi,
           )
         : withMirroredDeviceIdentityAnswers(item?.answers ?? {});
       setForm(item);
       setCanonicalBoard(board);
       setCanonicalZoneName(zone?.zone_name ?? 'Unknown zone');
+      setCanonicalNmi(electricityNmi);
       setAnswers(initialAnswers);
       setAttachments(item?.attachments ?? []);
       initialized.current = true;
@@ -808,10 +817,10 @@ export function FormEditorScreen({ navigation, route }: Props) {
           <Text style={{ color: colors.mutedForeground, marginTop: 6, lineHeight: 20 }}>
             {canonicalBoard.asset_type} · {canonicalZoneName}{'\n'}
             {canonicalBoard.location_description || 'Location not recorded'}{'\n'}
-            NMI: {canonicalBoard.site_nmi || 'Not recorded'}
+            Electricity NMI: {canonicalNmi || 'Not recorded'}
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, fontSize: 12 }}>
-            These details come from the switchboard record. Edit that record to change them before completion.
+            Switchboard details come from the board; NMI comes from its incoming/default Grid supply.
           </Text>
         </Card>
       ) : null}

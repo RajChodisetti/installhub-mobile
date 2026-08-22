@@ -32,7 +32,10 @@ import {
   suspendAuditWorkForInstallation,
 } from '../services/auditWorkTrackingBridge';
 import type { AuditWorkSuspensionReason } from '../services/auditWorkTrackingResume';
-import { remoteInstallationTreeRevision } from '../services/remoteInstallationRevision';
+import {
+  remoteInstallationTreeRevision,
+  remoteInstallationWorkTreeFingerprint,
+} from '../services/remoteInstallationRevision';
 import { copyName, nextCopyIndex } from './copyNaming';
 import {
   boardTypeCode,
@@ -48,7 +51,9 @@ import {
 } from '../services/remoteInstallationValidation';
 import {
   activeAssignedWorkCheckoutIds,
+  acceptAssignedWorkServerRefresh,
   applyAssignedDraftLifecycleResolution,
+  assignedWorkServerMetadataFromInstallation,
   assignedWorkSuspensionReasonsResolvedAfterPull,
   assignedWorkCheckoutBelongsToDifferentActor,
   assignedWorkTrackingShouldResumeAfterPull,
@@ -102,6 +107,30 @@ const optionalText = (
 };
 const bool = (record: Record<string, unknown>, camel: string, snake?: string): boolean =>
   Boolean(record[camel] ?? (snake ? record[snake] : false));
+const nullableBool = (
+  record: Record<string, unknown>,
+  camel: string,
+  snake?: string,
+): boolean | null | undefined => {
+  const hasCamel = Object.prototype.hasOwnProperty.call(record, camel);
+  const hasSnake = Boolean(snake && Object.prototype.hasOwnProperty.call(record, snake));
+  if (!hasCamel && !hasSnake) return undefined;
+  const value = hasCamel ? record[camel] : record[snake!];
+  return value === null ? null : typeof value === 'boolean' ? value : undefined;
+};
+const nullableNumber = (
+  record: Record<string, unknown>,
+  camel: string,
+  snake?: string,
+): number | null | undefined => {
+  const hasCamel = Object.prototype.hasOwnProperty.call(record, camel);
+  const hasSnake = Boolean(snake && Object.prototype.hasOwnProperty.call(record, snake));
+  if (!hasCamel && !hasSnake) return undefined;
+  const value = hasCamel ? record[camel] : record[snake!];
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
 const array = <T>(record: Record<string, unknown>, camel: string, snake?: string): T[] => {
   const value = record[camel] ?? (snake ? record[snake] : undefined);
   return Array.isArray(value) ? value as T[] : [];
@@ -135,10 +164,25 @@ function assignedWorkJobSummaryFromPull(
     actor_user_id: actorUserId,
     assigned_inspector_user_id: assignedInspectorUserId,
     client_name: text(source, 'clientName', 'client_name'),
+    customer_name: text(source, 'customerName', 'customer_name'),
     site_name: text(source, 'siteName', 'site_name'),
     site_address: text(source, 'siteAddress', 'site_address'),
+    site_locality: text(source, 'siteLocality', 'site_locality'),
+    site_state: text(source, 'siteState', 'site_state'),
+    site_postcode: text(source, 'sitePostcode', 'site_postcode'),
     audit_date: text(source, 'auditDate', 'audit_date'),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
+    maas: nullableBool(source, 'maas') ?? null,
+    service_type: text(source, 'serviceType', 'service_type'),
+    metering_solution_type: text(source, 'meteringSolutionType', 'metering_solution_type'),
+    planned_meter_type: text(source, 'plannedMeterType', 'planned_meter_type'),
+    site_contact_name: text(source, 'siteContactName', 'site_contact_name'),
+    site_contact_phone: text(source, 'siteContactPhone', 'site_contact_phone'),
+    site_contact_email: text(source, 'siteContactEmail', 'site_contact_email'),
+    fergus_job_number: text(source, 'fergusJobNumber', 'fergus_job_number'),
+    quote_number: text(source, 'quoteNumber', 'quote_number'),
+    job_comments: text(source, 'jobComments', 'job_comments'),
+    access_information: text(source, 'accessInformation', 'access_information'),
   }, pulledAt);
 }
 
@@ -592,10 +636,44 @@ export async function importRemoteInstallationAsCopy(
         }
       : {}),
     client_name: text(source, 'clientName', 'client_name'),
+    customer_name: optionalText(source, 'customerName', 'customer_name'),
     site_name: copiedSiteName,
     site_address: text(source, 'siteAddress', 'site_address'),
+    site_locality: optionalText(source, 'siteLocality', 'site_locality'),
+    site_state: optionalText(source, 'siteState', 'site_state'),
+    site_postcode: optionalText(source, 'sitePostcode', 'site_postcode'),
+    site_country_code: optionalText(source, 'siteCountryCode', 'site_country_code') ?? 'AU',
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     audit_date: text(source, 'auditDate', 'audit_date'),
+    maas: nullableBool(source, 'maas'),
+    service_type: optionalText(source, 'serviceType', 'service_type'),
+    metering_solution_type: optionalText(
+      source,
+      'meteringSolutionType',
+      'metering_solution_type',
+    ),
+    planned_meter_type: optionalText(source, 'plannedMeterType', 'planned_meter_type'),
+    site_contact_name: optionalText(source, 'siteContactName', 'site_contact_name'),
+    site_contact_phone: optionalText(source, 'siteContactPhone', 'site_contact_phone'),
+    site_contact_email: optionalText(source, 'siteContactEmail', 'site_contact_email'),
+    fergus_job_number: optionalText(source, 'fergusJobNumber', 'fergus_job_number'),
+    quote_number: optionalText(source, 'quoteNumber', 'quote_number'),
+    job_comments: optionalText(source, 'jobComments', 'job_comments'),
+    access_information: optionalText(source, 'accessInformation', 'access_information'),
+    warranty_device: nullableBool(source, 'warrantyDevice', 'warranty_device'),
+    monitoring_installed: nullableBool(source, 'monitoringInstalled', 'monitoring_installed'),
+    hardware_installed: nullableBool(source, 'hardwareInstalled', 'hardware_installed'),
+    solar_capacity_kw: nullableNumber(source, 'solarCapacityKw', 'solar_capacity_kw'),
+    additional_monitoring_required: nullableBool(
+      source,
+      'additionalMonitoringRequired',
+      'additional_monitoring_required',
+    ),
+    additional_monitoring_hardware: optionalText(
+      source,
+      'additionalMonitoringHardware',
+      'additional_monitoring_hardware',
+    ),
     // Assigned work keeps the canonical server identity. Explicit cloud-copy
     // imports remain fresh local Draft records.
     status: isAssignedMaterialization
@@ -613,6 +691,9 @@ export async function importRemoteInstallationAsCopy(
       : {}),
     ...(isAssignedMaterialization && optionalText(source, 'completedAt', 'completed_at')
       ? { completed_at: optionalText(source, 'completedAt', 'completed_at') }
+      : {}),
+    ...(isAssignedMaterialization && optionalText(source, 'completedByUserId', 'completed_by_user_id')
+      ? { completed_by_user_id: optionalText(source, 'completedByUserId', 'completed_by_user_id') }
       : {}),
     ...(isAssignedMaterialization && sourceCompletionNotes
       ? { completion_notes: sourceCompletionNotes }
@@ -662,6 +743,12 @@ export async function importRemoteInstallationAsCopy(
       ? optionalText(source, 'updatedAt', 'updated_at') ?? now
       : now,
   };
+  if (isAssignedMaterialization) {
+    installation.assigned_work_server_metadata_base =
+      assignedWorkServerMetadataFromInstallation(installation);
+    installation.assigned_work_server_tree_fingerprint =
+      remoteInstallationWorkTreeFingerprint(tree);
+  }
   const zones: Zone[] = tree.zones.map((zone) => ({
     id: zoneIds.get(text(zone, 'id'))!,
     audit_id: installationId,
@@ -1211,11 +1298,43 @@ export async function syncAssignedInstallations(
           ? assignedWorkJobSummaryFromPull(remote, actorUserId, response.pulledAt)
           : undefined;
         local.cloud_backup_enabled = true;
+        const hasPendingCompletion = Boolean(
+          local.pending_completion
+          || store.cloudSync.pending_complete_attempts?.[id],
+        );
+        if (!hasPendingCompletion) {
+          if (serverState.metadataPatch) Object.assign(local, serverState.metadataPatch);
+          if (serverState.serverMetadataBase) {
+            local.assigned_work_server_metadata_base = serverState.serverMetadataBase;
+          }
+          if (serverState.serverTreeRevision !== undefined) {
+            if (
+              local.server_tree_revision !== undefined
+              && serverState.serverTreeRevision < local.server_tree_revision
+            ) {
+              throw new Error('Assigned-work server tree revision regressed during persistence.');
+            }
+            if (serverState.serverTreeRevision !== local.server_tree_revision) {
+              local.server_derived = undefined;
+            }
+            local.server_tree_revision = serverState.serverTreeRevision;
+          }
+          if (serverState.serverTreeFingerprint) {
+            local.assigned_work_server_tree_fingerprint = serverState.serverTreeFingerprint;
+          }
+          if (serverState.refreshConflict !== undefined) {
+            local.assigned_work_refresh_conflict =
+              serverState.refreshConflict ?? undefined;
+          }
+        }
         if (serverState.recordVersionNumber !== undefined) {
           local.record_version_number = serverState.recordVersionNumber;
         }
         if (serverState.completedAt !== undefined) {
           local.completed_at = serverState.completedAt;
+        }
+        if (serverState.completedByUserId !== undefined) {
+          local.completed_by_user_id = serverState.completedByUserId;
         }
         if (serverState.completedFromRevision !== undefined) {
           local.completed_from_revision = serverState.completedFromRevision;
@@ -1311,4 +1430,40 @@ export async function syncAssignedInstallations(
     activeAssigned: plan.activeAssignedIds.length,
     hidden: plan.inactiveAssignedIds.length,
   };
+}
+
+/**
+ * Accepts only server-changed installation metadata from a previously detected
+ * metadata-only conflict. Child/form records and local tree edits are retained.
+ */
+export async function acceptAssignedWorkServerChanges(
+  installationId: string,
+): Promise<Installation> {
+  const authority = captureAssignedWorkMutationAuthority();
+  const actorUserId = actorForCurrentAssignedWorkAuthority(authority);
+  if (!actorUserId) {
+    throw new Error('Sign in again before accepting assigned job changes.');
+  }
+  let accepted: Installation | null = null;
+  await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    if (
+      store.cloudSync.pending_complete_attempts?.[installationId]
+      || store.installations.find((item) => item.id === installationId)?.pending_completion
+    ) {
+      throw new Error('Finish the pending Cloud Backup confirmation first.');
+    }
+    const installation = store.installations.find((item) => item.id === installationId);
+    if (!installation) throw new Error('Installation not found.');
+    if (
+      installation.local_owner_user_id !== actorUserId
+      || installation.assigned_work_state !== 'active'
+      || installation.assigned_work_actor_user_id !== actorUserId
+    ) {
+      throw new Error('This assigned job is no longer active for the signed-in account.');
+    }
+    acceptAssignedWorkServerRefresh(installation);
+    accepted = { ...installation };
+  });
+  return accepted!;
 }

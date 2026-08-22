@@ -17,6 +17,16 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     user: { id: 'user', email: 'field@example.test', full_name: 'Field', role: 'admin' },
     installations: [{
       id: 'installation', client_name: 'Client', site_name: 'Golden Site', site_address: 'Address',
+      customer_name: 'End Customer', maas: null, service_type: 'Metering installation',
+      metering_solution_type: 'Multi-circuit monitoring', planned_meter_type: 'Wattwatchers',
+      site_locality: 'Sydney', site_state: 'NSW', site_postcode: '2000', site_country_code: 'AU',
+      site_contact_name: 'Site Contact', site_contact_phone: '+61 400 000 001',
+      site_contact_email: 'contact@example.test', fergus_job_number: 'FERGUS-1',
+      quote_number: 'Q-1', job_comments: 'Install the planned monitoring.',
+      access_information: 'Collect keys from reception.', warranty_device: null,
+      monitoring_installed: false, hardware_installed: true, solar_capacity_kw: 42.5,
+      additional_monitoring_required: true,
+      additional_monitoring_hardware: 'One additional current transformer.',
       inspector_name: 'Field', audit_date: '2026-08-01', status: 'Draft',
       external_key: 'server:installation', site_code: 'Legacy Site Code / 2024', timezone: 'Australia/Sydney',
       tree_schema_version: 2, tree_revision: 3,
@@ -93,6 +103,13 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
   };
   const wire = buildBackupPayload(backupTree, [], 'complete');
   assert.equal(wire.installation.siteCode, 'Legacy Site Code / 2024');
+  assert.equal(wire.installation.customerName, 'End Customer');
+  assert.equal(wire.installation.maas, null);
+  assert.equal(wire.installation.siteState, 'NSW');
+  assert.equal(wire.installation.sitePostcode, '2000');
+  assert.equal(wire.installation.accessInformation, 'Collect keys from reception.');
+  assert.equal(wire.installation.monitoringInstalled, false);
+  assert.equal(wire.installation.solarCapacityKw, 42.5);
   assert.equal(wire.zones[0]?.zoneCode, 'PLANT');
   assert.equal(wire.meterDevices[0]?.customName, 'Boiler Meter');
   const remote = {

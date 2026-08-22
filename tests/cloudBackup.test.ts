@@ -254,6 +254,16 @@ test('cloud payload labels metadata and complete pushes without changing legacy 
   assert.equal('syncStage' in buildBackupPayload(tree, queue), false);
 });
 
+test('legacy local records omit unknown additive job fields instead of clearing server values', () => {
+  const installation = buildBackupPayload(tree, [], 'metadata').installation;
+  assert.equal('customerName' in installation, false);
+  assert.equal('maas' in installation, false);
+  assert.equal('siteContactName' in installation, false);
+  assert.equal('accessInformation' in installation, false);
+  assert.equal('monitoringInstalled' in installation, false);
+  assert.equal('solarCapacityKw' in installation, false);
+});
+
 test('WW purpose and custom-load answers survive backup serialization unchanged', () => {
   const answers = {
     'channel.1.purpose': 'Sub-circuit / asset',

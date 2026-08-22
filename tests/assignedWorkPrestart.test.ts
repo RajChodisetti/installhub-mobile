@@ -100,6 +100,25 @@ test('a changed pulled scheduler summary invalidates without overwriting offline
   assert.equal(assignedWorkPrestartActionIsLocked(next, 'technician-1'), true);
 });
 
+test('changed contact, scope, or access instructions require a fresh pre-start acknowledgement', () => {
+  const previous = acknowledgedDraft();
+  const next: Installation = {
+    ...previous,
+    assigned_work_job_summary: summary({
+      site_contact_name: 'Updated Site Contact',
+      service_type: 'Meter replacement',
+      access_information: 'Collect the restricted-key set from reception.',
+      pulled_at: '2026-08-21T10:00:00.000Z',
+    }),
+  };
+  next.assigned_work_prestart_acknowledgement =
+    reconcileAssignedWorkPrestartAcknowledgement(previous, next);
+
+  assert.equal(next.assigned_work_prestart_acknowledgement, undefined);
+  assert.equal(assignedWorkPrestartActionIsLocked(next, 'technician-1'), true);
+  assert.equal(next.access_information, undefined);
+});
+
 test('actor reassignment, inactivity, and reopen each invalidate the acknowledgement', () => {
   const previous = acknowledgedDraft();
 

@@ -3,6 +3,7 @@ import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
 import {
+  acceptAssignedWorkServerChanges,
   getLocalDeletionPreview,
   gridSuppliesRepo,
   installationsRepo,
@@ -209,17 +210,59 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     && assignedJobSummary.assigned_inspector_user_id === user.id
     && item.assigned_work_actor_user_id === user.id,
   );
+  const yesNoLabel = (value: boolean | null | undefined): string => (
+    value === true ? 'Yes' : value === false ? 'No' : 'Not confirmed'
+  );
+  const contactSummary = [
+    assignedJobSummary?.site_contact_name,
+    assignedJobSummary?.site_contact_phone,
+    assignedJobSummary?.site_contact_email,
+  ].filter(Boolean).join(' · ');
+  const scopeSummary = [
+    assignedJobSummary?.service_type,
+    assignedJobSummary?.metering_solution_type,
+    assignedJobSummary?.planned_meter_type,
+    assignedJobSummary?.job_comments,
+  ].filter(Boolean).join(' · ');
   const assignedJobDetailRows = [
     ['Client', assignedJobSummary?.client_name ?? 'Assigned job summary unavailable — refresh assigned work'],
+    ['Customer', assignedJobSummary?.customer_name ?? ''],
     ['Site', assignedJobSummary?.site_name ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['Address', assignedJobSummary?.site_address ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['Scheduled date', assignedJobSummary?.audit_date
       ? formatDate(assignedJobSummary.audit_date)
       : 'Assigned job summary unavailable — refresh assigned work'],
     ['Technician', assignedJobSummary?.inspector_name ?? 'Assigned job summary unavailable — refresh assigned work'],
-    ['Contact', 'Not supplied in this job contract'],
-    ['Scope', 'Not supplied in this job contract'],
+    ['MaaS', yesNoLabel(assignedJobSummary?.maas)],
+    ['Contact', contactSummary],
+    ['Scope', scopeSummary],
+    ['Fergus job number', assignedJobSummary?.fergus_job_number ?? ''],
+    ['Quote number', assignedJobSummary?.quote_number ?? ''],
+    ['Access information', assignedJobSummary?.access_information ?? ''],
   ] as const;
+  const jobDetailRows = ([
+    ['Customer', item.customer_name ?? ''],
+    ['Service type', item.service_type ?? ''],
+    ['Metering solution', item.metering_solution_type ?? ''],
+    ['Planned meter type', item.planned_meter_type ?? ''],
+    ['MaaS', yesNoLabel(item.maas)],
+    ['Site contact', [item.site_contact_name, item.site_contact_phone, item.site_contact_email]
+      .filter(Boolean).join(' · ')],
+    ['Fergus job number', item.fergus_job_number ?? ''],
+    ['Quote number', item.quote_number ?? ''],
+    ['Access information', item.access_information ?? ''],
+    ['Job comments / scope', item.job_comments ?? ''],
+  ] as Array<readonly [string, string]>).filter(([, value]) => Boolean(value));
+  const outcomeRows: Array<readonly [string, string]> = [
+    ['Warranty replacement device', yesNoLabel(item.warranty_device)],
+    ['Monitoring installed', yesNoLabel(item.monitoring_installed)],
+    ['Hardware installed', yesNoLabel(item.hardware_installed)],
+    ['Solar capacity', item.solar_capacity_kw === null || item.solar_capacity_kw === undefined
+      ? 'Not confirmed'
+      : `${item.solar_capacity_kw} kW`],
+    ['Additional monitoring required', yesNoLabel(item.additional_monitoring_required)],
+    ['Additional monitoring hardware', item.additional_monitoring_hardware ?? 'Not confirmed'],
+  ];
   const readinessSummary = summarizeReadinessIssues(readiness?.issues ?? []);
   const readinessIssueCount = readinessSummary.reduce((count, group) => count + group.count, 0);
   const readinessPartition = partitionReadinessIssues(readiness?.issues ?? [], {
@@ -289,6 +332,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     }
     setPrestartAcknowledging(true);
     try {
+      const latest = await installationsRepo.getById(installationId);
+      if (latest?.assigned_work_refresh_conflict) {
+        await acceptAssignedWorkServerChanges(installationId);
+      }
       await installationsRepo.acknowledgeAssignedWorkPrestart(
         installationId,
         assignedWorkSummarySha256(displayedSummary),
@@ -302,6 +349,25 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       );
     } finally {
       setPrestartAcknowledging(false);
+    }
+  }
+
+  async function acceptAssignedServerJobChanges() {
+    setBackupChanging(true);
+    try {
+      await acceptAssignedWorkServerChanges(installationId);
+      await refresh();
+      Alert.alert(
+        'Server job changes accepted',
+        'Only server-changed job fields were updated. Other device edits remain in place.',
+      );
+    } catch (error) {
+      Alert.alert(
+        'Could not accept server changes',
+        error instanceof Error ? error.message : 'The server changes could not be accepted.',
+      );
+    } finally {
+      setBackupChanging(false);
     }
   }
 
@@ -536,6 +602,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         server_tree_revision: response.treeRevision,
         record_version_number: response.recordVersionNumber,
         completed_at: response.completedAt,
+        completed_by_user_id: response.completedByUserId ?? user?.id,
         completed_from_revision: response.completedFromRevision ?? baseTreeRevision,
         completion_notes: acceptedCompletionNotes,
         backup_conflict: { kind: 'NONE' },
@@ -795,7 +862,12 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           cloud_backup_retained: !removeServerCopy && Boolean(
             syncMetadata.syncedWatermark || syncMetadata.serverTreeRevision !== undefined,
           ),
-          ...(clearResolvedConflict ? { backup_conflict: { kind: 'NONE' as const } } : {}),
+          ...(clearResolvedConflict
+            ? {
+                backup_conflict: { kind: 'NONE' as const },
+                assigned_work_refresh_conflict: undefined,
+              }
+            : {}),
         }, actionLease!.processAuthority),
       );
       await runLeasedCloudActionStep(actionLease, refresh);
@@ -889,6 +961,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Text style={[typography.title, { color: colors.foreground }]}>{item.site_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.client_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.site_address}</Text>
+          {[item.site_locality, item.site_state, item.site_postcode].some(Boolean) ? (
+            <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+              {[item.site_locality, item.site_state, item.site_postcode].filter(Boolean).join(' ')}
+            </Text>
+          ) : null}
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
             {item.inspector_name} · {formatDate(item.audit_date)}
           </Text>
@@ -952,6 +1029,34 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           </Text>
         </Card>
       ) : null}
+      {jobDetailRows.length ? (
+        <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+          <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
+            Job details
+          </Text>
+          {jobDetailRows.map(([label, value]) => (
+            <View key={label} style={{ marginTop: spacing.xs }}>
+              <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
+                {label}
+              </Text>
+              <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
+          Installation outcome
+        </Text>
+        {outcomeRows.map(([label, value]) => (
+          <View key={label} style={{ marginTop: spacing.xs }}>
+            <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
+              {label}
+            </Text>
+            <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
+          </View>
+        ))}
+      </Card>
       {item.status === 'Draft' && readiness && !readiness.readyToComplete ? (
         <View
           accessibilityRole="alert"
@@ -1058,6 +1163,38 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           </View>
         </Card>
       ) : null}
+      {item.assigned_work_refresh_conflict ? (
+        <Card
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          accessibilityLabel="Assigned work changed on the server. Cloud Backup is paused."
+          style={{ marginTop: spacing.md }}
+        >
+          <Text style={{ color: colors.destructive, fontWeight: '700' }}>
+            Assigned work changed on the server
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+            {item.assigned_work_refresh_conflict.remote_tree_changed
+              ? 'The server tree changed or this device has no trusted baseline, so it did not advance its Cloud Backup revision or replace local forms and capture.'
+              : `${item.assigned_work_refresh_conflict.conflicting_fields.length} job field${item.assigned_work_refresh_conflict.conflicting_fields.length === 1 ? '' : 's'} changed both on the server and on this device. Cloud Backup is paused until you choose.`}
+          </Text>
+          {!item.assigned_work_refresh_conflict.remote_tree_changed ? (
+            <Button
+              title="Accept server job changes"
+              disabled={backupChanging || syncing}
+              style={{ marginTop: spacing.md }}
+              onPress={() => { void acceptAssignedServerJobChanges(); }}
+            />
+          ) : null}
+          <Button
+            title="Keep Local-Only"
+            variant="secondary"
+            disabled={backupChanging || syncing}
+            style={{ marginTop: spacing.sm }}
+            onPress={confirmKeepDeviceCopyLocalOnly}
+          />
+        </Card>
+      ) : null}
       {item.legacy_completed_unpinned ? (
         <View style={{ marginTop: 8 }}>
           <Badge label="Legacy local completion · Cloud validation required" tone="tbc" />
@@ -1146,6 +1283,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       ) : (
         <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
           <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+            Completion record
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            Completed {item.completed_at ? formatDate(item.completed_at) : 'at an unavailable time'}
+            {item.completed_by_user_id ? ` by user ${item.completed_by_user_id}` : ''}.
+          </Text>
+          <Text style={{ color: colors.foreground, fontWeight: '700', marginTop: spacing.md }}>
             Technician completion notes
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
@@ -1434,8 +1578,18 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           />
         ) : (
           <Button
-            title={prestartAcknowledging ? 'Saving acknowledgement…' : 'Acknowledge current job details'}
-            disabled={prestartAcknowledging || !canAcknowledgeAssignedSummary}
+            title={prestartAcknowledging
+              ? 'Saving acknowledgement…'
+              : item.assigned_work_refresh_conflict?.remote_tree_changed
+                ? 'Server tree reconciliation required'
+                : item.assigned_work_refresh_conflict
+                  ? 'Accept server changes and acknowledge'
+                  : 'Acknowledge current job details'}
+            disabled={
+              prestartAcknowledging
+              || !canAcknowledgeAssignedSummary
+              || item.assigned_work_refresh_conflict?.remote_tree_changed
+            }
             style={{ marginTop: spacing.md }}
             onPress={() => { void acknowledgeAssignedWorkPrestart(); }}
           />
@@ -1557,7 +1711,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
       <FormModal visible={gridModal} title={editingGridId ? 'Edit incoming grid connection' : 'Add incoming grid connection'} onClose={() => setGridModal(false)}>
         <TextField label="Supply name" value={gridName} onChangeText={setGridName} />
-        <TextField label="NMI (optional)" value={gridNmi} onChangeText={setGridNmi} />
+        <TextField label="NMI (optional)" value={gridNmi} maxLength={100} onChangeText={setGridNmi} />
         <TextField label="External key (optional)" value={gridExternalKey} onChangeText={setGridExternalKey} />
         <Button
           title={gridDefault ? 'Default supply' : 'Set as default'}

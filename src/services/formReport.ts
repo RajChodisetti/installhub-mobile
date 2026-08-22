@@ -3,6 +3,7 @@ import * as Sharing from 'expo-sharing';
 import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { PDFDocument } from 'pdf-lib';
 import type { FormAttachment, FormSubmission } from '../types';
 import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
 import {
@@ -10,6 +11,11 @@ import {
   type EmbeddedFormImage,
 } from './formReportHtml';
 import { formPdfFilename } from './reportFilenames';
+import {
+  A4_PRINT_HEIGHT,
+  A4_PRINT_WIDTH,
+  stampPdfPageFooters,
+} from './reportPage';
 
 export { buildFormReportHtml } from './formReportHtml';
 
@@ -123,6 +129,7 @@ export function isRetryableFormPdfError(error: unknown): boolean {
 export async function createFormPdf(
   submission: FormSubmission,
   qualityTier = 0,
+  options: { stampPageNumbers?: boolean } = {},
 ): Promise<string> {
   const [embeddedImages, brandLogoDataUri] = await Promise.all([
     embedAttachments(submission.attachments, qualityTier),
@@ -138,7 +145,11 @@ export async function createFormPdf(
 
   let temporary: File | null = null;
   try {
-    const { uri } = await Print.printToFileAsync({ html });
+    const { uri } = await Print.printToFileAsync({
+      html,
+      width: A4_PRINT_WIDTH,
+      height: A4_PRINT_HEIGHT,
+    });
     temporary = new File(uri);
     if (!temporary.exists || (temporary.size ?? 0) < MIN_VALID_PDF_BYTES) {
       throw new FormPdfGenerationError(
@@ -158,7 +169,13 @@ export async function createFormPdf(
   directory.create({ idempotent: true, intermediates: true });
   const output = new File(directory, formPdfFilename(submission));
   try {
-    await temporary.copy(output, { overwrite: true });
+    if (options.stampPageNumbers === false) {
+      await temporary.copy(output, { overwrite: true });
+    } else {
+      const document = await PDFDocument.load(await temporary.base64());
+      await stampPdfPageFooters(document, 'Field App Complete field record');
+      output.write(await document.save({ useObjectStreams: true }));
+    }
   } finally {
     if (temporary.exists) temporary.delete();
   }

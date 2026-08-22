@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import type { RemoteInstallationTree } from '../src/api/apiClient';
 import {
+  acceptAssignedWorkServerRefresh,
   activeAssignedWorkCheckoutIds,
   applyAssignedDraftLifecycleResolution,
   assignedWorkSuspensionReasonsResolvedAfterPull,
@@ -11,6 +12,7 @@ import {
   crossActorAssignedCheckoutConflictIds,
   CrossActorAssignedCheckoutConflictError,
   assignedWorkTrackingShouldResumeAfterPull,
+  assignedWorkServerMetadataFromInstallation,
   importedCopiesForActor,
   materializedRecordId,
   mergeAssignedInstallationServerState,
@@ -19,6 +21,7 @@ import {
   remoteTreeIsAuthoritativeReopen,
 } from '../src/services/assignedWorkPolicy';
 import { nextCopyIndex } from '../src/repositories/copyNaming';
+import { remoteInstallationWorkTreeFingerprint } from '../src/services/remoteInstallationRevision';
 import type { Installation } from '../src/types';
 import {
   auditWorkIsSuspendedForActor,
@@ -408,6 +411,174 @@ test('assigned completion notes map only when the server explicitly supplies the
     status: 'Completed',
   }));
   assert.equal('completionNotes' in legacy, false);
+});
+
+test('metadata-only assigned pull advances CAS without replacing local-only metadata edits', () => {
+  const baseTree = tree({ id: 'assigned', status: 'Draft' });
+  const original = localInstallation({
+    customer_name: 'Old customer',
+    site_locality: 'Old locality',
+    site_state: 'NSW',
+    site_postcode: '2000',
+    warranty_device: null,
+    server_tree_revision: 4,
+    tree_revision: 11,
+  });
+  const local = localInstallation({
+    ...original,
+    // Field App-only edit after the accepted server base.
+    warranty_device: true,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+  });
+  const result = mergeAssignedInstallationServerState(local, {
+    ...tree({
+      id: 'assigned',
+      status: 'Draft',
+      customerName: 'Updated customer',
+      siteLocality: 'Sydney',
+      siteState: 'NSW',
+      sitePostcode: '2001',
+      warrantyDevice: null,
+    }),
+    treeRevision: 5,
+  }, '2026-08-15T01:00:00.000Z');
+
+  assert.deepEqual(result.metadataPatch, {
+    customer_name: 'Updated customer',
+    site_locality: 'Sydney',
+    site_postcode: '2001',
+  });
+  assert.equal(result.serverTreeRevision, 5);
+  assert.equal(result.refreshConflict, null);
+  assert.equal('warranty_device' in (result.metadataPatch ?? {}), false);
+  assert.equal(local.tree_revision, 11);
+  assert.equal(local.warranty_device, true);
+});
+
+test('authoritative completion can advance a proven metadata-only assigned CAS base', () => {
+  const baseTree = tree({ id: 'assigned', status: 'Draft' });
+  const original = localInstallation({
+    server_tree_revision: 4,
+    tree_revision: 12,
+  });
+  const local = localInstallation({
+    ...original,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+    pending_completion: {
+      baseTreeRevision: 4,
+      idempotencyKey: 'completion-key',
+      createdAt: '2026-08-15T00:00:00.000Z',
+    },
+  });
+  const result = mergeAssignedInstallationServerState(local, {
+    ...tree({
+      id: 'assigned',
+      status: 'Completed',
+      assignedInspectorUserId: 'field-1',
+      recordVersionNumber: 8,
+      completedAt: '2026-08-15T01:00:00.000Z',
+      completedFromRevision: 6,
+    }),
+    treeRevision: 7,
+    recordVersionNumber: 8,
+  });
+
+  assert.equal(result.status, 'Completed');
+  assert.equal(result.serverTreeRevision, 7);
+  assert.equal(result.recordVersionNumber, 8);
+  assert.equal(result.completedFromRevision, 6);
+  assert.equal(result.refreshConflict, null);
+  assert.equal(local.tree_revision, 12);
+});
+
+test('same-field local and server metadata edits pause CAS until explicit acceptance', () => {
+  const baseTree = tree({ id: 'assigned', status: 'Draft' });
+  const original = localInstallation({
+    quote_number: 'Q-1',
+    warranty_device: null,
+    server_tree_revision: 4,
+    tree_revision: 8,
+  });
+  const local = localInstallation({
+    ...original,
+    quote_number: 'Q-LOCAL',
+    warranty_device: true,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+  });
+  const result = mergeAssignedInstallationServerState(local, {
+    ...tree({
+      id: 'assigned',
+      status: 'Draft',
+      quoteNumber: 'Q-SERVER',
+      warrantyDevice: null,
+    }),
+    treeRevision: 5,
+  }, '2026-08-15T01:00:00.000Z');
+
+  assert.equal(result.serverTreeRevision, undefined);
+  assert.equal(result.metadataPatch, undefined);
+  assert.deepEqual(result.refreshConflict?.conflicting_fields, ['quote_number']);
+  assert.equal(result.refreshConflict?.remote_tree_changed, false);
+
+  local.assigned_work_refresh_conflict = result.refreshConflict ?? undefined;
+  acceptAssignedWorkServerRefresh(local);
+  assert.equal(local.quote_number, 'Q-SERVER');
+  assert.equal(local.warranty_device, true);
+  assert.equal(local.server_tree_revision, 5);
+  assert.equal(local.tree_revision, 8);
+  assert.equal(local.assigned_work_refresh_conflict, undefined);
+});
+
+test('remote child/form changes never advance assigned checkout CAS implicitly', () => {
+  const baseTree = tree({ id: 'assigned', status: 'Draft' });
+  const original = localInstallation({ server_tree_revision: 4, tree_revision: 9 });
+  const local = localInstallation({
+    ...original,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+  });
+  const result = mergeAssignedInstallationServerState(local, {
+    ...tree({ id: 'assigned', status: 'Draft', customerName: 'Updated customer' }),
+    treeRevision: 5,
+    zones: [{ id: 'server-zone', zoneName: 'Concurrent server zone' }],
+  }, '2026-08-15T01:00:00.000Z');
+
+  assert.equal(result.serverTreeRevision, undefined);
+  assert.equal(result.refreshConflict?.remote_tree_changed, true);
+  local.assigned_work_refresh_conflict = result.refreshConflict ?? undefined;
+  assert.throws(
+    () => acceptAssignedWorkServerRefresh(local),
+    /changed or cannot be proven unchanged/i,
+  );
+  assert.equal(local.server_tree_revision, 4);
+  assert.equal(local.tree_revision, 9);
+});
+
+test('an unanchored older checkout does not advance across an unknown server revision', () => {
+  const local = localInstallation({
+    server_tree_revision: 4,
+    tree_revision: 10,
+  });
+  const result = mergeAssignedInstallationServerState(local, {
+    ...tree({ id: 'assigned', status: 'Draft', customerName: 'Server customer' }),
+    treeRevision: 5,
+  }, '2026-08-15T01:00:00.000Z');
+
+  assert.equal(result.serverTreeRevision, undefined);
+  assert.equal(result.refreshConflict?.remote_tree_changed, true);
+  assert.equal(result.refreshConflict?.local_base_tree_revision, 4);
+  assert.equal(local.server_tree_revision, 4);
 });
 
 test('remote completion metadata cannot advance the existing checkout CAS base', () => {

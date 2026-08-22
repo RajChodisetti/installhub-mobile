@@ -10,11 +10,12 @@ import {
   type DeviceSearchRecord,
 } from '../domain/meterSearch';
 import { FORM_DEFINITION_BY_TYPE, createInitialFormAnswers } from '../forms/catalog';
-import { formsRepo } from '../repositories';
+import { canonicalInstallationRepo, formsRepo } from '../repositories';
 import { Button, Card, EmptyState, LoadingState, SearchBar } from '../components/ui';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { commsFaultIdentityAnswersForMeter } from '../domain/formMeterPrefill';
+import { canonicalNmiForBoard } from '../domain/gridSupplyContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DeviceSearch'>;
 
@@ -45,10 +46,11 @@ export function DeviceSearchScreen({ navigation, route }: Props) {
     }
     setReplacingId(record.meter.id);
     try {
+      const gridSupplies = await canonicalInstallationRepo.gridSupplies(record.installation.id);
       const answers = createInitialFormAnswers(record.installation, user);
       answers['existing.switchboard_location'] = record.board.location_description ?? '';
       answers['existing.switchboard_type'] = record.board.asset_type;
-      answers['existing.site_nmi'] = record.board.site_nmi ?? '';
+      answers['existing.site_nmi'] = canonicalNmiForBoard(record.board, gridSupplies);
       Object.assign(answers, commsFaultIdentityAnswersForMeter(record.meter));
       const sensorRating = record.meter.channels.find((channel) =>
         channel.purpose !== 'SPARE' && Boolean(channel.sensorRating?.trim()))?.sensorRating;

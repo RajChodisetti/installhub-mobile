@@ -293,7 +293,7 @@ export function buildInstallationBackupTree(
   installation: Installation,
 ): InstallationBackupTree {
   const baseTreeRevision = serverBaseTreeRevision(installation);
-  return {
+  return structuredClone({
     treeSchemaVersion: 2,
     ...(baseTreeRevision !== undefined ? { baseTreeRevision } : {}),
     installation,
@@ -309,7 +309,7 @@ export function buildInstallationBackupTree(
       (item) => item.installation_id === installation.id,
     ),
     watermark: treeWatermark(store, installation.id),
-  };
+  });
 }
 
 export function applyServerTreeRevision(
@@ -327,6 +327,12 @@ export function applyServerTreeRevision(
     throw new Error(
       `Server tree revision regressed from ${current} to ${treeRevision}.`,
     );
+  }
+  if (current !== treeRevision) {
+    // Upload confirmation advances the server tree without returning that
+    // tree. Force the next canonical pull to reseed its child/form fingerprint
+    // instead of comparing the new revision against an older projection.
+    installation.assigned_work_server_tree_fingerprint = undefined;
   }
   installation.server_tree_revision = treeRevision;
 }
@@ -373,11 +379,16 @@ export class InstallationBackupDispatchBlockedError extends Error {
 export function installationAllowsNewBackupDispatch(
   installation: Pick<
     Installation,
-    'cloud_backup_enabled' | 'assigned_work_state' | 'assigned_work_actor_user_id' | 'local_owner_user_id'
+    | 'cloud_backup_enabled'
+    | 'assigned_work_state'
+    | 'assigned_work_actor_user_id'
+    | 'local_owner_user_id'
+    | 'assigned_work_refresh_conflict'
   >,
   actorUserId: string,
 ): boolean {
   return installation.cloud_backup_enabled
+    && !installation.assigned_work_refresh_conflict
     && assignedWorkInstallationIsVisibleToActor(installation, actorUserId);
 }
 

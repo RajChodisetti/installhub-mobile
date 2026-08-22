@@ -503,6 +503,7 @@ function ensureInstallationMetadata(installation: Installation): void {
   if (!installation.site_code?.trim()) {
     installation.site_code = normalizedSiteCode(installation.site_name);
   }
+  installation.site_country_code = installation.site_country_code?.trim().toUpperCase() || 'AU';
   installation.tree_revision = Math.max(0, installation.tree_revision ?? 0);
   if (installation.server_tree_revision === undefined) {
     const exactCanonicalRevision = installation.server_derived?.treeRevision;
@@ -870,6 +871,10 @@ export function bumpTreeRevision(store: AppDataStore, installationId: string): n
   installation.record_version_number = installation.status === 'Completed'
     ? installation.record_version_number
     : undefined;
+  // Derived residuals are an authoritative snapshot of one server revision.
+  // Any local tree mutation makes that snapshot unsafe until reconciliation
+  // returns a replacement for the newly accepted server revision.
+  installation.server_derived = undefined;
   installation.backup_conflict = { kind: 'NONE' };
   return installation.tree_revision;
 }
@@ -1596,19 +1601,150 @@ export interface AllAssetMeteringRow {
   meteringIssueCodes: string[];
 }
 
-export function deriveVirtualMeters(
-  store: AppDataStore,
-  installationId: string,
-): VirtualMeterDefinition[] {
-  const boards = store.electricalAssets.filter((item) => item.audit_id === installationId);
-  const assets = store.siteAssets.filter((item) => item.audit_id === installationId);
-  const meters = new Map(
-    store.meterDevices
-      .filter((item) => item.installationId === installationId)
-      .map((item) => [item.id, item]),
+export interface MeasurementSemanticsInput {
+  boards: ElectricalAsset[];
+  siteAssets: SiteAsset[];
+  gridSupplies: GridSupply[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
+}
+
+function measurementBoardHasUpstreamBoard(
+  boardById: Map<string, ElectricalAsset>,
+  boardId: string,
+  upstreamBoardId: string,
+): boolean {
+  let current = boardById.get(boardId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.electrical_source?.kind !== 'BOARD') return false;
+    if (current.electrical_source.boardId === upstreamBoardId) return true;
+    current = boardById.get(current.electrical_source.boardId);
+  }
+  return false;
+}
+
+function measurementBoardReachesGridSupply(
+  boardById: Map<string, ElectricalAsset>,
+  boardId: string,
+  gridSupplyId: string,
+): boolean {
+  let current = boardById.get(boardId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.electrical_source?.kind === 'GRID') {
+      return current.electrical_source.gridSupplyId === gridSupplyId;
+    }
+    if (current.electrical_source?.kind !== 'BOARD') return false;
+    current = boardById.get(current.electrical_source.boardId);
+  }
+  return false;
+}
+
+/** Shared physical/topology contract for map edges and residual derivation. */
+export function isSemanticallyConfirmedMeasurementAssignment(
+  input: MeasurementSemanticsInput,
+  assignment: MeasurementAssignment,
+): boolean {
+  if (assignment.status !== 'CONFIRMED' || assignment.target.kind === 'TBC') {
+    return false;
+  }
+  const boardById = new Map(input.boards.map((board) => [board.id, board]));
+  const meter = input.meterDevices.find(
+    (candidate) => candidate.id === assignment.meterId,
   );
-  const assignments = store.measurementAssignments.filter(
-    (item) => item.installationId === installationId && item.status === 'CONFIRMED',
+  if (!meter || !boardById.has(meter.installedOnBoardId)) return false;
+
+  const uniqueChannelIds = new Set(assignment.channelIds);
+  const expectedCount =
+    assignment.phaseMode === 'SINGLE_PHASE'
+      ? 1
+      : assignment.phaseMode === 'THREE_PHASE'
+        ? 3
+        : null;
+  if (
+    uniqueChannelIds.size === 0 ||
+    uniqueChannelIds.size !== assignment.channelIds.length ||
+    (expectedCount !== null && uniqueChannelIds.size !== expectedCount)
+  ) {
+    return false;
+  }
+  const channels = [...uniqueChannelIds].map((channelId) =>
+    meter.channels.find((channel) => channel.id === channelId),
+  );
+  if (channels.some((channel) => !channel || channel.purpose === 'SPARE')) {
+    return false;
+  }
+  const purposes = new Set(channels.map((channel) => channel?.purpose));
+  if (purposes.size !== 1) return false;
+  if (
+    [...uniqueChannelIds].some((channelId) =>
+      input.measurementAssignments.some(
+        (candidate) =>
+          candidate.id !== assignment.id &&
+          candidate.channelIds.includes(channelId),
+      ),
+    )
+  ) {
+    return false;
+  }
+
+  const purpose = channels[0]?.purpose;
+  if (assignment.target.kind === 'SITE_ASSET') {
+    const siteAssetId = assignment.target.siteAssetId;
+    const target = input.siteAssets.find(
+      (asset) => asset.id === siteAssetId,
+    );
+    return (
+      purpose === 'SUB_CIRCUIT' &&
+      target?.electrical_source?.kind === 'BOARD' &&
+      target.electrical_source.boardId === meter.installedOnBoardId
+    );
+  }
+  if (assignment.target.kind === 'BOARD') {
+    const target = boardById.get(assignment.target.boardId);
+    if (!target) return false;
+    if (purpose === 'MAIN_SUPPLY') {
+      return target.id === meter.installedOnBoardId;
+    }
+    return (
+      purpose === 'SUB_CIRCUIT' &&
+      target.id !== meter.installedOnBoardId &&
+      measurementBoardHasUpstreamBoard(
+        boardById,
+        target.id,
+        meter.installedOnBoardId,
+      )
+    );
+  }
+  const gridSupplyId = assignment.target.gridSupplyId;
+  return (
+    purpose === 'MAIN_SUPPLY' &&
+    input.gridSupplies.some(
+      (supply) => supply.id === gridSupplyId,
+    ) &&
+    measurementBoardReachesGridSupply(
+      boardById,
+      meter.installedOnBoardId,
+      gridSupplyId,
+    )
+  );
+}
+
+export function deriveVirtualMetersFromEntities(input: {
+  boards: ElectricalAsset[];
+  siteAssets: SiteAsset[];
+  gridSupplies: GridSupply[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
+}): VirtualMeterDefinition[] {
+  const boards = input.boards;
+  const assets = input.siteAssets;
+  const meters = new Map(input.meterDevices.map((item) => [item.id, item]));
+  const assignments = input.measurementAssignments.filter((assignment) =>
+    isSemanticallyConfirmedMeasurementAssignment(input, assignment),
   );
   const totalsByParent = new Map<string, MeasurementAssignment[]>();
   for (const assignment of assignments) {
@@ -1670,6 +1806,29 @@ export function deriveVirtualMeters(
     });
   }
   return result;
+}
+
+export function deriveVirtualMeters(
+  store: AppDataStore,
+  installationId: string,
+): VirtualMeterDefinition[] {
+  return deriveVirtualMetersFromEntities({
+    boards: store.electricalAssets.filter(
+      (item) => item.audit_id === installationId,
+    ),
+    siteAssets: store.siteAssets.filter(
+      (item) => item.audit_id === installationId,
+    ),
+    gridSupplies: store.gridSupplies.filter(
+      (item) => item.installationId === installationId,
+    ),
+    meterDevices: store.meterDevices.filter(
+      (item) => item.installationId === installationId,
+    ),
+    measurementAssignments: store.measurementAssignments.filter(
+      (item) => item.installationId === installationId,
+    ),
+  });
 }
 
 export function allAssetMeteringRows(store: AppDataStore, installationId: string): AllAssetMeteringRow[] {

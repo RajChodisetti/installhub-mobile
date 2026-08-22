@@ -11,6 +11,7 @@ import type {
   Meter,
   SiteAsset,
   User,
+  VirtualMeterDefinition,
   Zone,
 } from '../types';
 import { createId, nowIso } from '../utils';
@@ -32,6 +33,7 @@ import {
   boardTypeCode,
   bumpTreeRevision,
   createMeasurementAssignment,
+  deriveVirtualMeters,
   electricalTreeRows,
   installationReadiness,
   isValidInstallationSiteCode,
@@ -127,6 +129,9 @@ export interface InstallationsRepository {
     | 'assigned_work_actor_user_id'
     | 'assigned_work_job_summary'
     | 'assigned_work_prestart_acknowledgement'
+    | 'assigned_work_server_metadata_base'
+    | 'assigned_work_server_tree_fingerprint'
+    | 'assigned_work_refresh_conflict'
     | 'created_at'
     | 'updated_at'
     | 'status'
@@ -168,7 +173,7 @@ export interface InstallationsRepository {
     authority?: AssignedWorkMutationAuthority,
   ): Promise<Installation>;
   applyServerState(id: string, patch: Pick<Installation,
-    'status' | 'tree_revision' | 'server_tree_revision' | 'record_version_number' | 'completed_at' | 'completed_from_revision' |
+    'status' | 'tree_revision' | 'server_tree_revision' | 'record_version_number' | 'completed_at' | 'completed_by_user_id' | 'completed_from_revision' |
     'reopened_at' | 'reopen_reason' | 'backup_conflict' | 'pending_completion' |
     'legacy_completed_unpinned' | 'completion_notes'>,
   authority?: AssignedWorkMutationAuthority | ServerResultCommitFence): Promise<Installation>;
@@ -239,6 +244,7 @@ export interface CanonicalInstallationRepository {
   readiness(installationId: string): Promise<InstallationReadiness>;
   electricalTree(installationId: string): Promise<ElectricalTreeRow[]>;
   allAssetMetering(installationId: string): Promise<AllAssetMeteringRow[]>;
+  virtualMeters(installationId: string): Promise<VirtualMeterDefinition[]>;
   meteringInventory(installationId: string): Promise<MeteringInventorySummary>;
   meterDevices(installationId: string): Promise<MeterDevice[]>;
   measurementAssignments(installationId: string): Promise<MeasurementAssignment[]>;
@@ -374,6 +380,7 @@ export const installationsRepo: InstallationsRepository = {
       tree_schema_version: 2,
       external_key: input.external_key ?? `local:${id}`,
       site_code: input.site_code,
+      site_country_code: input.site_country_code?.trim().toUpperCase() || 'AU',
       timezone: input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       tree_revision: 0,
       backup_conflict: { kind: 'NONE' },
@@ -409,8 +416,15 @@ export const installationsRepo: InstallationsRepository = {
         );
       }
       const domainKeys: Array<keyof Installation> = [
-        'client_name', 'site_name', 'site_address', 'inspector_name', 'audit_date',
-        'site_code', 'timezone',
+        'client_name', 'customer_name', 'site_name', 'site_address',
+        'site_locality', 'site_state', 'site_postcode', 'site_country_code',
+        'inspector_name', 'audit_date', 'site_code', 'timezone', 'maas',
+        'service_type', 'metering_solution_type', 'planned_meter_type',
+        'site_contact_name', 'site_contact_phone', 'site_contact_email',
+        'fergus_job_number', 'quote_number', 'job_comments', 'access_information',
+        'warranty_device', 'monitoring_installed', 'hardware_installed',
+        'solar_capacity_kw', 'additional_monitoring_required',
+        'additional_monitoring_hardware',
       ];
       if (s.installations[idx].status === 'Completed' && domainKeys.some((key) => key in patch)) {
         throw new Error('Reopen this completed installation before editing it.');
@@ -1239,6 +1253,19 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
   async allAssetMetering(installationId) {
     await initStore();
     return allAssetMeteringRows(getStore(), installationId);
+  },
+  async virtualMeters(installationId) {
+    await initStore();
+    const store = getStore();
+    const installation = store.installations.find((item) => item.id === installationId);
+    const serverDerived = installation?.server_derived;
+    if (
+      serverDerived
+      && serverDerived.treeRevision === installation?.server_tree_revision
+    ) {
+      return serverDerived.virtualMeterDefinitions;
+    }
+    return deriveVirtualMeters(store, installationId);
   },
   async meteringInventory(installationId) {
     await initStore();

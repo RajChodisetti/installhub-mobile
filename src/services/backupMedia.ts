@@ -572,9 +572,73 @@ export function buildBackupPayload(
     ...(syncStage ? { syncStage } : {}),
     installation: {
       id: installationId,
+      ...(tree.installation.customer_name !== undefined
+        ? { customerName: tree.installation.customer_name }
+        : {}),
       clientName: tree.installation.client_name,
+      ...(tree.installation.maas !== undefined ? { maas: tree.installation.maas } : {}),
+      ...(tree.installation.service_type !== undefined
+        ? { serviceType: tree.installation.service_type }
+        : {}),
+      ...(tree.installation.metering_solution_type !== undefined
+        ? { meteringSolutionType: tree.installation.metering_solution_type }
+        : {}),
+      ...(tree.installation.planned_meter_type !== undefined
+        ? { plannedMeterType: tree.installation.planned_meter_type }
+        : {}),
       siteName: tree.installation.site_name,
       siteAddress: tree.installation.site_address,
+      ...(tree.installation.site_locality !== undefined
+        ? { siteLocality: tree.installation.site_locality }
+        : {}),
+      ...(tree.installation.site_state !== undefined
+        ? { siteState: tree.installation.site_state }
+        : {}),
+      ...(tree.installation.site_postcode !== undefined
+        ? { sitePostcode: tree.installation.site_postcode }
+        : {}),
+      ...(tree.installation.site_country_code !== undefined
+        ? { siteCountryCode: tree.installation.site_country_code }
+        : {}),
+      ...(tree.installation.site_contact_name !== undefined
+        ? { siteContactName: tree.installation.site_contact_name }
+        : {}),
+      ...(tree.installation.site_contact_phone !== undefined
+        ? { siteContactPhone: tree.installation.site_contact_phone }
+        : {}),
+      ...(tree.installation.site_contact_email !== undefined
+        ? { siteContactEmail: tree.installation.site_contact_email }
+        : {}),
+      ...(tree.installation.fergus_job_number !== undefined
+        ? { fergusJobNumber: tree.installation.fergus_job_number }
+        : {}),
+      ...(tree.installation.quote_number !== undefined
+        ? { quoteNumber: tree.installation.quote_number }
+        : {}),
+      ...(tree.installation.job_comments !== undefined
+        ? { jobComments: tree.installation.job_comments }
+        : {}),
+      ...(tree.installation.access_information !== undefined
+        ? { accessInformation: tree.installation.access_information }
+        : {}),
+      ...(tree.installation.warranty_device !== undefined
+        ? { warrantyDevice: tree.installation.warranty_device }
+        : {}),
+      ...(tree.installation.monitoring_installed !== undefined
+        ? { monitoringInstalled: tree.installation.monitoring_installed }
+        : {}),
+      ...(tree.installation.hardware_installed !== undefined
+        ? { hardwareInstalled: tree.installation.hardware_installed }
+        : {}),
+      ...(tree.installation.solar_capacity_kw !== undefined
+        ? { solarCapacityKw: tree.installation.solar_capacity_kw }
+        : {}),
+      ...(tree.installation.additional_monitoring_required !== undefined
+        ? { additionalMonitoringRequired: tree.installation.additional_monitoring_required }
+        : {}),
+      ...(tree.installation.additional_monitoring_hardware !== undefined
+        ? { additionalMonitoringHardware: tree.installation.additional_monitoring_hardware }
+        : {}),
       inspectorName: tree.installation.inspector_name,
       auditDate: tree.installation.audit_date,
       status: tree.installation.status,
@@ -584,7 +648,13 @@ export function buildBackupPayload(
       treeSchemaVersion: tree.installation.tree_schema_version ?? 2,
       recordVersionNumber: tree.installation.record_version_number ?? null,
       completedAt: tree.installation.completed_at ?? null,
+      ...(tree.installation.completed_by_user_id !== undefined
+        ? { completedByUserId: tree.installation.completed_by_user_id }
+        : {}),
       completedFromRevision: tree.installation.completed_from_revision ?? null,
+      ...(tree.installation.completion_notes !== undefined
+        ? { completionNotes: tree.installation.completion_notes }
+        : {}),
       createdAt: tree.installation.created_at,
       updatedAt: tree.installation.updated_at,
     },

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
 import {
@@ -13,6 +13,8 @@ import {
   type AllAssetMeteringRow,
   type ElectricalTreeRow,
 } from '../domain/installationV2';
+import { buildElectricalDiagramModel } from '../domain/electricalDiagram';
+import { ElectricalSingleLineDiagram } from '../components/domain/ElectricalSingleLineDiagram';
 import type {
   ElectricalAsset,
   MeasurementAssignment,
@@ -47,6 +49,7 @@ import {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DataView'>;
 type ViewMode = 'RECONCILIATION' | 'VALIDATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
+type ElectricalViewMode = 'DIAGRAM' | 'RELATIONSHIPS';
 const METER_RESULT_LIMIT = 100;
 type DataViewResumeState = {
   mode: ViewMode;
@@ -69,6 +72,7 @@ export function DataViewScreen({ navigation, route }: Props) {
     gridSupplies,
     meterDevices,
     measurementAssignments,
+    virtualMeters,
     readiness,
     loading,
     refresh,
@@ -94,6 +98,32 @@ export function DataViewScreen({ navigation, route }: Props) {
     resumeState?.baselineIssueKeys ?? null,
   );
   const [collapsedElectricalIds, setCollapsedElectricalIds] = useState<Set<string>>(new Set());
+  const [electricalViewMode, setElectricalViewMode] = useState<ElectricalViewMode>('DIAGRAM');
+
+  const electricalDiagram = useMemo(
+    () => item
+      ? buildElectricalDiagramModel({
+          installation: item,
+          zones,
+          boards,
+          siteAssets,
+          gridSupplies,
+          meterDevices,
+          measurementAssignments,
+          virtualMeterDefinitions: virtualMeters,
+        })
+      : null,
+    [
+      boards,
+      gridSupplies,
+      item,
+      measurementAssignments,
+      meterDevices,
+      siteAssets,
+      virtualMeters,
+      zones,
+    ],
+  );
 
   useEffect(() => {
     if (!item) return;
@@ -430,6 +460,20 @@ export function DataViewScreen({ navigation, route }: Props) {
             1 installation · {zones.length} zones · {boards.length} switchboards · {siteAssets.length} site assets
           </Text>
         </Card>
+      ) : mode === 'ELECTRICAL' ? (
+        <>
+          <Card style={{ marginBottom: spacing.md }}>
+            <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Supply and measurement stay separate</Text>
+            <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>FED_FROM builds the electrical supply hierarchy. MEASURES shows which installed device channels measure a target and never changes that target's supply parent.</Text>
+          </Card>
+          <SelectChips
+            label="Electrical map view"
+            value={electricalViewMode}
+            options={['DIAGRAM', 'RELATIONSHIPS']}
+            getLabel={(value) => value === 'DIAGRAM' ? 'Single-line diagram' : 'Relationship details'}
+            onChange={setElectricalViewMode}
+          />
+        </>
       ) : null}
     </View>
   );
@@ -633,6 +677,35 @@ export function DataViewScreen({ navigation, route }: Props) {
           ListEmptyComponent={<EmptyState title="No site assets" />}
           contentContainerStyle={styles.pad}
         />
+      ) : mode === 'ELECTRICAL' && electricalViewMode === 'DIAGRAM' ? (
+        <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+          {header}
+          {electricalDiagram ? (
+            <ElectricalSingleLineDiagram
+              model={electricalDiagram}
+              search={search}
+              onOpenNode={(node) => {
+                if (node.kind === 'BOARD') {
+                  const board = boards.find((candidate) => candidate.id === node.id);
+                  if (board) navigation.navigate('BoardDetail', {
+                    boardId: board.id,
+                    installationId,
+                    zoneId: board.zone_id,
+                  });
+                } else if (node.kind === 'SITE_ASSET') {
+                  const asset = siteAssets.find((candidate) => candidate.id === node.id);
+                  if (asset) navigation.navigate('SiteAssetDetail', {
+                    assetId: asset.id,
+                    installationId,
+                    zoneId: asset.zone_id,
+                  });
+                }
+              }}
+            />
+          ) : (
+            <EmptyState title="No confirmed electrical map" />
+          )}
+        </ScrollView>
       ) : mode === 'ELECTRICAL' ? (
         <FlatList
           data={visibleTree}

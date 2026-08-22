@@ -34,7 +34,12 @@ export function InstallationFormScreen({ navigation, route }: Props) {
   if (loading) return <LoadingState />;
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentContainerStyle={styles.pad}
+      automaticallyAdjustKeyboardInsets
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.lg }]}>
         {id ? 'Edit installation' : 'New site installation'}
       </Text>

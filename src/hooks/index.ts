@@ -8,6 +8,7 @@ import type {
   MeasurementAssignment,
   MeterDevice,
   SiteAsset,
+  VirtualMeterDefinition,
   Zone,
 } from '../types';
 import {
@@ -113,6 +114,7 @@ export function useInstallation(id?: string) {
   const [gridSupplies, setGridSupplies] = useState<GridSupply[]>([]);
   const [meterDevices, setMeterDevices] = useState<MeterDevice[]>([]);
   const [measurementAssignments, setMeasurementAssignments] = useState<MeasurementAssignment[]>([]);
+  const [virtualMeters, setVirtualMeters] = useState<VirtualMeterDefinition[]>([]);
   const [readiness, setReadiness] = useState<InstallationReadiness | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -120,7 +122,7 @@ export function useInstallation(id?: string) {
     if (!id) return;
     setLoading(true);
     try {
-      const [inst, z, b, a, grids, meters, assignments, ready] = await Promise.all([
+      const [inst, z, b, a, grids, meters, assignments, virtuals, ready] = await Promise.all([
         installationsRepo.getById(id),
         zonesRepo.listByInstallation(id),
         electricalAssetsRepo.listByInstallation(id),
@@ -128,6 +130,7 @@ export function useInstallation(id?: string) {
         canonicalInstallationRepo.gridSupplies(id),
         canonicalInstallationRepo.meterDevices(id),
         canonicalInstallationRepo.measurementAssignments(id),
+        canonicalInstallationRepo.virtualMeters(id),
         canonicalInstallationRepo.readiness(id),
       ]);
       setItem(inst);
@@ -137,6 +140,7 @@ export function useInstallation(id?: string) {
       setGridSupplies(grids);
       setMeterDevices(meters);
       setMeasurementAssignments(assignments);
+      setVirtualMeters(virtuals);
       setReadiness(ready);
     } finally {
       setLoading(false);
@@ -158,6 +162,7 @@ export function useInstallation(id?: string) {
     gridSupplies,
     meterDevices,
     measurementAssignments,
+    virtualMeters,
     readiness,
     loading,
     refresh,

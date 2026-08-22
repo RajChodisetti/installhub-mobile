@@ -81,7 +81,18 @@ test('first offline capture advances metadata through confirmations to the exact
 
   // Metadata creates server revision 1; two first-time confirmations advance
   // it to 3. Each response is durably applied before the next request.
+  store.installations[0]!.assigned_work_server_tree_fingerprint = 'older-server-tree';
   applyServerTreeRevision(store, 'offline-installation', 1);
+  assert.equal(
+    store.installations[0]!.assigned_work_server_tree_fingerprint,
+    undefined,
+  );
+  store.installations[0]!.assigned_work_server_tree_fingerprint = 'canonical-revision-1';
+  applyServerTreeRevision(store, 'offline-installation', 1);
+  assert.equal(
+    store.installations[0]!.assigned_work_server_tree_fingerprint,
+    'canonical-revision-1',
+  );
   assert.equal(
     buildInstallationBackupTree(store, store.installations[0]!).baseTreeRevision,
     1,
@@ -106,6 +117,29 @@ test('first offline capture advances metadata through confirmations to the exact
   );
 });
 
+test('an installation backup tree is a coherent snapshot, not live store references', () => {
+  const store = offlineCaptureStore();
+  store.zones.push({
+    id: 'zone-snapshot',
+    audit_id: 'offline-installation',
+    zone_name: 'Original zone',
+    zone_description: 'Original description',
+    photos: [],
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  const snapshot = buildInstallationBackupTree(
+    store,
+    store.installations[0]!,
+  );
+
+  store.installations[0]!.site_name = 'Mutated site';
+  store.zones[0]!.zone_name = 'Mutated zone';
+
+  assert.equal(snapshot.installation.site_name, 'Offline site');
+  assert.equal(snapshot.zones[0]!.zone_name, 'Original zone');
+});
+
 test('portal conflicts report the persisted server base, not the local mutation counter', () => {
   const store = offlineCaptureStore();
   applyServerTreeRevision(store, 'offline-installation', 4);
@@ -125,6 +159,28 @@ test('portal conflicts report the persisted server base, not the local mutation 
     detectedAt: '2026-08-01T01:00:00.000Z',
   });
   assert.deepEqual(store.cloudSync.force_dirty_installation_ids, ['offline-installation']);
+});
+
+test('a local mutation invalidates server-derived residuals without losing the server CAS base', () => {
+  const store = offlineCaptureStore();
+  store.installations[0]!.server_tree_revision = 3;
+  store.installations[0]!.server_derived = {
+    treeRevision: 3,
+    virtualMeterDefinitions: [{
+      id: 'virtual-stale',
+      parentNodeId: 'board-removed',
+      totalMeasurementAssignmentId: 'assignment-removed',
+      subtractAssignmentIds: [],
+      formulaVersion: 1,
+      allocation: 'UNALLOCATED_RESIDUAL',
+    }],
+  };
+
+  bumpTreeRevision(store, 'offline-installation');
+
+  assert.equal(store.installations[0]!.server_derived, undefined);
+  assert.equal(store.installations[0]!.server_tree_revision, 3);
+  assert.equal(store.installations[0]!.tree_revision, 9);
 });
 
 test('lost upload response recovers the exact confirmed revision before final push', () => {

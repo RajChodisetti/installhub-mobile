@@ -143,13 +143,14 @@ export function humanDeviceLabel(
 export function answersWithCanonicalBoardContext(
   answers: Record<string, FormValue>,
   board: ElectricalAsset,
+  gridNmi = board.site_nmi ?? '',
 ): Record<string, FormValue> {
   return {
     ...answers,
     'auditor.switchboard_name': board.asset_name,
     'auditor.switchboard_location': board.location_description ?? '',
     'auditor.switchboard_type': board.asset_type,
-    'auditor.site_nmi': board.site_nmi ?? '',
+    'auditor.site_nmi': gridNmi,
   };
 }
 

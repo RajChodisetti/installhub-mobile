@@ -1,5 +1,9 @@
 export type InstallationStatus = 'Draft' | 'Completed';
 
+export type InstallationReportDetailMode =
+  | 'by-electrical-hierarchy'
+  | 'by-zone';
+
 export type BoardType =
   | 'MSB'
   | 'MSSB'
@@ -367,13 +371,74 @@ export interface AssignedWorkJobSummarySnapshot {
   actor_user_id: string;
   assigned_inspector_user_id: string;
   client_name: string;
+  customer_name?: string;
   site_name: string;
   site_address: string;
+  site_locality?: string;
+  site_state?: string;
+  site_postcode?: string;
   audit_date: string;
   inspector_name: string;
+  maas?: boolean | null;
+  service_type?: string;
+  metering_solution_type?: string;
+  planned_meter_type?: string;
+  site_contact_name?: string;
+  site_contact_phone?: string;
+  site_contact_email?: string;
+  fergus_job_number?: string;
+  quote_number?: string;
+  job_comments?: string;
+  access_information?: string;
   pulled_at: string;
 }
 
+/**
+ * Last installation-metadata values accepted from the assigned-work server.
+ * This local-only base enables a field-aware three-way merge without treating
+ * unrelated zone, asset, meter, or form edits as metadata conflicts.
+ */
+export interface AssignedWorkServerMetadataSnapshot {
+  client_name: string;
+  customer_name: string | null;
+  site_name: string;
+  site_address: string;
+  site_locality: string | null;
+  site_state: string | null;
+  site_postcode: string | null;
+  site_country_code: string | null;
+  inspector_name: string;
+  audit_date: string;
+  timezone: string | null;
+  maas: boolean | null;
+  service_type: string | null;
+  metering_solution_type: string | null;
+  planned_meter_type: string | null;
+  site_contact_name: string | null;
+  site_contact_phone: string | null;
+  site_contact_email: string | null;
+  fergus_job_number: string | null;
+  quote_number: string | null;
+  job_comments: string | null;
+  access_information: string | null;
+  warranty_device: boolean | null;
+  monitoring_installed: boolean | null;
+  hardware_installed: boolean | null;
+  solar_capacity_kw: number | null;
+  additional_monitoring_required: boolean | null;
+  additional_monitoring_hardware: string | null;
+}
+
+export interface AssignedWorkRefreshConflict {
+  base: AssignedWorkServerMetadataSnapshot;
+  incoming: AssignedWorkServerMetadataSnapshot;
+  local_base_tree_revision: number;
+  remote_tree_revision: number;
+  conflicting_fields: Array<keyof AssignedWorkServerMetadataSnapshot>;
+  remote_tree_changed: boolean;
+  incoming_tree_fingerprint: string;
+  detected_at: string;
+}
 export interface Installation {
   id: string;
   /** Local-only durable owner used to fence shared-device data between logins. */
@@ -388,12 +453,46 @@ export interface Installation {
   assigned_work_job_summary?: AssignedWorkJobSummarySnapshot;
   /** Local-only acknowledgement for the current assigned actor and pulled summary. */
   assigned_work_prestart_acknowledgement?: AssignedWorkPrestartAcknowledgement;
+  /** Last accepted server metadata base; excluded from canonical backup payloads. */
+  assigned_work_server_metadata_base?: AssignedWorkServerMetadataSnapshot;
+  /** Last accepted server child/form projection; local-only edits never mutate this value. */
+  assigned_work_server_tree_fingerprint?: string;
+  /** Pauses backup until overlapping or unknown remote edits are explicitly resolved. */
+  assigned_work_refresh_conflict?: AssignedWorkRefreshConflict;
   client_name: string;
+  /** The end customer when different from the contracting client. */
+  customer_name?: string | null;
   site_name: string;
   site_address: string;
+  /** Structured Australian address parts; site_address remains the display fallback. */
+  site_locality?: string | null;
+  site_state?: string | null;
+  site_postcode?: string | null;
+  site_country_code?: string | null;
   inspector_name: string;
   audit_date: string;
   status: InstallationStatus;
+  /** Scheduler-provided job classification and site-access metadata. */
+  maas?: boolean | null;
+  service_type?: string | null;
+  metering_solution_type?: string | null;
+  /** Planning intent only; installed meters remain canonical MeterDevice rows. */
+  planned_meter_type?: string | null;
+  site_contact_name?: string | null;
+  site_contact_phone?: string | null;
+  site_contact_email?: string | null;
+  fergus_job_number?: string | null;
+  quote_number?: string | null;
+  job_comments?: string | null;
+  /** Sensitive operational detail, limited to users authorised for this installation. */
+  access_information?: string | null;
+  /** Nullable job-level outcome summaries; null means not yet confirmed. */
+  warranty_device?: boolean | null;
+  monitoring_installed?: boolean | null;
+  hardware_installed?: boolean | null;
+  solar_capacity_kw?: number | null;
+  additional_monitoring_required?: boolean | null;
+  additional_monitoring_hardware?: string | null;
   /** installation-canonical-v2 local metadata. */
   tree_schema_version?: 2;
   external_key?: string;
@@ -412,6 +511,8 @@ export interface Installation {
    */
   display_code_zone_sequences?: Record<string, number>;
   completed_at?: string;
+  /** Authoritative user identifier recorded by the server completion action. */
+  completed_by_user_id?: string;
   completed_from_revision?: number;
   /** Optional technician note captured by the authoritative completion action. */
   completion_notes?: string | null;

@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import type {
   InstallationReadiness,
+  InstallationReportDetailMode,
   UserSourceApp,
   UserSourceState,
   VirtualMeterDefinition,
@@ -86,6 +87,8 @@ export interface ExportJobStatus {
   recordVersionNumber: number | null;
   recordVersionPayloadHash: string | null;
   reportSource: 'canonical-version' | 'diagnostic-live';
+  detailMode: InstallationReportDetailMode | null;
+  reportVariantKey: string | null;
 }
 
 export type ReportJobVersionInput = ReportVersionSelection;
@@ -96,6 +99,8 @@ export interface ExportJobStartResponse {
   recordVersionNumber: number | null;
   recordVersionPayloadHash: string | null;
   reportSource: 'canonical-version' | 'diagnostic-live';
+  detailMode: InstallationReportDetailMode;
+  reportVariantKey: string | null;
 }
 
 export interface InstallationAccess {
@@ -752,6 +757,7 @@ export interface InstallationLifecycleResponse {
   treeRevision: number;
   recordVersionNumber: number | null;
   completedAt?: string | null;
+  completedByUserId?: string | null;
   completedFromRevision?: number | null;
   completionNotes?: string | null;
   /** Compatibility alias accepted only at the response boundary. */
@@ -1017,13 +1023,17 @@ export const apiClient = {
     installationId: string,
     formSubmissionIds: string[] | undefined,
     version: ReportJobVersionInput,
+    detailMode: InstallationReportDetailMode = 'by-electrical-hierarchy',
   ) =>
     request<ExportJobStartResponse>(
       'POST',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/report/pdf/jobs`,
       {
         formSubmissionIds:
-          formSubmissionIds?.length ? [...new Set(formSubmissionIds)] : undefined,
+          formSubmissionIds?.length
+            ? [...new Set(formSubmissionIds)].sort()
+            : undefined,
+        detailMode,
         ...installationReportVersionFields(version),
       },
     ),
