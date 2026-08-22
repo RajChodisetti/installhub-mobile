@@ -17,6 +17,11 @@ export const colors = {
     tbcForeground: '#78350F',
     success: '#16A34A',
     reportNavy: '#0E2240',
+    diagramSupply: '#A46124',
+    diagramMeasure: '#2459C4',
+    diagramResidual: '#64748B',
+    diagramBoard: '#EEF2FF',
+    diagramAsset: '#ECFDF3',
   },
   dark: {
     background: '#0F1614',
@@ -36,6 +41,11 @@ export const colors = {
     tbcForeground: '#1C1408',
     success: '#22C55E',
     reportNavy: '#0E2240',
+    diagramSupply: '#E5A45D',
+    diagramMeasure: '#7AA2FF',
+    diagramResidual: '#94A3B8',
+    diagramBoard: '#202A46',
+    diagramAsset: '#17372D',
   },
 } as const;
 

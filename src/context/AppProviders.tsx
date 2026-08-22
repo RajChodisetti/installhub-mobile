@@ -20,7 +20,9 @@ import {
   loginAndCacheCloudUser,
   type CloudLoginSource,
 } from '../services/authSession';
-import { clearSiteAssetEditorDraftsForUser } from '../services/siteAssetEditorDraft';
+import { closeAuditWorkBeforeLogout } from '../services/auditWorkTrackingBridge';
+import { unregisterPushDeviceBeforeLogout } from '../services/pushNotifications';
+import { replaceAuthenticatedAssignedWorkActor } from '../services/assignedWorkMutationGuard';
 
 const THEME_KEY = 'installhub.theme';
 
@@ -67,7 +69,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     const cloudUser = await restoreCloudSession().catch(() => null);
     if (cloudUser) {
       const next = localUserFromCloud(cloudUser);
-      await userRepo.setCurrent(next);
+      replaceAuthenticatedAssignedWorkActor(next.id);
+      try {
+        await userRepo.setCurrent(next);
+      } catch (error) {
+        replaceAuthenticatedAssignedWorkActor(null);
+        throw error;
+      }
       setUser(next);
     }
   }, []);
@@ -96,6 +104,14 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       }
     })();
   }, [loadPreferencesAndSession]);
+
+  useEffect(() => {
+    replaceAuthenticatedAssignedWorkActor(user?.id ?? null);
+  }, [user?.id]);
+
+  useEffect(() => () => {
+    replaceAuthenticatedAssignedWorkActor(null);
+  }, []);
 
   const finishStorageAction = useCallback(async (action: () => Promise<unknown>) => {
     setIsLoading(true);
@@ -143,15 +159,26 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       { identifier, password, sourceApp },
       {
         authenticate: loginToCloud,
-        persistLocalUser: userRepo.setCurrent,
+        persistLocalUser: async (nextUser) => {
+          replaceAuthenticatedAssignedWorkActor(nextUser.id);
+          try {
+            return await userRepo.setCurrent(nextUser);
+          } catch (error) {
+            replaceAuthenticatedAssignedWorkActor(null);
+            throw error;
+          }
+        },
         discardCloudSession: logoutFromCloud,
       },
     );
+    replaceAuthenticatedAssignedWorkActor(next.id);
     setUser(next);
   }, []);
 
   const logout = useCallback(async () => {
-    if (user) await clearSiteAssetEditorDraftsForUser(user.id);
+    replaceAuthenticatedAssignedWorkActor(null);
+    await closeAuditWorkBeforeLogout().catch(() => {});
+    await unregisterPushDeviceBeforeLogout().catch(() => {});
     setUser(null);
     await logoutFromCloud();
   }, [user]);

@@ -17,6 +17,8 @@ export type RememberedReportJob = {
   recordVersionNumber?: number | null;
   recordVersionPayloadHash?: string | null;
   reportSource?: string | null;
+  detailMode?: string | null;
+  reportVariantKey?: string | null;
 };
 
 type ActiveReportJobs = Record<string, RememberedReportJob>;
@@ -56,6 +58,12 @@ async function readActiveJobs(): Promise<ActiveReportJobs> {
             : {}),
           ...(typeof row.reportSource === 'string' || row.reportSource === null
             ? { reportSource: row.reportSource }
+            : {}),
+          ...(typeof row.detailMode === 'string' || row.detailMode === null
+            ? { detailMode: row.detailMode }
+            : {}),
+          ...(typeof row.reportVariantKey === 'string' || row.reportVariantKey === null
+            ? { reportVariantKey: row.reportVariantKey }
             : {}),
         } satisfies RememberedReportJob]];
       }),

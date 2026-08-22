@@ -24,6 +24,7 @@ import {
   commsFaultIdentityAnswersForMeter,
   installationFormAnswersForMeter,
 } from '../domain/formMeterPrefill';
+import { canonicalNmiForBoard } from '../domain/gridSupplyContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
@@ -185,13 +186,14 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                 if (formBoardId) {
                   const board = await electricalAssetsRepo.getById(formBoardId);
                   if (board) {
+                    const electricityNmi = canonicalNmiForBoard(board, gridSupplies);
                     answers['auditor.switchboard_name'] = board.asset_name;
                     answers['auditor.switchboard_location'] = board.location_description ?? '';
                     answers['auditor.switchboard_type'] = board.asset_type;
-                    answers['auditor.site_nmi'] = board.site_nmi ?? '';
+                    answers['auditor.site_nmi'] = electricityNmi;
                     answers['existing.switchboard_location'] = board.location_description ?? '';
                     answers['existing.switchboard_type'] = board.asset_type;
-                    answers['existing.site_nmi'] = board.site_nmi ?? '';
+                    answers['existing.site_nmi'] = electricityNmi;
                     const meter = meterId
                       ? board.meters.find((item) => item.id === meterId)
                       : undefined;
@@ -229,7 +231,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   site_asset_id: siteAssetId,
                   answers,
                 });
-                navigation.replace('FormEditor', { formId: form.id });
+                navigation.replace('FormEditor', { formId: form.id, installationId });
               } catch (error) {
                 Alert.alert(
                   'Form not started',

@@ -15,6 +15,18 @@ import type {
 import { sha256 } from 'js-sha256';
 import { getStore, initStore, updateStore } from '../data/seed';
 import { createId, nowIso } from '../utils';
+import { assignedWorkInstallationIsVisibleToActor } from '../services/assignedWorkPolicy';
+import {
+  assertCurrentAssignedWorkAuthority,
+  captureAssignedWorkMutationAuthority,
+  type AssignedWorkMutationAuthority,
+} from '../services/assignedWorkMutationGuard';
+import {
+  nextThumbnailDownloadForActor,
+  thumbnailDownloadsForActor,
+  updateThumbnailDownloadForActor,
+} from '../services/thumbnailWorkerPolicy';
+import type { ServerResultCommitFence } from '../services/serverResultCommitFence';
 
 export interface InstallationBackupTree {
   treeSchemaVersion: 2;
@@ -60,6 +72,34 @@ function treeWatermark(store: AppDataStore, installationId: string): string {
       .map((item) => item.updated_at),
   ].filter((value): value is string => Boolean(value));
   return timestamps.sort().at(-1) ?? new Date(0).toISOString();
+}
+
+function assertServerResultCommitAllowed(
+  store: AppDataStore,
+  installationId: string,
+  fence: ServerResultCommitFence,
+): Installation {
+  fence.assertCurrent();
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (
+    !installation
+    || installation.local_owner_user_id !== fence.actorUserId
+    || (
+      installation.assigned_work_state !== 'none'
+      && installation.assigned_work_actor_user_id !== fence.actorUserId
+    )
+    || (installation.tree_revision ?? 0) !== fence.expectedLocalTreeRevision
+    || treeWatermark(store, installationId) !== fence.expectedTreeWatermark
+    || (
+      fence.expectedServerTreeRevision !== undefined
+      && installation.server_tree_revision !== fence.expectedServerTreeRevision
+    )
+  ) {
+    throw new Error(
+      'The server response no longer matches the initiating local installation snapshot.',
+    );
+  }
+  return installation;
 }
 
 export function serverBaseTreeRevision(installation: Installation): number | undefined {
@@ -253,7 +293,7 @@ export function buildInstallationBackupTree(
   installation: Installation,
 ): InstallationBackupTree {
   const baseTreeRevision = serverBaseTreeRevision(installation);
-  return {
+  return structuredClone({
     treeSchemaVersion: 2,
     ...(baseTreeRevision !== undefined ? { baseTreeRevision } : {}),
     installation,
@@ -269,7 +309,7 @@ export function buildInstallationBackupTree(
       (item) => item.installation_id === installation.id,
     ),
     watermark: treeWatermark(store, installation.id),
-  };
+  });
 }
 
 export function applyServerTreeRevision(
@@ -288,25 +328,40 @@ export function applyServerTreeRevision(
       `Server tree revision regressed from ${current} to ${treeRevision}.`,
     );
   }
+  if (current !== treeRevision) {
+    // Upload confirmation advances the server tree without returning that
+    // tree. Force the next canonical pull to reseed its child/form fingerprint
+    // instead of comparing the new revision against an older projection.
+    installation.assigned_work_server_tree_fingerprint = undefined;
+  }
   installation.server_tree_revision = treeRevision;
 }
 
 export async function recordInstallationServerTreeRevision(
   installationId: string,
   treeRevision: number,
+  commitFence?: ServerResultCommitFence,
 ): Promise<void> {
+  commitFence?.assertCurrent();
   await updateStore((store) => {
+    if (commitFence) {
+      assertServerResultCommitAllowed(store, installationId, commitFence);
+    }
     applyServerTreeRevision(store, installationId, treeRevision);
   });
 }
 
-export async function listInstallationsNeedingBackup(): Promise<InstallationBackupTree[]> {
+export async function listInstallationsNeedingBackup(
+  actorUserId: string,
+): Promise<InstallationBackupTree[]> {
   await initStore();
   const store = getStore();
   const forced = new Set(store.cloudSync.force_dirty_installation_ids);
   const pendingComplete = new Set(Object.keys(store.cloudSync.pending_complete_attempts ?? {}));
   return store.installations
-    .filter((installation) => installation.cloud_backup_enabled)
+    .filter((installation) => (
+      installationAllowsNewBackupDispatch(installation, actorUserId)
+    ))
     .map((installation) => buildInstallationBackupTree(store, installation))
     .filter((tree) => {
       const syncedAt = store.cloudSync.synced_at_by_installation[tree.installation.id];
@@ -315,6 +370,74 @@ export async function listInstallationsNeedingBackup(): Promise<InstallationBack
         || !syncedAt
         || tree.watermark > syncedAt;
     });
+}
+
+export class InstallationBackupDispatchBlockedError extends Error {
+  readonly code = 'INSTALLATION_BACKUP_DISPATCH_BLOCKED';
+}
+
+export function installationAllowsNewBackupDispatch(
+  installation: Pick<
+    Installation,
+    | 'cloud_backup_enabled'
+    | 'assigned_work_state'
+    | 'assigned_work_actor_user_id'
+    | 'local_owner_user_id'
+    | 'assigned_work_refresh_conflict'
+  >,
+  actorUserId: string,
+): boolean {
+  return installation.cloud_backup_enabled
+    && !installation.assigned_work_refresh_conflict
+    && assignedWorkInstallationIsVisibleToActor(installation, actorUserId);
+}
+
+export function installationAllowsBackupRecovery(
+  installation: Pick<
+    Installation,
+    'assigned_work_state' | 'assigned_work_actor_user_id' | 'local_owner_user_id'
+  >,
+  actorUserId: string,
+): boolean {
+  return installation.local_owner_user_id === actorUserId
+    && (
+      installation.assigned_work_state === 'none'
+      || installation.assigned_work_actor_user_id === actorUserId
+    );
+}
+
+export function assertInstallationAllowsNewBackupDispatch(
+  installationId: string,
+  actorUserId: string,
+): void {
+  const installation = getStore().installations.find(
+    (item) => item.id === installationId,
+  );
+  if (
+    !installation
+    || !installationAllowsNewBackupDispatch(installation, actorUserId)
+  ) {
+    throw new InstallationBackupDispatchBlockedError(
+      'Cloud Backup dispatch stopped because this installation is no longer active.',
+    );
+  }
+}
+
+export function assertInstallationAllowsBackupRecovery(
+  installationId: string,
+  actorUserId: string,
+): void {
+  const installation = getStore().installations.find(
+    (item) => item.id === installationId,
+  );
+  if (
+    !installation
+    || !installationAllowsBackupRecovery(installation, actorUserId)
+  ) {
+    throw new InstallationBackupDispatchBlockedError(
+      'Cloud Backup recovery stopped because this installation belongs to another actor.',
+    );
+  }
 }
 
 export async function getPendingCompleteBackupAttempt(
@@ -334,23 +457,61 @@ export async function listPendingCompleteBackupAttempts(): Promise<PendingComple
 
 export async function prepareCompleteBackupAttempt(
   installationId: string,
+  actorUserId: string,
   payload: Record<string, unknown>,
   expectedTreeWatermark: string,
   installationStatus: Installation['status'],
   expectedLocalTreeRevision: number,
+  commitFence: ServerResultCommitFence,
 ): Promise<PendingCompleteBackupAttempt> {
   let result: PendingCompleteBackupAttempt | null = null;
+  commitFence.assertCurrent();
   await updateStore((store) => {
-    result = applyPreparedCompleteBackupAttempt(
+    result = applyPreparedCompleteBackupAttemptForSnapshot(
       store,
       installationId,
+      actorUserId,
       payload,
       expectedTreeWatermark,
       installationStatus,
       expectedLocalTreeRevision,
+      commitFence,
     );
   });
   return result!;
+}
+
+export function applyPreparedCompleteBackupAttemptForSnapshot(
+  store: AppDataStore,
+  installationId: string,
+  actorUserId: string,
+  payload: Record<string, unknown>,
+  expectedTreeWatermark: string,
+  installationStatus: Installation['status'],
+  expectedLocalTreeRevision: number,
+  commitFence: ServerResultCommitFence,
+): PendingCompleteBackupAttempt {
+  const installation = assertServerResultCommitAllowed(
+    store,
+    installationId,
+    commitFence,
+  );
+  if (
+    commitFence.actorUserId !== actorUserId
+    || !installationAllowsNewBackupDispatch(installation, actorUserId)
+  ) {
+    throw new InstallationBackupDispatchBlockedError(
+      'Cloud Backup dispatch stopped because this installation is no longer active.',
+    );
+  }
+  return applyPreparedCompleteBackupAttempt(
+    store,
+    installationId,
+    payload,
+    expectedTreeWatermark,
+    installationStatus,
+    expectedLocalTreeRevision,
+  );
 }
 
 export async function recordAcceptedCompleteBackupAttempt(
@@ -358,8 +519,11 @@ export async function recordAcceptedCompleteBackupAttempt(
   attemptId: string,
   treeRevision: number,
   recordVersionNumber: number | null,
+  assertCurrent?: () => void,
 ): Promise<void> {
+  assertCurrent?.();
   await updateStore((store) => {
+    assertCurrent?.();
     applyAcceptedCompleteBackupAttempt(
       store,
       installationId,
@@ -417,8 +581,11 @@ export async function markInstallationBackedUp(
 export async function finishCompleteBackupAttempt(
   installationId: string,
   attemptId: string,
+  assertCurrent?: () => void,
 ): Promise<void> {
+  assertCurrent?.();
   await updateStore((store) => {
+    assertCurrent?.();
     const attempt = completeAttemptMap(store)[installationId];
     if (!attempt || assertPendingCompleteAttempt(installationId, attempt).id !== attemptId) {
       throw new Error('Complete backup attempt changed before confirmation finished.');
@@ -457,8 +624,11 @@ export async function finishCompleteBackupAttempt(
 export async function discardCompleteBackupAttempt(
   installationId: string,
   attemptId: string,
+  assertCurrent?: () => void,
 ): Promise<void> {
+  assertCurrent?.();
   await updateStore((store) => {
+    assertCurrent?.();
     applyDiscardCompleteBackupAttempt(store, installationId, attemptId);
   });
 }
@@ -482,8 +652,11 @@ export function applyDiscardCompleteBackupAttempt(
 export async function markInstallationBackupConflict(
   installationId: string,
   remoteTreeRevision?: number,
+  assertCurrent?: () => void,
 ): Promise<void> {
+  assertCurrent?.();
   await updateStore((store) => {
+    assertCurrent?.();
     applyInstallationBackupConflict(store, installationId, remoteTreeRevision, nowIso());
   });
 }
@@ -605,15 +778,32 @@ export function reconciledBackupMediaQueue(
 export async function reconcileBackupMediaQueue(
   installationId: string,
   references: BackupMediaReference[],
+  commitFence: ServerResultCommitFence,
 ): Promise<void> {
+  commitFence.assertCurrent();
   await initStore();
   await updateStore((store) => {
-    store.cloudSync.upload_queue = reconciledBackupMediaQueue(
-      store.cloudSync.upload_queue,
+    applyReconciledBackupMediaQueueForSnapshot(
+      store,
       installationId,
       references,
+      commitFence,
     );
   });
+}
+
+export function applyReconciledBackupMediaQueueForSnapshot(
+  store: AppDataStore,
+  installationId: string,
+  references: BackupMediaReference[],
+  commitFence: ServerResultCommitFence,
+): void {
+  assertServerResultCommitAllowed(store, installationId, commitFence);
+  store.cloudSync.upload_queue = reconciledBackupMediaQueue(
+    store.cloudSync.upload_queue,
+    installationId,
+    references,
+  );
 }
 
 export async function enqueueBackupMedia(references: BackupMediaReference[]): Promise<void> {
@@ -640,10 +830,19 @@ export async function enqueueBackupMedia(references: BackupMediaReference[]): Pr
 
 export async function listUploadQueue(
   installationId?: string,
+  actorUserId?: string,
 ): Promise<CloudUploadQueueItem[]> {
   await initStore();
+  const ownedInstallationIds = actorUserId
+    ? new Set(getStore().installations
+        .filter((item) => item.local_owner_user_id === actorUserId)
+        .map((item) => item.id))
+    : null;
   return getStore().cloudSync.upload_queue.filter(
-    (item) => !installationId || item.installation_id === installationId,
+    (item) => (
+      (!installationId || item.installation_id === installationId)
+      && (!ownedInstallationIds || ownedInstallationIds.has(item.installation_id))
+    ),
   );
 }
 
@@ -661,8 +860,11 @@ export async function getNextUpload(
 export async function updateUploadQueueItem(
   id: string,
   patch: Partial<CloudUploadQueueItem>,
+  assertCurrent?: () => void,
 ): Promise<void> {
+  assertCurrent?.();
   await updateStore((store) => {
+    assertCurrent?.();
     const index = store.cloudSync.upload_queue.findIndex((item) => item.id === id);
     if (index < 0) return;
     store.cloudSync.upload_queue[index] = {
@@ -674,12 +876,24 @@ export async function updateUploadQueueItem(
   });
 }
 
-export async function resetInterruptedUploads(): Promise<void> {
+export async function resetInterruptedUploads(actorUserId: string): Promise<void> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
-  if (!getStore().cloudSync.upload_queue.some((item) => item.status === 'uploading')) return;
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const ownedIds = new Set(getStore().installations
+    .filter((item) => item.local_owner_user_id === actorUserId)
+    .map((item) => item.id));
+  if (!getStore().cloudSync.upload_queue.some(
+    (item) => ownedIds.has(item.installation_id) && item.status === 'uploading',
+  )) return;
   await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    const currentOwnedIds = new Set(store.installations
+      .filter((item) => item.local_owner_user_id === actorUserId)
+      .map((item) => item.id));
     for (const item of store.cloudSync.upload_queue) {
-      if (item.status === 'uploading') {
+      if (currentOwnedIds.has(item.installation_id) && item.status === 'uploading') {
         item.status = 'pending';
         item.updated_at = nowIso();
       }
@@ -687,12 +901,24 @@ export async function resetInterruptedUploads(): Promise<void> {
   });
 }
 
-export async function resetFailedUploadsForRetry(): Promise<void> {
+export async function resetFailedUploadsForRetry(actorUserId: string): Promise<void> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
-  if (!getStore().cloudSync.upload_queue.some((item) => item.status === 'failed')) return;
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const ownedIds = new Set(getStore().installations
+    .filter((item) => item.local_owner_user_id === actorUserId)
+    .map((item) => item.id));
+  if (!getStore().cloudSync.upload_queue.some(
+    (item) => ownedIds.has(item.installation_id) && item.status === 'failed',
+  )) return;
   await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    const currentOwnedIds = new Set(store.installations
+      .filter((item) => item.local_owner_user_id === actorUserId)
+      .map((item) => item.id));
     for (const item of store.cloudSync.upload_queue) {
-      if (item.status === 'failed') {
+      if (currentOwnedIds.has(item.installation_id) && item.status === 'failed') {
         item.status = 'pending';
         item.attempts = 0;
         item.last_error = undefined;
@@ -702,14 +928,23 @@ export async function resetFailedUploadsForRetry(): Promise<void> {
   });
 }
 
-export async function getCloudBackupStats(): Promise<{
+export async function getCloudBackupStats(actorUserId: string): Promise<{
   pending: number;
   uploading: number;
   failed: number;
   backedUp: number;
 }> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
-  const items = getStore().cloudSync.upload_queue;
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const store = getStore();
+  const ownedIds = new Set(store.installations
+    .filter((item) => item.local_owner_user_id === actorUserId)
+    .map((item) => item.id));
+  const items = store.cloudSync.upload_queue.filter(
+    (item) => ownedIds.has(item.installation_id),
+  );
   return {
     pending: items.filter((item) => item.status === 'pending').length,
     uploading: items.filter((item) => item.status === 'uploading').length,
@@ -721,10 +956,21 @@ export async function getCloudBackupStats(): Promise<{
 export async function enqueueThumbnailDownloads(
   installationId: string,
   remoteUris: string[],
+  actorUserId: string,
+  authority: AssignedWorkMutationAuthority,
 ): Promise<void> {
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   const unique = [...new Set(remoteUris)];
   if (!unique.length) return;
   await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    const installation = store.installations.find(
+      (item) => item.id === installationId
+        && assignedWorkInstallationIsVisibleToActor(item, actorUserId),
+    );
+    if (!installation) {
+      throw new Error('The imported installation is no longer owned by this account.');
+    }
     const existing = new Set(store.cloudSync.thumbnail_queue.map(
       (item) => `${item.installation_id}|${item.remote_uri}`,
     ));
@@ -742,37 +988,37 @@ export async function enqueueThumbnailDownloads(
   });
 }
 
-export async function getNextThumbnailDownload(): Promise<ThumbnailDownloadQueueItem | null> {
+export async function getNextThumbnailDownload(
+  actorUserId: string,
+  authority: AssignedWorkMutationAuthority,
+): Promise<ThumbnailDownloadQueueItem | null> {
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
-  return getStore().cloudSync.thumbnail_queue.find(
-    (item) => item.status === 'pending' || (item.status === 'failed' && item.attempts < 5),
-  ) ?? null;
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const job = nextThumbnailDownloadForActor(getStore(), actorUserId);
+  return job ? { ...job } : null;
 }
 
 export async function updateThumbnailDownload(
   id: string,
   patch: Partial<ThumbnailDownloadQueueItem>,
-): Promise<void> {
+  actorUserId: string,
+  authority: AssignedWorkMutationAuthority,
+): Promise<boolean> {
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  let updated = false;
   await updateStore((store) => {
-    const index = store.cloudSync.thumbnail_queue.findIndex((item) => item.id === id);
-    if (index < 0) return;
-    store.cloudSync.thumbnail_queue[index] = {
-      ...store.cloudSync.thumbnail_queue[index],
-      ...patch,
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    updated = updateThumbnailDownloadForActor(
+      store,
       id,
-      updated_at: nowIso(),
-    };
-    const job = store.cloudSync.thumbnail_queue[index];
-    const installation = store.installations.find((item) => item.id === job.installation_id);
-    if (!installation) return;
-    const jobs = store.cloudSync.thumbnail_queue.filter(
-      (item) => item.installation_id === installation.id,
+      actorUserId,
+      patch,
+      nowIso(),
     );
-    installation.thumbnail_total = jobs.length;
-    installation.thumbnail_ready = jobs.filter((item) => item.status === 'ready').length;
-    installation.thumbnail_status =
-      installation.thumbnail_ready === installation.thumbnail_total ? 'ready' : 'pending';
   });
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  return updated;
 }
 
 export function cachedThumbnailUri(remoteUri: string): string | undefined {
@@ -782,7 +1028,12 @@ export function cachedThumbnailUri(remoteUri: string): string | undefined {
   return item?.local_uri;
 }
 
-export async function listThumbnailDownloads(): Promise<ThumbnailDownloadQueueItem[]> {
+export async function listThumbnailDownloads(
+  actorUserId: string,
+  authority: AssignedWorkMutationAuthority,
+): Promise<ThumbnailDownloadQueueItem[]> {
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
-  return [...getStore().cloudSync.thumbnail_queue];
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  return thumbnailDownloadsForActor(getStore(), actorUserId).map((job) => ({ ...job }));
 }

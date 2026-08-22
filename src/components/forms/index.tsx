@@ -49,6 +49,7 @@ import {
 } from '../../domain/meterCommissioning';
 import { radii, spacing, typography } from '../../theme';
 import { validateInstallationIdentity } from '../../domain/installationValidation';
+import { preserveUnmaterializedInstallationFields } from '../../domain/installationMetadata';
 import {
   meteringRemovalPreview,
   resolveDeviceCommissioningDetour,
@@ -253,29 +254,96 @@ export function InstallationForm({
   submitLabel = 'Save',
 }: {
   initial?: Partial<Installation>;
-  onSubmit: (values: {
-    client_name: string;
-    site_name: string;
-    site_code: string;
-    site_address: string;
-    inspector_name: string;
-    audit_date: string;
-    timezone?: string;
-  }) => Promise<void> | void;
+  onSubmit: (values: Pick<Installation,
+    | 'client_name'
+    | 'customer_name'
+    | 'site_name'
+    | 'site_code'
+    | 'site_address'
+    | 'site_locality'
+    | 'site_state'
+    | 'site_postcode'
+    | 'site_country_code'
+    | 'inspector_name'
+    | 'audit_date'
+    | 'timezone'
+    | 'maas'
+    | 'service_type'
+    | 'metering_solution_type'
+    | 'planned_meter_type'
+    | 'site_contact_name'
+    | 'site_contact_phone'
+    | 'site_contact_email'
+    | 'fergus_job_number'
+    | 'quote_number'
+    | 'job_comments'
+    | 'access_information'
+    | 'warranty_device'
+    | 'monitoring_installed'
+    | 'hardware_installed'
+    | 'solar_capacity_kw'
+    | 'additional_monitoring_required'
+    | 'additional_monitoring_hardware'
+  >) => Promise<void> | void;
   submitLabel?: string;
 }) {
   const { colors } = useTheme();
   const [client_name, setClient] = useState(initial?.client_name ?? '');
+  const [customer_name, setCustomer] = useState(initial?.customer_name ?? '');
   const [site_name, setSite] = useState(initial?.site_name ?? '');
   const [site_code, setSiteCode] = useState(
     initial?.site_code?.trim() || normalizedSiteCode(initial?.site_name ?? ''),
   );
   const siteCodeEdited = useRef(Boolean(initial?.site_code?.trim()));
   const [site_address, setAddress] = useState(initial?.site_address ?? '');
+  const [site_locality, setLocality] = useState(initial?.site_locality ?? '');
+  const [site_state, setState] = useState(
+    ['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA'].includes(initial?.site_state ?? '')
+      ? initial!.site_state!
+      : 'unknown',
+  );
+  const [site_postcode, setPostcode] = useState(initial?.site_postcode ?? '');
   const [inspector_name, setInspector] = useState(initial?.inspector_name ?? '');
   const [audit_date, setDate] = useState(initial?.audit_date ?? new Date().toISOString().slice(0, 10));
   const [timezone, setTimezone] = useState(
-    initial?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+    initial?.timezone ?? 'Australia/Sydney',
+  );
+  const [maas, setMaas] = useState<'unknown' | 'yes' | 'no'>(
+    initial?.maas === true ? 'yes' : initial?.maas === false ? 'no' : 'unknown',
+  );
+  const [service_type, setServiceType] = useState(initial?.service_type ?? '');
+  const [metering_solution_type, setMeteringSolutionType] = useState(
+    initial?.metering_solution_type ?? '',
+  );
+  const [planned_meter_type, setPlannedMeterType] = useState(initial?.planned_meter_type ?? '');
+  const [site_contact_name, setContactName] = useState(initial?.site_contact_name ?? '');
+  const [site_contact_phone, setContactPhone] = useState(initial?.site_contact_phone ?? '');
+  const [site_contact_email, setContactEmail] = useState(initial?.site_contact_email ?? '');
+  const [fergus_job_number, setFergusJobNumber] = useState(initial?.fergus_job_number ?? '');
+  const [quote_number, setQuoteNumber] = useState(initial?.quote_number ?? '');
+  const [job_comments, setJobComments] = useState(initial?.job_comments ?? '');
+  const [access_information, setAccessInformation] = useState(initial?.access_information ?? '');
+  const [warranty_device, setWarrantyDevice] = useState<'unknown' | 'yes' | 'no'>(
+    initial?.warranty_device === true ? 'yes' : initial?.warranty_device === false ? 'no' : 'unknown',
+  );
+  const [monitoring_installed, setMonitoringInstalled] = useState<'unknown' | 'yes' | 'no'>(
+    initial?.monitoring_installed === true ? 'yes' : initial?.monitoring_installed === false ? 'no' : 'unknown',
+  );
+  const [hardware_installed, setHardwareInstalled] = useState<'unknown' | 'yes' | 'no'>(
+    initial?.hardware_installed === true ? 'yes' : initial?.hardware_installed === false ? 'no' : 'unknown',
+  );
+  const [solar_capacity_kw, setSolarCapacityKw] = useState(
+    initial?.solar_capacity_kw === null || initial?.solar_capacity_kw === undefined
+      ? ''
+      : String(initial.solar_capacity_kw),
+  );
+  const [additional_monitoring_required, setAdditionalMonitoringRequired] = useState<'unknown' | 'yes' | 'no'>(
+    initial?.additional_monitoring_required === true
+      ? 'yes'
+      : initial?.additional_monitoring_required === false ? 'no' : 'unknown',
+  );
+  const [additional_monitoring_hardware, setAdditionalMonitoringHardware] = useState(
+    initial?.additional_monitoring_hardware ?? '',
   );
   const [busy, setBusy] = useState(false);
   const [validationErrors, setValidationErrors] = useState<ReturnType<typeof validateInstallationIdentity>>([]);
@@ -283,7 +351,32 @@ export function InstallationForm({
 
   return (
     <View>
+      <SectionHeader title="Customer and service" />
+      <TextField label="Customer name" value={customer_name} maxLength={300} onChangeText={setCustomer} />
       <TextField label="Client name" value={client_name} error={errorFor('client_name')} onChangeText={setClient} />
+      <SelectChips
+        label="MaaS"
+        value={maas}
+        options={['unknown', 'yes', 'no']}
+        onChange={setMaas}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+      />
+      <TextField label="Service type" value={service_type} maxLength={120} onChangeText={setServiceType} />
+      <TextField
+        label="Metering solution type"
+        value={metering_solution_type}
+        maxLength={120}
+        onChangeText={setMeteringSolutionType}
+      />
+      <TextField
+        label="Planned meter type"
+        accessibilityHint="Planning information only; installed devices are recorded in the meter workflow"
+        value={planned_meter_type}
+        maxLength={120}
+        onChangeText={setPlannedMeterType}
+      />
+
+      <SectionHeader title="Site and schedule" />
       <TextField
         label="Site name"
         value={site_name}
@@ -307,14 +400,97 @@ export function InstallationForm({
         }}
       />
       <TextArea label="Site address" value={site_address} error={errorFor('site_address')} onChangeText={setAddress} />
-      <TextField label="Inspector" value={inspector_name} error={errorFor('inspector_name')} onChangeText={setInspector} />
-      <TextField label="Audit date (YYYY-MM-DD)" value={audit_date} error={errorFor('audit_date')} onChangeText={setDate} />
+      <TextField label="Suburb / locality" value={site_locality} maxLength={120} onChangeText={setLocality} />
+      <SelectChips
+        label="State / territory"
+        value={site_state}
+        options={['unknown', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']}
+        onChange={setState}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value}
+      />
+      <TextField label="Postcode" value={site_postcode} keyboardType="number-pad" maxLength={4} onChangeText={setPostcode} />
+      <TextField label="Assigned technician" value={inspector_name} error={errorFor('inspector_name')} onChangeText={setInspector} />
+      <TextField label="Scheduled date (YYYY-MM-DD)" value={audit_date} error={errorFor('audit_date')} onChangeText={setDate} />
       <TextField
         label="Installation timezone"
         accessibilityHint="Use an IANA timezone such as Australia/Sydney"
         value={timezone}
         error={errorFor('timezone')}
         onChangeText={setTimezone}
+      />
+
+      <SectionHeader title="Site contact and access" />
+      <TextField label="Site contact name" value={site_contact_name} maxLength={300} onChangeText={setContactName} />
+      <TextField
+        label="Site contact phone"
+        value={site_contact_phone}
+        keyboardType="phone-pad"
+        maxLength={50}
+        onChangeText={setContactPhone}
+      />
+      <TextField
+        label="Site contact email"
+        value={site_contact_email}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        maxLength={320}
+        onChangeText={setContactEmail}
+      />
+      <TextArea
+        label="Access information"
+        accessibilityHint="Operational access details visible only to users authorised for this installation"
+        value={access_information}
+        maxLength={5000}
+        onChangeText={setAccessInformation}
+      />
+
+      <SectionHeader title="Job references and notes" />
+      <TextField label="Fergus job number" value={fergus_job_number} maxLength={100} onChangeText={setFergusJobNumber} />
+      <TextField label="Quote number" value={quote_number} maxLength={100} onChangeText={setQuoteNumber} />
+      <TextArea label="Job comments / scope notes" value={job_comments} maxLength={5000} onChangeText={setJobComments} />
+
+      <SectionHeader title="Installation outcome" />
+      <SelectChips
+        label="Warranty replacement device"
+        value={warranty_device}
+        options={['unknown', 'yes', 'no']}
+        onChange={setWarrantyDevice}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+      />
+      <SelectChips
+        label="Monitoring installed"
+        value={monitoring_installed}
+        options={['unknown', 'yes', 'no']}
+        onChange={setMonitoringInstalled}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+      />
+      <SelectChips
+        label="Hardware installed"
+        value={hardware_installed}
+        options={['unknown', 'yes', 'no']}
+        onChange={setHardwareInstalled}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+      />
+      <TextField
+        label="Solar capacity (kW)"
+        value={solar_capacity_kw}
+        keyboardType="decimal-pad"
+        maxLength={12}
+        onChangeText={setSolarCapacityKw}
+      />
+      <SelectChips
+        label="Additional monitoring required"
+        value={additional_monitoring_required}
+        options={['unknown', 'yes', 'no']}
+        onChange={setAdditionalMonitoringRequired}
+        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+      />
+      <TextArea
+        label="Additional monitoring hardware"
+        value={additional_monitoring_hardware}
+        maxLength={5000}
+        onChangeText={setAdditionalMonitoringHardware}
       />
       {validationErrors.length ? (
         <Text
@@ -331,14 +507,58 @@ export function InstallationForm({
         onPress={async () => {
           setBusy(true);
           try {
+            if (site_postcode.trim() && !/^\d{4}$/.test(site_postcode.trim())) {
+              Alert.alert('Check postcode', 'Australian postcodes must contain exactly four digits.');
+              return;
+            }
+            const parsedSolarCapacity = solar_capacity_kw.trim()
+              ? Number(solar_capacity_kw.trim())
+              : null;
+            if (
+              parsedSolarCapacity !== null
+              && (
+                !Number.isFinite(parsedSolarCapacity)
+                || parsedSolarCapacity < 0
+                || parsedSolarCapacity > 1_000_000
+              )
+            ) {
+              Alert.alert('Check solar capacity', 'Solar capacity must be between 0 and 1,000,000 kW.');
+              return;
+            }
+            const nullableText = (value: string): string | null => value.trim() || null;
+            const nullableBoolean = (value: 'unknown' | 'yes' | 'no'): boolean | null => (
+              value === 'yes' ? true : value === 'no' ? false : null
+            );
             const values = {
               client_name: client_name.trim(),
+              customer_name: nullableText(customer_name),
               site_name: site_name.trim(),
               site_code: site_code.trim().toUpperCase(),
               site_address: site_address.trim(),
+              site_locality: nullableText(site_locality),
+              site_state: site_state === 'unknown' ? null : site_state,
+              site_postcode: nullableText(site_postcode),
+              site_country_code: 'AU',
               inspector_name: inspector_name.trim(),
               audit_date: audit_date.trim(),
               timezone: timezone.trim(),
+              maas: nullableBoolean(maas),
+              service_type: nullableText(service_type),
+              metering_solution_type: nullableText(metering_solution_type),
+              planned_meter_type: nullableText(planned_meter_type),
+              site_contact_name: nullableText(site_contact_name),
+              site_contact_phone: nullableText(site_contact_phone),
+              site_contact_email: nullableText(site_contact_email),
+              fergus_job_number: nullableText(fergus_job_number),
+              quote_number: nullableText(quote_number),
+              job_comments: nullableText(job_comments),
+              access_information: nullableText(access_information),
+              warranty_device: nullableBoolean(warranty_device),
+              monitoring_installed: nullableBoolean(monitoring_installed),
+              hardware_installed: nullableBoolean(hardware_installed),
+              solar_capacity_kw: parsedSolarCapacity,
+              additional_monitoring_required: nullableBoolean(additional_monitoring_required),
+              additional_monitoring_hardware: nullableText(additional_monitoring_hardware),
             };
             const errors = validateInstallationIdentity(values);
             if (errors.length) {
@@ -346,7 +566,7 @@ export function InstallationForm({
               return;
             }
             setValidationErrors([]);
-            await onSubmit(values);
+            await onSubmit(preserveUnmaterializedInstallationFields(initial, values));
           } finally {
             setBusy(false);
           }
@@ -392,7 +612,6 @@ export function ElectricalAssetForm({
     initial?.sub_circuits_description ?? '',
   );
   const [amperage_rating, setAmps] = useState(initial?.amperage_rating ?? '');
-  const [site_nmi, setNmi] = useState(initial?.site_nmi ?? '');
   const initialSource = initial?.electrical_source ?? (
     initial?.electrical_parent_tbc
       ? { kind: 'TBC' as const }
@@ -542,7 +761,9 @@ export function ElectricalAssetForm({
         onChange={(uris) => setPhoto(uris[0] ?? '')}
       />
       <TextField label="Amperage" value={amperage_rating} onChangeText={setAmps} />
-      <TextField label="Site NMI" value={site_nmi} onChangeText={setNmi} />
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md, lineHeight: 20 }}>
+        Electricity NMI is managed on the incoming Grid supply. Historical board NMI data is retained read-only for compatibility.
+      </Text>
       <TextArea
         label="Sub-circuits description"
         value={sub_circuits_description}
@@ -596,7 +817,7 @@ export function ElectricalAssetForm({
               // author a phase value. Phase belongs to meter/channel mappings.
               phase: initial?.phase,
               amperage_rating,
-              site_nmi,
+              site_nmi: initial?.site_nmi,
               electrical_parent_id: electrical_source.kind === 'BOARD' ? electrical_source.boardId : null,
               electrical_parent_tbc: electrical_source.kind === 'TBC',
               photo,

@@ -1,5 +1,8 @@
 import type { AppDataStore, FormSubmission } from '../types';
-import { meterAfterCommsReplacement } from '../forms/catalog';
+import {
+  meterAfterCommsReplacement,
+  visibleSafeToProceedCompletionError,
+} from '../forms/catalog';
 import {
   answersWithCanonicalBoardContext,
   deviceLabelPrefix,
@@ -34,6 +37,8 @@ export function completeFormSubmissionInStore(
   if (installation.status === 'Completed') {
     throw new Error('Reopen this completed installation before completing a form.');
   }
+  const safetyError = visibleSafeToProceedCompletionError(current);
+  if (safetyError) throw new Error(safetyError);
 
   let boardId = current.board_id;
   let meterId = current.meter_id;

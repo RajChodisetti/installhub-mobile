@@ -6,6 +6,12 @@ import type {
   DisplayCode,
   ResolvedDisplayCodeChange,
 } from '../types';
+import {
+  applyServerResultCommitFence,
+  type ServerResultCommitFence,
+} from './serverResultCommitFence';
+import { assignedWorkServerMetadataFromInstallation } from './assignedWorkPolicy';
+import { remoteInstallationWorkTreeFingerprint } from './remoteInstallationRevision';
 
 function remoteRevision(tree: RemoteInstallationTree): number | undefined {
   const value = tree.treeRevision
@@ -184,6 +190,11 @@ export function mergeResolvedDisplayCodes(
   // store commit. Persisting only the revision can strand an imported copy
   // with its source canonical key if the confirmation pull is interrupted.
   installation.server_tree_revision = expectedTreeRevision;
+  installation.assigned_work_server_metadata_base =
+    assignedWorkServerMetadataFromInstallation(installation);
+  installation.assigned_work_server_tree_fingerprint =
+    remoteInstallationWorkTreeFingerprint(tree);
+  installation.assigned_work_refresh_conflict = undefined;
   for (const { entity, code } of boardUpdates) {
     entity.display_code_meta = code;
     entity.display_code = code.value;
@@ -222,17 +233,23 @@ export async function reconcileResolvedDisplayCodes(
   installationId: string,
   tree: RemoteInstallationTree,
   expectedTreeRevision: number,
+  commitFence: ServerResultCommitFence,
   replaceRecordedChanges = true,
 ): Promise<ResolvedDisplayCodeChange[]> {
   let result: ResolvedDisplayCodeChange[] = [];
   await updateStore((store) => {
-    result = mergeResolvedDisplayCodes(
+    result = applyServerResultCommitFence(
       store,
       installationId,
-      tree,
-      expectedTreeRevision,
-      new Date().toISOString(),
-      replaceRecordedChanges,
+      commitFence,
+      () => mergeResolvedDisplayCodes(
+        store,
+        installationId,
+        tree,
+        expectedTreeRevision,
+        new Date().toISOString(),
+        replaceRecordedChanges,
+      ),
     );
   });
   return result;

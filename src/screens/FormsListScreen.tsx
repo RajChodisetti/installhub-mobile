@@ -320,7 +320,7 @@ export function FormsListScreen({ navigation, route }: Props) {
                 title={form.status === 'Completed' ? 'View record' : 'Continue draft'}
                 variant="secondary"
                 disabled={deletingDraftId === form.id}
-                onPress={() => navigation.navigate('FormEditor', { formId: form.id })}
+                onPress={() => navigation.navigate('FormEditor', { formId: form.id, installationId })}
               />
               {form.status === 'Draft' ? (
                 <Button
@@ -348,7 +348,7 @@ export function FormsListScreen({ navigation, route }: Props) {
                     disabled={anotherPdfIsBusy || thisPdfIsBusy}
                     onPress={() => {
                       void formsRepo.cloneAmendment(form.id).then((draft) =>
-                        navigation.navigate('FormEditor', { formId: draft.id }),
+                        navigation.navigate('FormEditor', { formId: draft.id, installationId }),
                       );
                     }}
                   />

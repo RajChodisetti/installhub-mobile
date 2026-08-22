@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { buildBackupPayload, discoverBackupMedia } from '../src/services/backupMedia';
+import { uploadThenConfirmForAuthority } from '../src/services/backupAuthorityFence';
 import {
+  installationAllowsNewBackupDispatch,
   reconciledBackupMediaQueue,
   type InstallationBackupTree,
 } from '../src/repositories/cloudSyncRepository';
@@ -88,6 +91,134 @@ test('cloud backup discovers every supported local evidence family', () => {
   );
 });
 
+test('only a current non-inactive opt-in can dispatch new backup work', () => {
+  assert.equal(installationAllowsNewBackupDispatch({
+    cloud_backup_enabled: true,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'active',
+    assigned_work_actor_user_id: 'technician-1',
+  }, 'technician-1'), true);
+  assert.equal(installationAllowsNewBackupDispatch({
+    cloud_backup_enabled: true,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'none',
+  }, 'technician-1'), true);
+  assert.equal(installationAllowsNewBackupDispatch({
+    cloud_backup_enabled: true,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'inactive',
+    assigned_work_actor_user_id: 'technician-1',
+  }, 'technician-1'), false);
+  assert.equal(installationAllowsNewBackupDispatch({
+    cloud_backup_enabled: false,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'active',
+    assigned_work_actor_user_id: 'technician-1',
+  }, 'technician-1'), false);
+  assert.equal(installationAllowsNewBackupDispatch({
+    cloud_backup_enabled: true,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'active',
+    assigned_work_actor_user_id: 'technician-1',
+  }, 'technician-2'), false);
+});
+
+test('a backup stage selected while active cannot dispatch after deferred revocation', async () => {
+  const installation = {
+    cloud_backup_enabled: true,
+    local_owner_user_id: 'technician-1',
+    assigned_work_state: 'active' as 'active' | 'inactive',
+    assigned_work_actor_user_id: 'technician-1',
+  };
+  let release!: () => void;
+  const boundary = new Promise<void>((resolve) => { release = resolve; });
+  let dispatched = false;
+  const selectedFlight = (async () => {
+    await boundary;
+    if (installationAllowsNewBackupDispatch(installation, 'technician-1')) dispatched = true;
+  })();
+
+  installation.assigned_work_state = 'inactive';
+  release();
+  await selectedFlight;
+  assert.equal(dispatched, false);
+});
+
+test('a session replacement after signed PUT prevents authenticated confirmation', async () => {
+  let current = true;
+  let confirmCalled = false;
+  let releaseUpload!: () => void;
+  const uploadHeld = new Promise<void>((resolve) => { releaseUpload = resolve; });
+  const operation = uploadThenConfirmForAuthority(
+    () => {
+      if (!current) throw new Error('session replaced');
+    },
+    () => uploadHeld,
+    async () => {
+      confirmCalled = true;
+      return 'confirmed';
+    },
+  );
+
+  await Promise.resolve();
+  current = false;
+  releaseUpload();
+  await assert.rejects(operation, /session replaced/);
+  assert.equal(confirmCalled, false);
+
+  const source = readFileSync(
+    new URL('../src/services/syncService.ts', import.meta.url),
+    'utf8',
+  );
+  const upload = source.slice(
+    source.indexOf('async function processUpload('),
+    source.indexOf('async function fetchAndMergeCanonicalTree('),
+  );
+  assert.match(upload, /CloudBackupAuthorityChangedError[\s\S]*status: 'pending'/);
+  const retryablePatch = upload.slice(
+    upload.indexOf("status: 'pending'"),
+    upload.indexOf('throw error;', upload.indexOf("status: 'pending'")),
+  );
+  assert.doesNotMatch(retryablePatch, /session_id:/);
+});
+
+test('running backup flights recheck revocation before every new request family', () => {
+  const source = readFileSync(
+    new URL('../src/services/syncService.ts', import.meta.url),
+    'utf8',
+  );
+  const execute = source.slice(source.indexOf('async function executeCloudBackup('));
+  const ambiguousRecovery = execute.indexOf(
+    'confirmCompleteBackupAttempt(attempt, recoveryConfirmationDependencies)',
+  );
+  const firstNewDispatchGate = execute.indexOf(
+    'if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) continue;',
+  );
+  assert.ok(ambiguousRecovery >= 0 && ambiguousRecovery < firstNewDispatchGate);
+  assert.match(
+    execute,
+    /if \(!backupDispatchStillAllowed\(installationId, authority\.actorUserId\)\) break;/,
+  );
+  assert.match(execute, /newConfirmationDependencies/);
+
+  const upload = source.slice(
+    source.indexOf('async function processUpload('),
+    source.indexOf('async function fetchAndMergeCanonicalTree('),
+  );
+  for (const request of [
+    'apiClient.checkPhoto',
+    'apiClient.createUploadSession',
+    'apiClient.uploadPhoto',
+  ]) {
+    const requestIndex = upload.indexOf(request);
+    const guardIndex = upload.lastIndexOf(
+      'assertInstallationAllowsNewBackupDispatch(',
+      requestIndex,
+    );
+    assert.ok(guardIndex >= 0 && guardIndex < requestIndex, `${request} is dispatch-guarded`);
+  }
+});
+
 test('cloud payload never leaks local file URIs and substitutes confirmed URLs', () => {
   const queue: CloudUploadQueueItem[] = discoverBackupMedia(tree).map((item, index) => ({
     ...item,
@@ -121,6 +252,16 @@ test('cloud payload labels metadata and complete pushes without changing legacy 
   assert.equal(buildBackupPayload(tree, queue, 'metadata').syncStage, 'metadata');
   assert.equal(buildBackupPayload(tree, queue, 'complete').syncStage, 'complete');
   assert.equal('syncStage' in buildBackupPayload(tree, queue), false);
+});
+
+test('legacy local records omit unknown additive job fields instead of clearing server values', () => {
+  const installation = buildBackupPayload(tree, [], 'metadata').installation;
+  assert.equal('customerName' in installation, false);
+  assert.equal('maas' in installation, false);
+  assert.equal('siteContactName' in installation, false);
+  assert.equal('accessInformation' in installation, false);
+  assert.equal('monitoringInstalled' in installation, false);
+  assert.equal('solarCapacityKw' in installation, false);
 });
 
 test('WW purpose and custom-load answers survive backup serialization unchanged', () => {

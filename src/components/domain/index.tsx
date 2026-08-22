@@ -25,6 +25,7 @@ export function InstallationCard({
       onPress={onPress}
       right={(
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          {item.assigned_work_state === 'active' ? <Badge label="Assigned" tone="default" /> : null}
           <Badge label={item.status} tone={item.status === 'Completed' ? 'success' : 'default'} />
           {onDelete ? (
             <Pressable

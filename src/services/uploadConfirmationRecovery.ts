@@ -13,6 +13,7 @@ export interface UploadConfirmationRecoveryDependencies {
   ) => Promise<void>;
   resetUnconfirmed: (row: CloudUploadQueueItem) => Promise<void>;
   isProvenUnconfirmed: (error: unknown) => boolean;
+  assertCurrent?: () => void;
 }
 
 const RESETTABLE_CONFIRMATION_CONFLICTS = new Set([
@@ -46,13 +47,19 @@ export async function recoverUploadConfirmation(
     return false;
   }
   try {
+    dependencies.assertCurrent?.();
     const confirmed = await dependencies.confirm(row.session_id, row.checksum);
+    dependencies.assertCurrent?.();
     await dependencies.recordRevision(row.installation_id, confirmed.treeRevision);
+    dependencies.assertCurrent?.();
     await dependencies.markComplete(row, row.checksum, confirmed.remoteUrl);
+    dependencies.assertCurrent?.();
     return true;
   } catch (error) {
     if (dependencies.isProvenUnconfirmed(error)) {
+      dependencies.assertCurrent?.();
       await dependencies.resetUnconfirmed(row);
+      dependencies.assertCurrent?.();
       return false;
     }
     throw error;

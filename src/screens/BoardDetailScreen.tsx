@@ -77,6 +77,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
           variant="secondary"
           disabled={readOnly}
           onPress={() => navigation.navigate('MeterForm', {
+            installationId,
             boardId,
             deviceType: 'Other',
           })}
@@ -100,6 +101,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               style={{ marginTop: 10 }}
               onPress={() =>
                 navigation.navigate('MeterForm', {
+                  installationId,
                   boardId,
                   meterId: m.id,
                   deviceType: m.device_type,

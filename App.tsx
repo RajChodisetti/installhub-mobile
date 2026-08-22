@@ -5,16 +5,22 @@ import { AppProviders, useTheme } from './src/context/AppProviders';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { SyncStatusProvider } from './src/services/SyncStatusContext';
 import { SyncStatusBanner } from './src/components/SyncStatusBanner';
+import { AuditWorkTrackingProvider } from './src/services/AuditWorkTrackingContext';
+import { PushNotificationProvider } from './src/services/PushNotificationProvider';
 
 function AppShell() {
   const { resolvedMode } = useTheme();
   return (
     <>
       <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
-      <SyncStatusProvider>
-        <RootNavigator />
-        <SyncStatusBanner />
-      </SyncStatusProvider>
+      <PushNotificationProvider>
+        <AuditWorkTrackingProvider>
+          <SyncStatusProvider>
+            <RootNavigator />
+            <SyncStatusBanner />
+          </SyncStatusProvider>
+        </AuditWorkTrackingProvider>
+      </PushNotificationProvider>
     </>
   );
 }

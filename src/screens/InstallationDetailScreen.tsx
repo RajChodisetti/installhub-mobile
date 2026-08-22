@@ -1,29 +1,41 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
 import {
+  acceptAssignedWorkServerChanges,
   getLocalDeletionPreview,
   gridSuppliesRepo,
   installationsRepo,
   zonesRepo,
 } from '../repositories';
 import { StatusChip, ZoneCard } from '../components/domain';
-import { Badge, Button, Card, EmptyState, LoadingState, SectionHeader, TextField } from '../components/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  LoadingState,
+  SectionHeader,
+  TextArea,
+  TextField,
+} from '../components/ui';
 import { FormModal } from '../components/forms';
 import { useAuth, useTheme } from '../context/AppProviders';
 import {
   ApiError,
   apiClient,
+  assertCurrentCloudSessionAuthority,
+  captureCloudSessionAuthority,
   cloudConnectionErrorMessage,
 } from '../api/apiClient';
 import {
+  getInstallationBackupTree,
   getInstallationSyncMetadata,
   getPendingCompleteBackupAttempt,
 } from '../repositories/cloudSyncRepository';
 import { useSyncStatus } from '../services/SyncStatusContext';
 import { formatDate } from '../utils';
-import { sha256 } from 'js-sha256';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { recordCompletionRejection } from '../services/operationalDiagnostics';
@@ -36,6 +48,39 @@ import {
   isValidZoneCode,
   ZONE_CODE_MAX_LENGTH,
 } from '../domain/namingV2';
+import {
+  resumeAuditWorkForInstallation,
+  suspendAuditWorkForInstallation,
+} from '../services/auditWorkTrackingBridge';
+import {
+  assignedWorkPrestartActionIsLocked,
+  assignedWorkPrestartIsAcknowledged,
+  assignedWorkPrestartIsRequired,
+  assignedWorkSummarySha256,
+} from '../services/assignedWorkPrestart';
+import {
+  COMPLETION_NOTES_MAX_LENGTH,
+  captureCompletionTreeSnapshot,
+  completionFailureIsDefinitiveRejection,
+  completionFailureAllowsTrackingResume,
+  completionIdempotencyKey,
+  normalizeCompletionNotes,
+  pendingCompletionNotesRequestField,
+} from '../services/installationCompletion';
+import {
+  assignedWorkActionIsLocked,
+  assertCurrentAssignedWorkAuthority,
+  captureAuditWorkResumeAuthority,
+  captureAssignedWorkMutationAuthority,
+} from '../services/assignedWorkMutationGuard';
+import {
+  captureAuthenticatedCloudActionLease,
+  type AuthenticatedCloudActionLease,
+} from '../services/authenticatedCloudAction';
+import {
+  applyLeasedCloudActionState,
+  runLeasedCloudActionStep,
+} from '../services/cloudActionLease';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
@@ -63,6 +108,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [zoneDesc, setZoneDesc] = useState('');
   const [backupChanging, setBackupChanging] = useState(false);
   const [completionBusy, setCompletionBusy] = useState(false);
+  const [completionNotes, setCompletionNotes] = useState('');
+  const completionNotesInstallationId = useRef<string | null>(null);
+  const [prestartModal, setPrestartModal] = useState(false);
+  const [prestartAcknowledging, setPrestartAcknowledging] = useState(false);
+  const promptedPrestartKey = useRef<string | null>(null);
   const [reopenModal, setReopenModal] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
   const [gridModal, setGridModal] = useState(false);
@@ -74,10 +124,67 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [secondaryOpen, setSecondaryOpen] = useState(false);
   const [finalizedNamesOpen, setFinalizedNamesOpen] = useState(false);
 
-  if (loading || !item) {
+  useEffect(() => {
+    if (!item) return;
+    if (completionNotesInstallationId.current !== item.id) {
+      completionNotesInstallationId.current = item.id;
+      setCompletionNotes(item.completion_notes ?? '');
+    } else if (item.status === 'Completed') {
+      setCompletionNotes(item.completion_notes ?? '');
+    }
+
+    const actorUserId = user?.id;
+    if (item.assigned_work_state === 'inactive') {
+      promptedPrestartKey.current = null;
+      setPrestartModal(false);
+      setZoneModal(false);
+      setGridModal(false);
+      setSecondaryOpen(false);
+      setReopenModal(false);
+      return;
+    }
+    if (!assignedWorkPrestartIsRequired(item)) {
+      promptedPrestartKey.current = null;
+      setPrestartModal(false);
+      return;
+    }
+    const summary = item.assigned_work_job_summary;
+    const promptKey = [
+      item.id,
+      actorUserId,
+      summary ? assignedWorkSummarySha256(summary) : 'summary-missing',
+    ].join(':');
+    if (assignedWorkPrestartActionIsLocked(item, actorUserId)) {
+      setZoneModal(false);
+      setGridModal(false);
+      setSecondaryOpen(false);
+    }
+    if (assignedWorkPrestartActionIsLocked(item, actorUserId)
+      && promptedPrestartKey.current !== promptKey) {
+      promptedPrestartKey.current = promptKey;
+      setPrestartModal(true);
+    }
+  }, [item, user?.id]);
+
+  if (loading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <LoadingState />
+      </View>
+    );
+  }
+  if (!item) {
+    return (
+      <View style={{ flex: 1, padding: spacing.lg, backgroundColor: colors.background }}>
+        <EmptyState
+          title="Installation unavailable"
+          subtitle="This local checkout is no longer available to the signed-in account. Refresh assigned work, or open Settings to access an actor-owned recovery copy."
+        />
+        <Button
+          title="Return to installations"
+          style={{ marginTop: spacing.md }}
+          onPress={() => navigation.popToTop()}
+        />
       </View>
     );
   }
@@ -86,6 +193,76 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const assetCount = (zoneId: string) => siteAssets.filter((a) => a.zone_id === zoneId).length;
   const authoritativeCompleted = item.status === 'Completed' && Boolean(item.record_version_number);
   const readOnly = authoritativeCompleted;
+  const assignedPrestartRequired = assignedWorkPrestartIsRequired(item);
+  const assignedPrestartAcknowledged = assignedWorkPrestartIsAcknowledged(
+    item,
+    user?.id,
+  );
+  const assignedWorkInactive = item.assigned_work_state === 'inactive';
+  const assignedWorkActionsLocked = assignedWorkActionIsLocked(
+    item,
+    user?.id,
+  );
+  const assignedJobSummary = item.assigned_work_job_summary;
+  const canAcknowledgeAssignedSummary = Boolean(
+    user?.id
+    && assignedJobSummary?.actor_user_id === user.id
+    && assignedJobSummary.assigned_inspector_user_id === user.id
+    && item.assigned_work_actor_user_id === user.id,
+  );
+  const yesNoLabel = (value: boolean | null | undefined): string => (
+    value === true ? 'Yes' : value === false ? 'No' : 'Not confirmed'
+  );
+  const contactSummary = [
+    assignedJobSummary?.site_contact_name,
+    assignedJobSummary?.site_contact_phone,
+    assignedJobSummary?.site_contact_email,
+  ].filter(Boolean).join(' · ');
+  const scopeSummary = [
+    assignedJobSummary?.service_type,
+    assignedJobSummary?.metering_solution_type,
+    assignedJobSummary?.planned_meter_type,
+    assignedJobSummary?.job_comments,
+  ].filter(Boolean).join(' · ');
+  const assignedJobDetailRows = [
+    ['Client', assignedJobSummary?.client_name ?? 'Assigned job summary unavailable — refresh assigned work'],
+    ['Customer', assignedJobSummary?.customer_name ?? ''],
+    ['Site', assignedJobSummary?.site_name ?? 'Assigned job summary unavailable — refresh assigned work'],
+    ['Address', assignedJobSummary?.site_address ?? 'Assigned job summary unavailable — refresh assigned work'],
+    ['Scheduled date', assignedJobSummary?.audit_date
+      ? formatDate(assignedJobSummary.audit_date)
+      : 'Assigned job summary unavailable — refresh assigned work'],
+    ['Technician', assignedJobSummary?.inspector_name ?? 'Assigned job summary unavailable — refresh assigned work'],
+    ['MaaS', yesNoLabel(assignedJobSummary?.maas)],
+    ['Contact', contactSummary],
+    ['Scope', scopeSummary],
+    ['Fergus job number', assignedJobSummary?.fergus_job_number ?? ''],
+    ['Quote number', assignedJobSummary?.quote_number ?? ''],
+    ['Access information', assignedJobSummary?.access_information ?? ''],
+  ] as const;
+  const jobDetailRows = ([
+    ['Customer', item.customer_name ?? ''],
+    ['Service type', item.service_type ?? ''],
+    ['Metering solution', item.metering_solution_type ?? ''],
+    ['Planned meter type', item.planned_meter_type ?? ''],
+    ['MaaS', yesNoLabel(item.maas)],
+    ['Site contact', [item.site_contact_name, item.site_contact_phone, item.site_contact_email]
+      .filter(Boolean).join(' · ')],
+    ['Fergus job number', item.fergus_job_number ?? ''],
+    ['Quote number', item.quote_number ?? ''],
+    ['Access information', item.access_information ?? ''],
+    ['Job comments / scope', item.job_comments ?? ''],
+  ] as Array<readonly [string, string]>).filter(([, value]) => Boolean(value));
+  const outcomeRows: Array<readonly [string, string]> = [
+    ['Warranty replacement device', yesNoLabel(item.warranty_device)],
+    ['Monitoring installed', yesNoLabel(item.monitoring_installed)],
+    ['Hardware installed', yesNoLabel(item.hardware_installed)],
+    ['Solar capacity', item.solar_capacity_kw === null || item.solar_capacity_kw === undefined
+      ? 'Not confirmed'
+      : `${item.solar_capacity_kw} kW`],
+    ['Additional monitoring required', yesNoLabel(item.additional_monitoring_required)],
+    ['Additional monitoring hardware', item.additional_monitoring_hardware ?? 'Not confirmed'],
+  ];
   const readinessSummary = summarizeReadinessIssues(readiness?.issues ?? []);
   const readinessIssueCount = readinessSummary.reduce((count, group) => count + group.count, 0);
   const readinessPartition = partitionReadinessIssues(readiness?.issues ?? [], {
@@ -117,13 +294,145 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     )).map((issue) => `${issue.entityType}:${issue.entityId}`) ?? [],
   ).size;
 
+  async function requestAssignedWorkAction(
+    action: () => void | Promise<void>,
+  ): Promise<void> {
+    if (completionBusy) {
+      Alert.alert(
+        'Completion validation in progress',
+        'Wait for the current completion attempt to finish before changing installation work.',
+      );
+      return;
+    }
+    const latest = await installationsRepo.getById(installationId);
+    if (!latest) return;
+    if (latest.assigned_work_state === 'inactive') {
+      Alert.alert(
+        'Assignment no longer active',
+        'This checkout is retained for recovery, but work is locked because it is no longer assigned to this account.',
+      );
+      return;
+    }
+    if (assignedWorkActionIsLocked(latest, user?.id)) {
+      setPrestartModal(true);
+      return;
+    }
+    await action();
+  }
+
+  async function acknowledgeAssignedWorkPrestart() {
+    if (!item || !user?.id) return;
+    const displayedSummary = item.assigned_work_job_summary;
+    if (!displayedSummary) {
+      Alert.alert(
+        'Could not acknowledge job details',
+        'Refresh assigned work while online before acknowledging this job summary.',
+      );
+      return;
+    }
+    setPrestartAcknowledging(true);
+    try {
+      const latest = await installationsRepo.getById(installationId);
+      if (latest?.assigned_work_refresh_conflict) {
+        await acceptAssignedWorkServerChanges(installationId);
+      }
+      await installationsRepo.acknowledgeAssignedWorkPrestart(
+        installationId,
+        assignedWorkSummarySha256(displayedSummary),
+      );
+      await refresh();
+      setPrestartModal(false);
+    } catch (error) {
+      Alert.alert(
+        'Could not acknowledge job details',
+        error instanceof Error ? error.message : 'The acknowledgement could not be saved.',
+      );
+    } finally {
+      setPrestartAcknowledging(false);
+    }
+  }
+
+  async function acceptAssignedServerJobChanges() {
+    setBackupChanging(true);
+    try {
+      await acceptAssignedWorkServerChanges(installationId);
+      await refresh();
+      Alert.alert(
+        'Server job changes accepted',
+        'Only server-changed job fields were updated. Other device edits remain in place.',
+      );
+    } catch (error) {
+      Alert.alert(
+        'Could not accept server changes',
+        error instanceof Error ? error.message : 'The server changes could not be accepted.',
+      );
+    } finally {
+      setBackupChanging(false);
+    }
+  }
+
   async function completeInstallation() {
     if (!item) return;
+    const completionActorUserId = user?.id;
+    if (!completionActorUserId) {
+      Alert.alert('Could not complete', 'Sign in again before completing this installation.');
+      return;
+    }
+    const completionAuthority = captureAssignedWorkMutationAuthority();
+    const completionTrackingAuthority = captureAuditWorkResumeAuthority(
+      completionActorUserId,
+    );
+    if (item.assigned_work_state === 'inactive') {
+      Alert.alert(
+        'Assignment no longer active',
+        'Refresh assigned work or ask the scheduler to reassign this job before completing it.',
+      );
+      return;
+    }
+    if (assignedWorkActionIsLocked(item, user?.id)) {
+      setPrestartModal(true);
+      return;
+    }
     let rejectionRecorded = false;
+    let trackingSuspended = false;
+    let trackingSuspension: Awaited<ReturnType<
+      typeof suspendAuditWorkForInstallation
+    >> = null;
+    let completionAccepted = false;
+    let completionDispatchStarted = false;
+    let preparedCompletionAttempt: Parameters<
+      typeof installationsRepo.discardPreparedCompletionAttempt
+    >[1] | null = null;
+    let completionCloudAuthority: Awaited<ReturnType<
+      typeof captureCloudSessionAuthority
+    >> = null;
+    const assertCompletionAuthority = () => {
+      assertCurrentAssignedWorkAuthority(
+        completionAuthority,
+        completionActorUserId,
+      );
+      if (!completionCloudAuthority) {
+        throw new Error('Cloud Backup is not connected.');
+      }
+      assertCurrentCloudSessionAuthority(
+        completionCloudAuthority,
+        completionActorUserId,
+      );
+    };
     const recordRejection = (code: string) => {
       rejectionRecorded = true;
       void recordCompletionRejection(code);
     };
+    let enteredCompletionNotes: string | null;
+    try {
+      enteredCompletionNotes = normalizeCompletionNotes(completionNotes);
+    } catch (error) {
+      Alert.alert(
+        'Could not save completion notes',
+        error instanceof Error ? error.message : 'The completion notes could not be saved.',
+      );
+      return;
+    }
     if (!readiness?.readyToComplete) {
       recordRejection(
         readiness?.issues.find((issue) => issue.severity === 'ERROR')?.code ?? 'LOCAL_READINESS',
@@ -137,9 +446,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           { text: 'Cancel', style: 'cancel' },
           {
             text: reconciliationIssueCount ? 'Open reconciliation' : 'Open checks',
-            onPress: () => navigation.navigate('DataView', {
-              installationId,
-              initialMode: readinessReviewMode,
+            onPress: () => requestAssignedWorkAction(() => {
+              navigation.navigate('DataView', {
+                installationId,
+                initialMode: readinessReviewMode,
+              });
             }),
           },
         ],
@@ -161,9 +472,30 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         recordRejection(`SYNC_${syncResult.phase.toUpperCase()}`);
         throw new Error(syncResult.lastError || 'Cloud Backup did not finish successfully.');
       }
-      const latest = await installationsRepo.getById(installationId);
-      if (!latest) throw new Error('Installation not found.');
-      const serverReadiness = await apiClient.getInstallationReadiness(installationId);
+      completionCloudAuthority = await captureCloudSessionAuthority();
+      if (!completionCloudAuthority) {
+        throw new Error('Cloud Backup is not connected.');
+      }
+      const exactCompletionCloudAuthority = completionCloudAuthority;
+      assertCompletionAuthority();
+      const completionTree = await getInstallationBackupTree(installationId);
+      assertCompletionAuthority();
+      if (!completionTree) throw new Error('Installation not found.');
+      const initialLatest = completionTree.installation;
+      const completionSnapshot = captureCompletionTreeSnapshot(completionTree);
+      if (initialLatest.assigned_work_state === 'inactive') {
+        throw new Error('This job is no longer assigned to this account.');
+      }
+      if (assignedWorkActionIsLocked(initialLatest, completionActorUserId)) {
+        setPrestartModal(true);
+        return;
+      }
+      const serverReadiness = await apiClient.getInstallationReadiness(
+        installationId,
+        undefined,
+        exactCompletionCloudAuthority,
+      );
+      assertCompletionAuthority();
       if (!serverReadiness.readyToComplete) {
         recordRejection(
           serverReadiness.issues.find((issue) => issue.severity === 'ERROR')?.code ?? 'SERVER_READINESS',
@@ -176,50 +508,170 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         );
         return;
       }
-      const baseTreeRevision = latest.server_tree_revision;
+      const currentAfterReadiness = await installationsRepo.getById(installationId);
+      assertCompletionAuthority();
+      if (!currentAfterReadiness) throw new Error('Installation not found.');
+      if (
+        currentAfterReadiness.assigned_work_state === 'inactive'
+        || assignedWorkActionIsLocked(currentAfterReadiness, completionActorUserId)
+      ) {
+        throw new Error('This job is no longer available to this account.');
+      }
+      // The completion snapshot remains the exact post-sync tree captured
+      // before the awaited server-readiness request. The serialized prepare
+      // below rejects if any local edit won while readiness was in flight.
+      const baseTreeRevision = completionSnapshot.baseTreeRevision;
       if (baseTreeRevision === undefined) {
         throw new Error('Cloud Backup did not persist an authoritative server revision.');
+      }
+      const localTreeRevision = completionSnapshot.localTreeRevision;
+      if (localTreeRevision === undefined) {
+        throw new Error('Local installation revision is unavailable. Sync and retry.');
       }
       if (baseTreeRevision !== serverReadiness.treeRevision) {
         throw new Error(
           'The portal changed this installation after backup. Sync and reconcile before completing.',
         );
       }
-      const pendingCompletion = latest.pending_completion?.baseTreeRevision === baseTreeRevision
-        ? latest.pending_completion
-        : {
-            baseTreeRevision,
-            idempotencyKey: `complete-${sha256(`${installationId}:${baseTreeRevision}`).slice(0, 32)}`,
-            createdAt: new Date().toISOString(),
-          };
-      await installationsRepo.applyServerState(installationId, {
-        status: latest.status,
-        record_version_number: latest.record_version_number,
-        pending_completion: pendingCompletion,
-      });
+      const reusablePendingCompletion =
+        completionSnapshot.pendingCompletion?.baseTreeRevision === baseTreeRevision
+          && completionSnapshot.pendingCompletion.localTreeRevision === localTreeRevision
+          && completionSnapshot.pendingCompletion.treeWatermark
+            === completionSnapshot.treeWatermark
+          ? completionSnapshot.pendingCompletion
+          : null;
+      const pendingCompletion = reusablePendingCompletion ?? {
+        baseTreeRevision,
+        localTreeRevision,
+        treeWatermark: completionSnapshot.treeWatermark,
+        idempotencyKey: completionIdempotencyKey(
+          installationId,
+          baseTreeRevision,
+          enteredCompletionNotes,
+        ),
+        createdAt: new Date().toISOString(),
+        completionNotes: enteredCompletionNotes,
+      };
+      const completionAttempt = {
+        actorUserId: completionActorUserId,
+        authority: completionAuthority,
+        pendingCompletion,
+      };
+      const prepared = await installationsRepo.prepareCompletionAttempt(
+        installationId,
+        completionAttempt,
+      );
+      preparedCompletionAttempt = completionAttempt;
+      trackingSuspension = await suspendAuditWorkForInstallation(
+        installationId,
+        completionTrackingAuthority,
+        'completion',
+      );
+      trackingSuspended = Boolean(trackingSuspension);
+      await installationsRepo.assertCompletionAttemptCanDispatch(
+        installationId,
+        completionAttempt,
+      );
+      assertCompletionAuthority();
+      completionDispatchStarted = true;
       const response = await apiClient.completeInstallation(installationId, {
         baseTreeRevision,
         idempotencyKey: pendingCompletion.idempotencyKey,
-      });
+        ...pendingCompletionNotesRequestField(pendingCompletion),
+      }, exactCompletionCloudAuthority);
+      assertCompletionAuthority();
+      completionAccepted = true;
       if (!response.completedAt || !response.recordVersionNumber) {
         recordRejection('AUDIT_METADATA_MISSING');
         throw new Error(
           'Completion was accepted without exact audit metadata. Retry to refresh the authoritative server result.',
         );
       }
+      const responseHasCompletionNotes =
+        Object.prototype.hasOwnProperty.call(response, 'completionNotes')
+        || Object.prototype.hasOwnProperty.call(response, 'completion_notes');
+      const acceptedCompletionNotes = responseHasCompletionNotes
+        ? normalizeCompletionNotes(
+            response.completionNotes ?? response.completion_notes ?? null,
+          )
+        : Object.prototype.hasOwnProperty.call(pendingCompletion, 'completionNotes')
+          ? pendingCompletion.completionNotes ?? null
+          : prepared.completion_notes ?? null;
       await installationsRepo.applyServerState(installationId, {
         status: 'Completed',
         server_tree_revision: response.treeRevision,
         record_version_number: response.recordVersionNumber,
         completed_at: response.completedAt,
+        completed_by_user_id: response.completedByUserId ?? user?.id,
         completed_from_revision: response.completedFromRevision ?? baseTreeRevision,
+        completion_notes: acceptedCompletionNotes,
         backup_conflict: { kind: 'NONE' },
         pending_completion: undefined,
         legacy_completed_unpinned: false,
+      }, {
+        actorUserId: completionActorUserId,
+        expectedLocalTreeRevision: localTreeRevision,
+        expectedTreeWatermark: completionSnapshot.treeWatermark,
+        assertCurrent: assertCompletionAuthority,
       });
+      if (trackingSuspension) {
+        await resumeAuditWorkForInstallation(
+          trackingSuspension,
+          completionTrackingAuthority,
+        ).catch(() => {});
+      }
+      setCompletionNotes(acceptedCompletionNotes ?? '');
       await refresh();
       Alert.alert('Installation completed', `Authoritative version ${response.recordVersionNumber ?? 'created'} is pinned.`);
     } catch (error) {
+      const completionWasDefinitivelyRejected =
+        completionFailureIsDefinitiveRejection(error);
+      let pendingCompletionClearedForResume = preparedCompletionAttempt === null;
+      if (
+        (!completionDispatchStarted || completionWasDefinitivelyRejected)
+        && preparedCompletionAttempt
+      ) {
+        try {
+          assertCompletionAuthority();
+          await installationsRepo.discardPreparedCompletionAttempt(
+            installationId,
+            preparedCompletionAttempt,
+          );
+          assertCompletionAuthority();
+          pendingCompletionClearedForResume = true;
+          preparedCompletionAttempt = null;
+        } catch {
+          // A changed attempt or authority remains durably ineligible for
+          // tracking until the next authoritative reconciliation.
+          pendingCompletionClearedForResume = false;
+        }
+      }
+      if (
+        trackingSuspended
+        && !completionAccepted
+        && pendingCompletionClearedForResume
+        && completionFailureAllowsTrackingResume(completionDispatchStarted, error)
+      ) {
+        try {
+          assertCompletionAuthority();
+          const current = await installationsRepo.getById(installationId);
+          assertCompletionAuthority();
+          if (
+            current?.status === 'Draft'
+            && !assignedWorkActionIsLocked(current, completionActorUserId)
+          ) {
+            if (trackingSuspension) {
+              await resumeAuditWorkForInstallation(
+                trackingSuspension,
+                completionTrackingAuthority,
+              ).catch(() => {});
+            }
+          }
+        } catch {
+          // Ambiguous or replaced authority keeps tracking suspended until the
+          // authoritative lifecycle is reconciled.
+        }
+      }
       if (!rejectionRecorded) {
         recordRejection(
           error instanceof ApiError ? `COMPLETION_HTTP_${error.status}` : 'COMPLETION_FAILED',
@@ -243,36 +695,104 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       Alert.alert('Could not reopen', 'Sync this installation before reopening it.');
       return;
     }
+    const actionLeasePromise = captureAuthenticatedCloudActionLease();
+    let actionLease: AuthenticatedCloudActionLease | null = null;
     setCompletionBusy(true);
     try {
-      if (await getPendingCompleteBackupAttempt(installationId)) {
+      actionLease = await actionLeasePromise;
+      if (await runLeasedCloudActionStep(
+        actionLease,
+        () => getPendingCompleteBackupAttempt(installationId),
+      )) {
         throw new Error(
           'Cloud backup confirmation is pending. Retry backup before reopening this installation.',
         );
       }
-      const response = await apiClient.reopenInstallation(installationId, {
-        baseTreeRevision: item.server_tree_revision,
-        reason,
+      const current = await runLeasedCloudActionStep(
+        actionLease,
+        () => installationsRepo.getById(installationId),
+      );
+      if (!current || current.status !== 'Completed') {
+        throw new Error('This installation is no longer available to reopen.');
+      }
+      if (current.server_tree_revision === undefined) {
+        throw new Error('Sync this installation before reopening it.');
+      }
+      const reopenTree = await runLeasedCloudActionStep(
+        actionLease,
+        () => getInstallationBackupTree(installationId),
+      );
+      if (!reopenTree) throw new Error('This installation is no longer available to reopen.');
+      const reopenLocalTreeRevision = reopenTree.installation.tree_revision ?? 0;
+      const reopenTreeWatermark = reopenTree.watermark;
+      const reopenServerTreeRevision = current.server_tree_revision;
+      if (
+        reopenTree.installation.status !== 'Completed'
+        || reopenTree.installation.server_tree_revision !== reopenServerTreeRevision
+      ) {
+        throw new Error('This installation changed before reopen validation finished.');
+      }
+      const response = await runLeasedCloudActionStep(
+        actionLease,
+        () => apiClient.reopenInstallation(installationId, {
+          baseTreeRevision: reopenServerTreeRevision,
+          reason,
+        }, actionLease!.cloudAuthority),
+      );
+      await runLeasedCloudActionStep(
+        actionLease,
+        () => installationsRepo.applyServerState(installationId, {
+          status: 'Draft',
+          server_tree_revision: response.treeRevision,
+          record_version_number:
+            response.recordVersionNumber ?? current.record_version_number,
+          reopened_at: response.reopenedAt ?? new Date().toISOString(),
+          reopen_reason: response.reopenReason ?? reason,
+          completion_notes: undefined,
+          backup_conflict: { kind: 'NONE' },
+        }, {
+          actorUserId: actionLease!.actorUserId,
+          expectedLocalTreeRevision: reopenLocalTreeRevision,
+          expectedTreeWatermark: reopenTreeWatermark,
+          expectedServerTreeRevision: reopenServerTreeRevision,
+          assertCurrent: actionLease!.assertCurrent,
+        }),
+      );
+      applyLeasedCloudActionState(actionLease, () => {
+        setCompletionNotes('');
+        setReopenReason('');
+        setReopenModal(false);
       });
-      await installationsRepo.applyServerState(installationId, {
-        status: 'Draft',
-        server_tree_revision: response.treeRevision,
-        record_version_number: response.recordVersionNumber ?? item.record_version_number,
-        reopened_at: response.reopenedAt ?? new Date().toISOString(),
-        reopen_reason: response.reopenReason ?? reason,
-        backup_conflict: { kind: 'NONE' },
-      });
-      setReopenReason('');
-      setReopenModal(false);
-      await refresh();
+      await runLeasedCloudActionStep(actionLease, refresh);
     } catch (error) {
-      Alert.alert('Could not reopen', cloudConnectionErrorMessage(error));
+      let canReport = true;
+      if (actionLease) {
+        try {
+          actionLease.assertCurrent();
+        } catch {
+          canReport = false;
+        }
+      }
+      if (canReport) {
+        Alert.alert('Could not reopen', cloudConnectionErrorMessage(error));
+      }
     } finally {
       setCompletionBusy(false);
     }
   }
 
   function openGridEditor(gridId?: string) {
+    if (assignedWorkActionsLocked) {
+      if (assignedWorkInactive) {
+        Alert.alert(
+          'Assignment no longer active',
+          'This checkout is retained for recovery, but work is locked until it is reassigned.',
+        );
+      } else {
+        setPrestartModal(true);
+      }
+      return;
+    }
     const grid = gridSupplies.find((item) => item.id === gridId);
     setEditingGridId(grid?.id ?? null);
     setGridName(grid?.name ?? '');
@@ -290,40 +810,89 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       Alert.alert('Backup in progress', 'Wait for the current Cloud Backup to finish, then try again.');
       return;
     }
+    const actionLeasePromise = captureAuthenticatedCloudActionLease();
+    let actionLease: AuthenticatedCloudActionLease | null = null;
     setBackupChanging(true);
     let disabledLocally = false;
     let serverCopyRemoved = false;
     try {
-      if (await getPendingCompleteBackupAttempt(installationId)) {
+      actionLease = await actionLeasePromise;
+      if (await runLeasedCloudActionStep(
+        actionLease,
+        () => getPendingCompleteBackupAttempt(installationId),
+      )) {
         throw new Error(
           'Cloud backup confirmation is pending. Retry backup before changing this setting.',
         );
       }
-      const syncMetadata = await getInstallationSyncMetadata(installationId);
+      const syncMetadata = await runLeasedCloudActionStep(
+        actionLease,
+        () => getInstallationSyncMetadata(installationId),
+      );
       // Disable locally first. This atomic repository guard prevents a new
       // final attempt from being prepared before any destructive server call.
-      await installationsRepo.setCloudBackupEnabled(installationId, false);
+      await runLeasedCloudActionStep(
+        actionLease,
+        () => installationsRepo.setCloudBackupEnabled(
+          installationId,
+          false,
+          actionLease!.processAuthority,
+        ),
+      );
       disabledLocally = true;
       if (removeServerCopy) {
         try {
-          await apiClient.deleteInstallationCloud(installationId, false);
+          await runLeasedCloudActionStep(
+            actionLease,
+            () => apiClient.deleteInstallationCloud(
+              installationId,
+              false,
+              actionLease!.cloudAuthority,
+            ),
+          );
         } catch (error) {
           if (!(error instanceof ApiError) || error.status !== 404) throw error;
+          actionLease.assertCurrent();
         }
         serverCopyRemoved = true;
       }
-      await installationsRepo.update(installationId, {
-        cloud_backup_retained: !removeServerCopy && Boolean(
-          syncMetadata.syncedWatermark || syncMetadata.serverTreeRevision !== undefined,
-        ),
-        ...(clearResolvedConflict ? { backup_conflict: { kind: 'NONE' as const } } : {}),
-      });
-      await refresh();
+      await runLeasedCloudActionStep(
+        actionLease,
+        () => installationsRepo.update(installationId, {
+          cloud_backup_retained: !removeServerCopy && Boolean(
+            syncMetadata.syncedWatermark || syncMetadata.serverTreeRevision !== undefined,
+          ),
+          ...(clearResolvedConflict
+            ? {
+                backup_conflict: { kind: 'NONE' as const },
+                assigned_work_refresh_conflict: undefined,
+              }
+            : {}),
+        }, actionLease!.processAuthority),
+      );
+      await runLeasedCloudActionStep(actionLease, refresh);
     } catch (error) {
-      if (disabledLocally && !serverCopyRemoved) {
-        await installationsRepo.setCloudBackupEnabled(installationId, true).catch(() => {});
+      if (disabledLocally && !serverCopyRemoved && actionLease) {
+        await runLeasedCloudActionStep(
+          actionLease,
+          () => installationsRepo.setCloudBackupEnabled(
+            installationId,
+            true,
+            actionLease!.processAuthority,
+          ),
+        ).catch(() => {});
       }
-      Alert.alert('Could not update Cloud Backup', cloudConnectionErrorMessage(error));
+      let canReport = true;
+      if (actionLease) {
+        try {
+          actionLease.assertCurrent();
+        } catch {
+          canReport = false;
+        }
+      }
+      if (canReport) {
+        Alert.alert('Could not update Cloud Backup', cloudConnectionErrorMessage(error));
+      }
     } finally {
       setBackupChanging(false);
     }
@@ -392,12 +961,102 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Text style={[typography.title, { color: colors.foreground }]}>{item.site_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.client_name}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.site_address}</Text>
+          {[item.site_locality, item.site_state, item.site_postcode].some(Boolean) ? (
+            <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+              {[item.site_locality, item.site_state, item.site_postcode].filter(Boolean).join(' ')}
+            </Text>
+          ) : null}
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
             {item.inspector_name} · {formatDate(item.audit_date)}
           </Text>
         </View>
         <StatusChip status={item.status} />
       </View>
+      {assignedPrestartRequired ? (
+        <Card
+          accessibilityRole={assignedPrestartAcknowledged ? 'summary' : 'alert'}
+          accessibilityLiveRegion={assignedPrestartAcknowledged ? 'polite' : 'assertive'}
+          style={{
+            marginTop: spacing.md,
+            borderWidth: 2,
+            borderColor: assignedPrestartAcknowledged
+              ? colors.success
+              : colors.destructive,
+          }}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
+            <Text style={{ color: colors.foreground, fontWeight: '800', flex: 1 }}>
+              {assignedWorkActionsLocked
+                ? 'Work locked — assigned job review required'
+                : 'Assigned job pre-start review'}
+            </Text>
+            <Badge
+              label={assignedPrestartAcknowledged ? 'Acknowledged' : 'WORK LOCKED'}
+              tone={assignedPrestartAcknowledged ? 'success' : 'danger'}
+            />
+          </View>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            {assignedPrestartAcknowledged
+              ? 'The current pulled job summary has been acknowledged for this technician.'
+              : 'All work controls and app-active tracking are locked until you review and acknowledge the current pulled job summary.'}
+          </Text>
+          <Text style={{ color: colors.destructive, marginTop: spacing.sm, fontWeight: '700', lineHeight: 20 }}>
+            This is not the full Job Safety Analysis (JSA) and does not replace on-site safety checks.
+          </Text>
+          <Button
+            title={assignedPrestartAcknowledged ? 'Review acknowledged details' : 'Review job details'}
+            variant={assignedPrestartAcknowledged ? 'secondary' : 'danger'}
+            style={{ marginTop: spacing.md }}
+            onPress={() => setPrestartModal(true)}
+          />
+        </Card>
+      ) : null}
+      {assignedWorkInactive ? (
+        <Card
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          style={{
+            marginTop: spacing.md,
+            borderWidth: 2,
+            borderColor: colors.destructive,
+          }}
+        >
+          <Text style={{ color: colors.destructive, fontWeight: '800' }}>
+            Work locked — assignment no longer active
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            This local checkout and unsent work are retained for recovery. Refresh assigned work or ask the scheduler to reassign the job before continuing.
+          </Text>
+        </Card>
+      ) : null}
+      {jobDetailRows.length ? (
+        <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+          <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
+            Job details
+          </Text>
+          {jobDetailRows.map(([label, value]) => (
+            <View key={label} style={{ marginTop: spacing.xs }}>
+              <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
+                {label}
+              </Text>
+              <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
+          Installation outcome
+        </Text>
+        {outcomeRows.map(([label, value]) => (
+          <View key={label} style={{ marginTop: spacing.xs }}>
+            <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
+              {label}
+            </Text>
+            <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
+          </View>
+        ))}
+      </Card>
       {item.status === 'Draft' && readiness && !readiness.readyToComplete ? (
         <View
           accessibilityRole="alert"
@@ -435,9 +1094,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Review details"
             variant="ghost"
             style={{ marginTop: spacing.sm }}
-            onPress={() => navigation.navigate('DataView', {
-              installationId,
-              initialMode: readinessReviewMode,
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('DataView', {
+                installationId,
+                initialMode: readinessReviewMode,
+              });
             })}
           />
         </Card>
@@ -460,9 +1121,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Resolve metering issues"
             variant="ghost"
             style={{ marginTop: spacing.sm }}
-            onPress={() => navigation.navigate('DataView', {
-              installationId,
-              initialMode: meteringCounts.tbc ? 'RECONCILIATION' : 'VALIDATION',
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('DataView', {
+                installationId,
+                initialMode: meteringCounts.tbc ? 'RECONCILIATION' : 'VALIDATION',
+              });
             })}
           />
         ) : null}
@@ -485,17 +1148,51 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             <Button
               title="Retry Backup"
               disabled={syncing || backupChanging}
-              onPress={() => { void triggerSync().then(refresh); }}
+              onPress={() => requestAssignedWorkAction(() => {
+                void triggerSync().then(refresh);
+              })}
               style={{ flex: 1 }}
             />
             <Button
               title="Keep Local-Only"
               variant="secondary"
               disabled={syncing || backupChanging}
-              onPress={confirmKeepDeviceCopyLocalOnly}
+              onPress={() => requestAssignedWorkAction(confirmKeepDeviceCopyLocalOnly)}
               style={{ flex: 1 }}
             />
           </View>
+        </Card>
+      ) : null}
+      {item.assigned_work_refresh_conflict ? (
+        <Card
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          accessibilityLabel="Assigned work changed on the server. Cloud Backup is paused."
+          style={{ marginTop: spacing.md }}
+        >
+          <Text style={{ color: colors.destructive, fontWeight: '700' }}>
+            Assigned work changed on the server
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+            {item.assigned_work_refresh_conflict.remote_tree_changed
+              ? 'The server tree changed or this device has no trusted baseline, so it did not advance its Cloud Backup revision or replace local forms and capture.'
+              : `${item.assigned_work_refresh_conflict.conflicting_fields.length} job field${item.assigned_work_refresh_conflict.conflicting_fields.length === 1 ? '' : 's'} changed both on the server and on this device. Cloud Backup is paused until you choose.`}
+          </Text>
+          {!item.assigned_work_refresh_conflict.remote_tree_changed ? (
+            <Button
+              title="Accept server job changes"
+              disabled={backupChanging || syncing}
+              style={{ marginTop: spacing.md }}
+              onPress={() => { void acceptAssignedServerJobChanges(); }}
+            />
+          ) : null}
+          <Button
+            title="Keep Local-Only"
+            variant="secondary"
+            disabled={backupChanging || syncing}
+            style={{ marginTop: spacing.sm }}
+            onPress={confirmKeepDeviceCopyLocalOnly}
+          />
         </Card>
       ) : null}
       {item.legacy_completed_unpinned ? (
@@ -530,23 +1227,111 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         </Card>
       ) : null}
 
+      {item.status === 'Draft' ? (
+        <Card style={{ marginTop: spacing.md }}>
+          <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+            Technician completion notes
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+            Optional sign-off notes are submitted with the authoritative completion request.
+          </Text>
+          {item.pending_completion ? (
+            <View
+              accessibilityRole="alert"
+              style={{
+                marginTop: spacing.sm,
+                borderWidth: 1,
+                borderColor: colors.tbc,
+                borderRadius: 10,
+                padding: spacing.sm,
+                backgroundColor: `${colors.tbc}14`,
+              }}
+            >
+              <Text style={{ color: colors.foreground, fontWeight: '700', lineHeight: 20 }}>
+                A completion attempt is pending. Retry will send the exact note saved with that attempt; editing is locked until it succeeds or the server revision changes.
+              </Text>
+            </View>
+          ) : null}
+          <TextArea
+            label="Completion notes (optional)"
+            value={completionNotes}
+            maxLength={COMPLETION_NOTES_MAX_LENGTH}
+            editable={
+              !assignedWorkActionsLocked
+              && !completionBusy
+              && !item.pending_completion
+            }
+            onPressIn={() => {
+              if (assignedWorkActionsLocked) {
+                if (assignedWorkInactive) {
+                  Alert.alert(
+                    'Assignment no longer active',
+                    'Completion notes are locked until this job is reassigned.',
+                  );
+                } else {
+                  setPrestartModal(true);
+                }
+              }
+            }}
+            onChangeText={setCompletionNotes}
+            style={{ marginTop: spacing.sm, minHeight: 112 }}
+          />
+          <Text style={{ color: colors.mutedForeground, fontSize: 12, textAlign: 'right' }}>
+            {completionNotes.length}/{COMPLETION_NOTES_MAX_LENGTH}
+          </Text>
+        </Card>
+      ) : (
+        <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
+          <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+            Completion record
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            Completed {item.completed_at ? formatDate(item.completed_at) : 'at an unavailable time'}
+            {item.completed_by_user_id ? ` by user ${item.completed_by_user_id}` : ''}.
+          </Text>
+          <Text style={{ color: colors.foreground, fontWeight: '700', marginTop: spacing.md }}>
+            Technician completion notes
+          </Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            {item.completion_notes?.trim() || 'No completion notes were provided.'}
+          </Text>
+        </Card>
+      )}
+
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: spacing.lg }}>
-        <Button title="Edit" variant="secondary" disabled={readOnly} onPress={() => navigation.navigate('InstallationForm', { installationId })} style={{ flexGrow: 1 }} />
         <Button
-          title="Search devices"
+          title={assignedWorkActionsLocked ? 'Edit (locked)' : 'Edit'}
           variant="secondary"
-          onPress={() => navigation.navigate('DeviceSearch', { installationId })}
+          disabled={readOnly}
+          onPress={() => requestAssignedWorkAction(() => {
+            navigation.navigate('InstallationForm', { installationId });
+          })}
           style={{ flexGrow: 1 }}
         />
         <Button
-          title={authoritativeCompleted ? 'Reopen installation' : completionBusy ? 'Completing…' : 'Complete installation'}
+          title={assignedWorkActionsLocked ? 'Search devices (locked)' : 'Search devices'}
+          variant="secondary"
+          onPress={() => requestAssignedWorkAction(() => {
+            navigation.navigate('DeviceSearch', { installationId });
+          })}
+          style={{ flexGrow: 1 }}
+        />
+        <Button
+          title={authoritativeCompleted
+            ? 'Reopen installation'
+            : assignedWorkActionsLocked
+              ? 'Complete installation (locked)'
+              : completionBusy
+                ? 'Completing…'
+                : 'Complete installation'}
           disabled={completionBusy}
           accessibilityHint={authoritativeCompleted
             ? 'Requires an audited reason and preserves the completed version'
             : 'Requires local readiness, enabled Cloud Backup, successful sync, and server validation'}
-          onPress={() => authoritativeCompleted
-            ? setReopenModal(true)
-            : void completeInstallation()}
+          onPress={() => requestAssignedWorkAction(() => {
+            if (authoritativeCompleted) setReopenModal(true);
+            else void completeInstallation();
+          })}
           style={{ flexGrow: 1 }}
         />
       </View>
@@ -563,11 +1348,17 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       </Text>
 
       <Button
-        title={secondaryOpen ? 'Hide tools & reports' : 'More tools & reports'}
+        title={assignedWorkActionsLocked
+          ? 'More tools & reports (locked)'
+          : secondaryOpen
+            ? 'Hide tools & reports'
+            : 'More tools & reports'}
         variant="secondary"
         style={{ marginTop: spacing.lg }}
         accessibilityState={{ expanded: secondaryOpen }}
-        onPress={() => setSecondaryOpen((current) => !current)}
+        onPress={() => requestAssignedWorkAction(() => {
+          setSecondaryOpen((current) => !current);
+        })}
       />
       {!secondaryOpen ? (
         <Card style={{ marginTop: spacing.sm }}>
@@ -598,7 +1389,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           title={item.cloud_backup_enabled ? 'Turn off backup' : 'Back up this installation'}
           variant={item.cloud_backup_enabled ? 'ghost' : 'secondary'}
           disabled={backupChanging || syncing}
-          onPress={handleBackupPreference}
+          onPress={() => requestAssignedWorkAction(handleBackupPreference)}
         />
         {!item.cloud_backup_enabled && item.cloud_backup_retained ? (
           <Button
@@ -606,7 +1397,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             variant="danger"
             disabled={backupChanging || syncing}
             style={{ marginTop: spacing.sm }}
-            onPress={confirmRemoveCloudCopy}
+            onPress={() => requestAssignedWorkAction(confirmRemoveCloudCopy)}
           />
         ) : null}
         {user?.role === 'admin' && item.cloud_backup_enabled ? (
@@ -614,9 +1405,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Manage shared access"
             variant="secondary"
             style={{ marginTop: spacing.sm }}
-            onPress={() =>
-              navigation.navigate('InstallationAccess', { installationId })
-            }
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('InstallationAccess', { installationId });
+            })}
           />
         ) : null}
         {item.cloud_backup_enabled ||
@@ -626,13 +1417,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             title="Cloud files & history"
             variant="secondary"
             style={{ marginTop: spacing.sm }}
-            onPress={() =>
+            onPress={() => requestAssignedWorkAction(() => {
               navigation.navigate('CloudStorage', {
                 installationId,
                 serverInstallationId:
                   item.import_source_server_id ?? installationId,
-              })
-            }
+              });
+            })}
           />
         ) : null}
       </Card>
@@ -640,7 +1431,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       <SectionHeader
         title={`Incoming grid connections (${gridSupplies.length})`}
         actionLabel={readOnly ? undefined : '+ Add'}
-        onAction={readOnly ? undefined : () => openGridEditor()}
+        onAction={readOnly ? undefined : () => {
+          requestAssignedWorkAction(() => openGridEditor());
+        }}
       />
       <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
         The default incoming grid connection is the electrical starting point for this installation. Keep it unless the site genuinely has another incoming supply.
@@ -658,22 +1451,26 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           </View>
           {!readOnly ? (
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-              <Button title="Edit" variant="secondary" onPress={() => openGridEditor(grid.id)} />
+              <Button
+                title="Edit"
+                variant="secondary"
+                onPress={() => requestAssignedWorkAction(() => openGridEditor(grid.id))}
+              />
               {!grid.isDefault ? (
                 <Button
                   title="Set default"
                   variant="ghost"
-                  onPress={async () => {
+                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
                     await gridSuppliesRepo.update(grid.id, { isDefault: true });
                     await refresh();
-                  }}
+                  })(); })}
                 />
               ) : null}
               {!grid.isDefault && gridSupplies.length > 1 ? (
                 <Button
                   title="Remove"
                   variant="danger"
-                  onPress={() => { void (async () => {
+                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
                   const impact = await gridSuppliesRepo.previewRemove(grid.id);
                   Alert.alert(
                     'Remove Grid supply?',
@@ -683,14 +1480,14 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
                       {
                         text: 'Convert to TBC and remove',
                         style: 'destructive',
-                        onPress: async () => {
+                        onPress: () => { void requestAssignedWorkAction(async () => {
                           await gridSuppliesRepo.remove(grid.id, true);
                           await refresh();
-                        },
+                        }); },
                       },
                     ],
                   );
-                  })(); }}
+                  })(); })}
                 />
               ) : null}
             </View>
@@ -700,10 +1497,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
       <SectionHeader title="Reports" />
       <View style={{ gap: 8 }}>
-        <Button title="Field Forms / PDFs" onPress={() => navigation.navigate('FormsList', { installationId })} />
-        <Button title="Installation data & checks" variant="secondary" onPress={() => navigation.navigate('DataView', { installationId })} />
-        <Button title="Metering Table" variant="secondary" onPress={() => navigation.navigate('MeteringTable', { installationId })} />
-        <Button title="Full Installation Report" variant="secondary" onPress={() => navigation.navigate('InstallationReport', { installationId })} />
+        <Button title="Field Forms / PDFs" onPress={() => requestAssignedWorkAction(() => navigation.navigate('FormsList', { installationId }))} />
+        <Button title="Installation data & checks" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('DataView', { installationId }))} />
+        <Button title="Metering Table" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('MeteringTable', { installationId }))} />
+        <Button title="Full Installation Report" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('InstallationReport', { installationId }))} />
       </View>
         </View>
       )}
@@ -711,13 +1508,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       <SectionHeader
         title="Zones"
         actionLabel={readOnly ? undefined : '+ Add'}
-        onAction={readOnly ? undefined : () => {
+        onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
           setZoneName('');
           setZoneCode('');
           setZoneDesc('');
           zoneCodeEdited.current = false;
           setZoneModal(true);
-        }}
+        })}
       />
       {zones.length === 0 ? (
         <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
@@ -728,12 +1525,81 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             item={z}
             boardCount={boardCount(z.id)}
             assetCount={assetCount(z.id)}
-            onPress={() =>
-              navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId })
-            }
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
+            })}
           />
         ))
       )}
+
+      <FormModal
+        visible={prestartModal}
+        title="Review assigned job details"
+        onClose={() => setPrestartModal(false)}
+      >
+        {assignedJobDetailRows.map(([label, value]) => (
+          <View
+            key={label}
+            style={{
+              borderBottomWidth: 1,
+              borderBottomColor: colors.border,
+              paddingVertical: spacing.sm,
+            }}
+          >
+            <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
+              {label}
+            </Text>
+            <Text style={{ color: colors.foreground, marginTop: 3, lineHeight: 20 }}>
+              {value || 'Not supplied in this job contract'}
+            </Text>
+          </View>
+        ))}
+        <View
+          accessibilityRole="alert"
+          style={{
+            marginTop: spacing.md,
+            borderWidth: 2,
+            borderColor: colors.destructive,
+            borderRadius: 12,
+            padding: spacing.md,
+            backgroundColor: `${colors.destructive}14`,
+          }}
+        >
+          <Text style={{ color: colors.destructive, fontWeight: '800', lineHeight: 20 }}>
+            This acknowledgement covers only the currently available job details above. It is not the full JSA and does not replace site induction, hazard checks, isolation controls, or the form’s “Safe to proceed?” gate.
+          </Text>
+        </View>
+        {assignedPrestartAcknowledged ? (
+          <Button
+            title="Close"
+            variant="secondary"
+            style={{ marginTop: spacing.md }}
+            onPress={() => setPrestartModal(false)}
+          />
+        ) : (
+          <Button
+            title={prestartAcknowledging
+              ? 'Saving acknowledgement…'
+              : item.assigned_work_refresh_conflict?.remote_tree_changed
+                ? 'Server tree reconciliation required'
+                : item.assigned_work_refresh_conflict
+                  ? 'Accept server changes and acknowledge'
+                  : 'Acknowledge current job details'}
+            disabled={
+              prestartAcknowledging
+              || !canAcknowledgeAssignedSummary
+              || item.assigned_work_refresh_conflict?.remote_tree_changed
+            }
+            style={{ marginTop: spacing.md }}
+            onPress={() => { void acknowledgeAssignedWorkPrestart(); }}
+          />
+        )}
+        {!canAcknowledgeAssignedSummary ? (
+          <Text style={{ color: colors.destructive, marginTop: spacing.sm }}>
+            Refresh assigned work while online before acknowledging this job summary.
+          </Text>
+        ) : null}
+      </FormModal>
 
       <FormModal visible={zoneModal} title="New zone" onClose={() => setZoneModal(false)}>
         <TextField label="Zone name" value={zoneName} onChangeText={(value) => {
@@ -755,7 +1621,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <Button
           title="Create zone"
           disabled={!zoneName.trim() || !isValidZoneCode(zoneCode)}
-          onPress={async () => {
+          onPress={() => { void requestAssignedWorkAction(async () => {
             await zonesRepo.create({
               audit_id: installationId,
               zone_code: zoneCode,
@@ -767,7 +1633,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             setZoneCode('');
             setZoneDesc('');
             await refresh();
-          }}
+          }); }}
         />
       </FormModal>
 
@@ -776,6 +1642,21 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         variant="danger"
         style={{ marginTop: spacing.xl }}
         onPress={() => { void (async () => {
+          const actorUserId = user?.id;
+          if (!actorUserId) {
+            Alert.alert('Installation not deleted', 'Sign in again before deleting local work.');
+            return;
+          }
+          let resumeAuthority: ReturnType<typeof captureAuditWorkResumeAuthority>;
+          try {
+            resumeAuthority = captureAuditWorkResumeAuthority(actorUserId);
+          } catch (error) {
+            Alert.alert(
+              'Installation not deleted',
+              error instanceof Error ? error.message : 'Your authenticated session changed.',
+            );
+            return;
+          }
           const preview = await getLocalDeletionPreview({ kind: 'installation', id: installationId });
           const impact = preview
             ? `\n\nDeletes ${preview.deletes.zones} zone(s), ${preview.deletes.boards} board(s), ${preview.deletes.siteAssets} asset(s), ${preview.deletes.meters} meter(s), ${preview.deletes.assignments} assignment(s), and ${preview.deletes.forms} form(s) locally.`
@@ -789,8 +1670,26 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
               text: 'Delete local copy',
               style: 'destructive',
               onPress: async () => {
-                await installationsRepo.remove(installationId);
-                navigation.popToTop();
+                const suspension = await suspendAuditWorkForInstallation(
+                  installationId,
+                  resumeAuthority,
+                );
+                if (!suspension) {
+                  Alert.alert(
+                    'Installation not deleted',
+                    'Your authenticated session changed before deletion started.',
+                  );
+                  return;
+                }
+                try {
+                  await installationsRepo.remove(installationId);
+                  navigation.popToTop();
+                } finally {
+                  await resumeAuditWorkForInstallation(
+                    suspension,
+                    resumeAuthority,
+                  ).catch(() => false);
+                }
               },
             },
             ],
@@ -812,7 +1711,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
       <FormModal visible={gridModal} title={editingGridId ? 'Edit incoming grid connection' : 'Add incoming grid connection'} onClose={() => setGridModal(false)}>
         <TextField label="Supply name" value={gridName} onChangeText={setGridName} />
-        <TextField label="NMI (optional)" value={gridNmi} onChangeText={setGridNmi} />
+        <TextField label="NMI (optional)" value={gridNmi} maxLength={100} onChangeText={setGridNmi} />
         <TextField label="External key (optional)" value={gridExternalKey} onChangeText={setGridExternalKey} />
         <Button
           title={gridDefault ? 'Default supply' : 'Set as default'}
@@ -825,7 +1724,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           title="Save incoming grid connection"
           disabled={!gridName.trim()}
           style={{ marginTop: spacing.md }}
-          onPress={async () => {
+          onPress={() => { void requestAssignedWorkAction(async () => {
             if (editingGridId) {
               await gridSuppliesRepo.update(editingGridId, {
                 name: gridName,
@@ -844,7 +1743,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             }
             setGridModal(false);
             await refresh();
-          }}
+          }); }}
         />
       </FormModal>
     </ScrollView>

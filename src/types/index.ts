@@ -1,5 +1,9 @@
 export type InstallationStatus = 'Draft' | 'Completed';
 
+export type InstallationReportDetailMode =
+  | 'by-electrical-hierarchy'
+  | 'by-zone';
+
 export type BoardType =
   | 'MSB'
   | 'MSSB'
@@ -356,14 +360,139 @@ export interface User {
   source_state?: UserSourceState;
 }
 
-export interface Installation {
-  id: string;
+export interface AssignedWorkPrestartAcknowledgement {
+  actor_user_id: string;
+  assigned_job_summary_sha256: string;
+  acknowledged_at: string;
+}
+
+/** Local-only scheduler summary captured independently from the editable installation tree. */
+export interface AssignedWorkJobSummarySnapshot {
+  actor_user_id: string;
+  assigned_inspector_user_id: string;
   client_name: string;
+  customer_name?: string;
   site_name: string;
   site_address: string;
+  site_locality?: string;
+  site_state?: string;
+  site_postcode?: string;
+  audit_date: string;
+  inspector_name: string;
+  maas?: boolean | null;
+  service_type?: string;
+  metering_solution_type?: string;
+  planned_meter_type?: string;
+  site_contact_name?: string;
+  site_contact_phone?: string;
+  site_contact_email?: string;
+  fergus_job_number?: string;
+  quote_number?: string;
+  job_comments?: string;
+  access_information?: string;
+  pulled_at: string;
+}
+
+/**
+ * Last installation-metadata values accepted from the assigned-work server.
+ * This local-only base enables a field-aware three-way merge without treating
+ * unrelated zone, asset, meter, or form edits as metadata conflicts.
+ */
+export interface AssignedWorkServerMetadataSnapshot {
+  client_name: string;
+  customer_name: string | null;
+  site_name: string;
+  site_address: string;
+  site_locality: string | null;
+  site_state: string | null;
+  site_postcode: string | null;
+  site_country_code: string | null;
+  inspector_name: string;
+  audit_date: string;
+  timezone: string | null;
+  maas: boolean | null;
+  service_type: string | null;
+  metering_solution_type: string | null;
+  planned_meter_type: string | null;
+  site_contact_name: string | null;
+  site_contact_phone: string | null;
+  site_contact_email: string | null;
+  fergus_job_number: string | null;
+  quote_number: string | null;
+  job_comments: string | null;
+  access_information: string | null;
+  warranty_device: boolean | null;
+  monitoring_installed: boolean | null;
+  hardware_installed: boolean | null;
+  solar_capacity_kw: number | null;
+  additional_monitoring_required: boolean | null;
+  additional_monitoring_hardware: string | null;
+}
+
+export interface AssignedWorkRefreshConflict {
+  base: AssignedWorkServerMetadataSnapshot;
+  incoming: AssignedWorkServerMetadataSnapshot;
+  local_base_tree_revision: number;
+  remote_tree_revision: number;
+  conflicting_fields: Array<keyof AssignedWorkServerMetadataSnapshot>;
+  remote_tree_changed: boolean;
+  incoming_tree_fingerprint: string;
+  detected_at: string;
+}
+export interface Installation {
+  id: string;
+  /** Local-only durable owner used to fence shared-device data between logins. */
+  local_owner_user_id?: string;
+  /** Server ownership metadata used to separate local work from assigned work. */
+  created_by_user_id?: string;
+  assigned_inspector_user_id?: string;
+  /** Local visibility tombstone; never included in canonical backup payloads. */
+  assigned_work_state?: 'none' | 'active' | 'inactive';
+  assigned_work_actor_user_id?: string;
+  /** Last scheduler summary pulled for this assigned actor; excluded from canonical backup payloads. */
+  assigned_work_job_summary?: AssignedWorkJobSummarySnapshot;
+  /** Local-only acknowledgement for the current assigned actor and pulled summary. */
+  assigned_work_prestart_acknowledgement?: AssignedWorkPrestartAcknowledgement;
+  /** Last accepted server metadata base; excluded from canonical backup payloads. */
+  assigned_work_server_metadata_base?: AssignedWorkServerMetadataSnapshot;
+  /** Last accepted server child/form projection; local-only edits never mutate this value. */
+  assigned_work_server_tree_fingerprint?: string;
+  /** Pauses backup until overlapping or unknown remote edits are explicitly resolved. */
+  assigned_work_refresh_conflict?: AssignedWorkRefreshConflict;
+  client_name: string;
+  /** The end customer when different from the contracting client. */
+  customer_name?: string | null;
+  site_name: string;
+  site_address: string;
+  /** Structured Australian address parts; site_address remains the display fallback. */
+  site_locality?: string | null;
+  site_state?: string | null;
+  site_postcode?: string | null;
+  site_country_code?: string | null;
   inspector_name: string;
   audit_date: string;
   status: InstallationStatus;
+  /** Scheduler-provided job classification and site-access metadata. */
+  maas?: boolean | null;
+  service_type?: string | null;
+  metering_solution_type?: string | null;
+  /** Planning intent only; installed meters remain canonical MeterDevice rows. */
+  planned_meter_type?: string | null;
+  site_contact_name?: string | null;
+  site_contact_phone?: string | null;
+  site_contact_email?: string | null;
+  fergus_job_number?: string | null;
+  quote_number?: string | null;
+  job_comments?: string | null;
+  /** Sensitive operational detail, limited to users authorised for this installation. */
+  access_information?: string | null;
+  /** Nullable job-level outcome summaries; null means not yet confirmed. */
+  warranty_device?: boolean | null;
+  monitoring_installed?: boolean | null;
+  hardware_installed?: boolean | null;
+  solar_capacity_kw?: number | null;
+  additional_monitoring_required?: boolean | null;
+  additional_monitoring_hardware?: string | null;
   /** installation-canonical-v2 local metadata. */
   tree_schema_version?: 2;
   external_key?: string;
@@ -382,15 +511,25 @@ export interface Installation {
    */
   display_code_zone_sequences?: Record<string, number>;
   completed_at?: string;
+  /** Authoritative user identifier recorded by the server completion action. */
+  completed_by_user_id?: string;
   completed_from_revision?: number;
+  /** Optional technician note captured by the authoritative completion action. */
+  completion_notes?: string | null;
   reopened_at?: string;
   reopen_reason?: string;
   /** Preserves evidence that a schema-v1 client had marked this locally complete. */
   legacy_completed_unpinned?: boolean;
   pending_completion?: {
     baseTreeRevision: number;
+    /** Exact local mutation revision validated after backup/readiness. */
+    localTreeRevision?: number;
+    /** Exact whole-tree watermark validated inside the serialized dispatch fence. */
+    treeWatermark?: string;
     idempotencyKey: string;
     createdAt: string;
+    /** Exact normalized value replayed with the same completion idempotency key. */
+    completionNotes?: string | null;
   };
   backup_conflict?: BackupConflictState;
   /** Generated display codes changed by the server during the latest sync. */
@@ -604,6 +743,39 @@ export interface SiteAssetEditorDraftRecord {
   checksum: string;
 }
 
+/**
+ * Local-only, inert snapshot retained when a canonical assigned checkout is
+ * reassigned to another actor on the same device. Records in this envelope are
+ * excluded from normal repositories and cloud dispatch, but remain available
+ * for actor-scoped recovery/support without colliding with the clean canonical
+ * checkout materialized for the replacement actor.
+ */
+export interface AssignedWorkRecoveryCheckout {
+  version: 1;
+  id: string;
+  actor_user_id: string;
+  replacement_actor_user_id: string;
+  canonical_installation_id: string;
+  quarantined_at: string;
+  installation: Installation;
+  gridSupplies: GridSupply[];
+  zones: Zone[];
+  electricalAssets: ElectricalAsset[];
+  siteAssets: SiteAsset[];
+  meterDevices: MeterDevice[];
+  measurementAssignments: MeasurementAssignment[];
+  formSubmissions: FormSubmission[];
+  siteAssetEditorDrafts: SiteAssetEditorDraftRecord[];
+  cloudSync: {
+    synced_at?: string;
+    force_dirty: boolean;
+    pending_complete_attempt?: PendingCompleteBackupAttempt;
+    conflicted_complete_attempt?: ConflictedCompleteBackupAttempt;
+    upload_queue: CloudUploadQueueItem[];
+    thumbnail_queue: ThumbnailDownloadQueueItem[];
+  };
+}
+
 export interface AppDataStore {
   schemaVersion?: 3;
   user: User;
@@ -617,6 +789,8 @@ export interface AppDataStore {
   formSubmissions: FormSubmission[];
   /** Encrypted, local-only recovery state; never included in canonical API trees. */
   siteAssetEditorDrafts?: SiteAssetEditorDraftRecord[];
+  /** Actor-owned reassignment recovery snapshots; never included in API trees. */
+  assignedWorkRecoveryCheckouts?: AssignedWorkRecoveryCheckout[];
   cloudSync: CloudSyncState;
 }
 

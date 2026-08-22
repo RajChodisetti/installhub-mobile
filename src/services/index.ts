@@ -4,6 +4,8 @@ export * from './formReportTarget';
 export * from './reportJobs';
 export * from './reportVersioning';
 export * from './installationReport';
+export * from './electricalMapReport';
+export * from './reportPage';
 export * from './installationPackTarget';
 export * from './remoteInstallationRevision';
 export * from './importedSourceVerification';

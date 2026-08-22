@@ -1,5 +1,11 @@
-import React from 'react';
-import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef } from 'react';
+import {
+  NavigationContainer,
+  DarkTheme,
+  DefaultTheme,
+  StackActions,
+  useNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Alert, Text, View } from 'react-native';
@@ -31,6 +37,11 @@ import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
 import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
+import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
+import { getStore, subscribeStore } from '../data/seed';
+import { focusedAuditInstallationId } from '../services/auditWorkTrackingPolicy';
+import { assignedWorkRouteMustReturnToDetail } from '../services/assignedWorkMutationGuard';
+import type { Installation } from '../types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabParamList>();
@@ -73,8 +84,61 @@ export function RootNavigator() {
     storageIssue,
     retryStorage,
     restoreStorage,
+    user,
   } = useAuth();
   const { colors, resolvedMode } = useTheme();
+  const navigationRef = useNavigationContainerRef<RootStackParamList>();
+  const { setFocusedRoute } = useAuditWorkTracking();
+  const redirectingRouteKey = useRef<string | null>(null);
+
+  const enforceAssignedWorkRoute = useCallback(() => {
+    if (!isAuthenticated || !navigationRef.isReady()) {
+      redirectingRouteKey.current = null;
+      return;
+    }
+    const route = navigationRef.getCurrentRoute();
+    const installationId = focusedAuditInstallationId(route);
+    if (!route || !installationId) {
+      redirectingRouteKey.current = null;
+      return;
+    }
+    let installation: Installation | undefined;
+    try {
+      installation = getStore().installations.find(
+        (item) => item.id === installationId,
+      );
+    } catch {
+      return;
+    }
+    if (
+      !installation
+      || !assignedWorkRouteMustReturnToDetail(
+        installation,
+        user?.id,
+        route.name,
+        installationId,
+      )
+    ) {
+      redirectingRouteKey.current = null;
+      return;
+    }
+    const redirectKey = `${route.key}:${installationId}`;
+    if (redirectingRouteKey.current === redirectKey) return;
+    redirectingRouteKey.current = redirectKey;
+    navigationRef.dispatch(StackActions.popTo('InstallationDetail', {
+      installationId,
+    }));
+  }, [isAuthenticated, navigationRef, user?.id]);
+
+  const handleFocusedRouteChange = useCallback(() => {
+    setFocusedRoute(navigationRef.getCurrentRoute());
+    enforceAssignedWorkRoute();
+  }, [enforceAssignedWorkRoute, navigationRef, setFocusedRoute]);
+
+  useEffect(() => {
+    enforceAssignedWorkRoute();
+    return subscribeStore(enforceAssignedWorkRoute);
+  }, [enforceAssignedWorkRoute]);
 
   if (isLoading) {
     return <LoadingState />;
@@ -143,7 +207,12 @@ export function RootNavigator() {
   };
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer
+      ref={navigationRef}
+      theme={navTheme}
+      onReady={handleFocusedRouteChange}
+      onStateChange={handleFocusedRouteChange}
+    >
       <Stack.Navigator
         screenOptions={{
           headerStyle: { backgroundColor: colors.card },

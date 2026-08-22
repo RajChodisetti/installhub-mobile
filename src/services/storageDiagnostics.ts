@@ -1,5 +1,10 @@
 import type { AppDataStore } from '../types';
 import { STORE_GENERATION_PREFIX, STORE_MANIFEST_KEY, STORE_RECOVERY_KEY } from '../data/storePersistence';
+import { assignedWorkInstallationIsVisibleToActor } from './assignedWorkPolicy';
+import {
+  assertCurrentAssignedWorkAuthority,
+  captureAssignedWorkMutationAuthority,
+} from './assignedWorkMutationGuard';
 
 export const INSTALLHUB_STORE_KEY = STORE_MANIFEST_KEY;
 
@@ -222,12 +227,42 @@ async function inspectOrphanEvidence(
   }
 }
 
-export async function getStorageDiagnostics(): Promise<StorageDiagnostics> {
+export async function getStorageDiagnostics(actorUserId: string): Promise<StorageDiagnostics> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   const [{ default: AsyncStorage }, storeModule] = await Promise.all([
     import('@react-native-async-storage/async-storage'),
     import('../data/seed'),
   ]);
   const store = await storeModule.initStore();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const visibleInstallations = store.installations.filter((installation) =>
+    assignedWorkInstallationIsVisibleToActor(installation, actorUserId));
+  const visibleInstallationIds = new Set(
+    visibleInstallations.map((installation) => installation.id),
+  );
+  const actorStore = {
+    installations: visibleInstallations,
+    zones: store.zones.filter((item) => visibleInstallationIds.has(item.audit_id)),
+    electricalAssets: store.electricalAssets.filter(
+      (item) => visibleInstallationIds.has(item.audit_id),
+    ),
+    siteAssets: store.siteAssets.filter(
+      (item) => visibleInstallationIds.has(item.audit_id),
+    ),
+    formSubmissions: store.formSubmissions.filter(
+      (item) => visibleInstallationIds.has(item.installation_id),
+    ),
+    cloudSync: {
+      ...store.cloudSync,
+      upload_queue: store.cloudSync.upload_queue.filter(
+        (item) => visibleInstallationIds.has(item.installation_id),
+      ),
+      thumbnail_queue: store.cloudSync.thumbnail_queue.filter(
+        (item) => visibleInstallationIds.has(item.installation_id),
+      ),
+    },
+  };
   const storageKeys = (await AsyncStorage.getAllKeys()).filter((key) =>
     key === STORE_MANIFEST_KEY || key === STORE_RECOVERY_KEY ||
     key.startsWith(`${STORE_GENERATION_PREFIX}.`) || key === 'installhub.mobile.store.v2' ||
@@ -248,9 +283,15 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics> {
         total + utf8ByteLength(key) + utf8ByteLength(value ?? ''), 0)
     : utf8ByteLength(JSON.stringify(store));
   await inspectOrphanEvidence(
-    new Set(store.formSubmissions.map((form) => form.id)),
+    new Set([
+      ...store.formSubmissions,
+      ...(store.assignedWorkRecoveryCheckouts ?? []).flatMap(
+        (item) => item.formSubmissions,
+      ),
+    ].map((form) => form.id)),
     warnings,
   );
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   const totalBytes =
     asyncStorageBytes +
     originalEvidenceBytes +
@@ -259,8 +300,8 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics> {
 
   return {
     generatedAt: new Date().toISOString(),
-    entities: countStoreEntities(store),
-    queues: summarizeQueueState(store),
+    entities: countStoreEntities(actorStore),
+    queues: summarizeQueueState(actorStore),
     formMediaBytes: originalEvidenceBytes,
     generatedReportBytes,
     thumbnailCacheBytes: importedThumbnailBytes,
@@ -294,7 +335,26 @@ async function clearDirectory(
  * Removes only locally generated PDFs. Original form evidence is stored under
  * Paths.document/form-media and is deliberately outside this operation.
  */
-export async function clearGeneratedReportCache(): Promise<CacheClearResult> {
+export async function clearGeneratedReportCache(
+  actorUserId: string,
+): Promise<CacheClearResult> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const { initStore, getStore } = await import('../data/seed');
+  await initStore();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const store = getStore();
+  const hasOtherActorData = store.installations.some(
+    (item) => item.local_owner_user_id !== actorUserId,
+  ) || (store.assignedWorkRecoveryCheckouts ?? []).some(
+    (item) => item.actor_user_id !== actorUserId,
+  );
+  if (hasOtherActorData) {
+    throw new Error(
+      'Generated reports cannot be cleared while this device retains another account\'s local data.',
+    );
+  }
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   return {
     previousBytes: await clearDirectory('cache', GENERATED_REPORT_DIRECTORY),
     repairedQueueItems: 0,
@@ -306,17 +366,48 @@ export async function clearGeneratedReportCache(): Promise<CacheClearResult> {
  * pending so the normal worker can safely recreate them. Remote originals and
  * locally captured form evidence are never touched.
  */
-export async function clearImportedThumbnailCache(): Promise<CacheClearResult> {
-  const previousBytes = await clearDirectory(
-    'cache',
-    IMPORTED_THUMBNAIL_DIRECTORY,
-  );
-  const { initStore, updateStore } = await import('../data/seed');
+export async function clearImportedThumbnailCache(
+  actorUserId: string,
+): Promise<CacheClearResult> {
+  const authority = captureAssignedWorkMutationAuthority();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const { initStore, getStore, updateStore } = await import('../data/seed');
   await initStore();
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  if ((getStore().assignedWorkRecoveryCheckouts ?? []).some(
+    (item) => item.actor_user_id === actorUserId
+      && item.cloudSync.thumbnail_queue.some((job) => Boolean(job.local_uri)),
+  )) {
+    throw new Error(
+      'Imported previews cannot be cleared while your assigned-work recovery copy retains them.',
+    );
+  }
+  const ownedIds = new Set(getStore().installations
+    .filter((item) => item.local_owner_user_id === actorUserId)
+    .map((item) => item.id));
+  const ownedJobs = getStore().cloudSync.thumbnail_queue.filter(
+    (job) => ownedIds.has(job.installation_id),
+  );
+  let previousBytes = 0;
+  const { File } = await import('expo-file-system');
+  for (const job of ownedJobs) {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    if (!job.local_uri) continue;
+    const file = new File(job.local_uri);
+    if (!file.exists) continue;
+    previousBytes += file.size ?? 0;
+    file.delete();
+  }
+  assertCurrentAssignedWorkAuthority(authority, actorUserId);
   let repairedQueueItems = 0;
   await updateStore((store) => {
+    assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    const currentOwnedIds = new Set(store.installations
+      .filter((item) => item.local_owner_user_id === actorUserId)
+      .map((item) => item.id));
     const now = new Date().toISOString();
     for (const job of store.cloudSync.thumbnail_queue) {
+      if (!currentOwnedIds.has(job.installation_id)) continue;
       job.status = 'pending';
       job.attempts = 0;
       job.local_uri = undefined;
@@ -326,6 +417,7 @@ export async function clearImportedThumbnailCache(): Promise<CacheClearResult> {
     }
 
     for (const installation of store.installations) {
+      if (installation.local_owner_user_id !== actorUserId) continue;
       const jobs = store.cloudSync.thumbnail_queue.filter(
         (job) => job.installation_id === installation.id,
       );

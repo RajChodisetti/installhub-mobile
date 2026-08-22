@@ -17,6 +17,14 @@ import {
 import { apiClient, cloudConnectionErrorMessage } from '../api/apiClient';
 import { useAuth, useTheme } from '../context/AppProviders';
 import type { RootStackParamList } from '../navigation/types';
+import {
+  captureAuthenticatedCloudActionLease,
+  type AuthenticatedCloudActionLease,
+} from '../services/authenticatedCloudAction';
+import {
+  applyLeasedCloudActionState,
+  runLeasedCloudActionStep,
+} from '../services/cloudActionLease';
 import { spacing, typography } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RemoteInstallations'>;
@@ -93,13 +101,35 @@ export function RemoteInstallationsScreen({ navigation }: Props) {
   };
 
   const deleteCloudBackup = async (item: RemoteInstallationSummary) => {
+    const actionLeasePromise = captureAuthenticatedCloudActionLease();
+    let actionLease: AuthenticatedCloudActionLease | null = null;
     setDeletingId(item.id);
     try {
-      await apiClient.deleteInstallationCloud(item.id, true);
-      setItems((current) => current.filter((candidate) => candidate.id !== item.id));
-      Alert.alert('Cloud Backup deleted', `${item.siteName} was removed from the server.`);
+      actionLease = await actionLeasePromise;
+      await runLeasedCloudActionStep(
+        actionLease,
+        () => apiClient.deleteInstallationCloud(
+          item.id,
+          true,
+          actionLease!.cloudAuthority,
+        ),
+      );
+      applyLeasedCloudActionState(actionLease, () => {
+        setItems((current) => current.filter((candidate) => candidate.id !== item.id));
+        Alert.alert('Cloud Backup deleted', `${item.siteName} was removed from the server.`);
+      });
     } catch (error) {
-      Alert.alert('Delete failed', cloudConnectionErrorMessage(error));
+      let canReport = true;
+      if (actionLease) {
+        try {
+          actionLease.assertCurrent();
+        } catch {
+          canReport = false;
+        }
+      }
+      if (canReport) {
+        Alert.alert('Delete failed', cloudConnectionErrorMessage(error));
+      }
     } finally {
       setDeletingId(undefined);
     }

@@ -68,6 +68,13 @@ screens / hooks → repositories → local JSON store (AsyncStorage)
   triggers
 - Creator/assigned-user/admin cloud browsing and fresh-ID imports named `cp1`,
   `cp2`, and so on; source IDs let eligible copies report from the original backup
+- Automatic assigned-work checkout keeps each assigned Draft or Completed
+  installation's canonical server/tree IDs, supports offline edits, keeps
+  completed history visible, and hides revoked Draft work without deleting
+  unsent local data
+- Authenticated physical-device push registration for scheduler assignments,
+  including foreground banners/sound, token-rotation updates, and best-effort
+  device unregistration on logout
 - Per-installation Cloud Files & History browser for authenticated evidence/report
   downloads and immutable backup-version inspection
 - Creator/admin-only permanent Cloud Backup deletion with an explicit destructive
@@ -86,3 +93,7 @@ screens / hooks → repositories → local JSON store (AsyncStorage)
 - `npm run ios` — iOS
 - `npx tsc --noEmit` — typecheck
 - `npm test` — form catalog, validation, conditional logic, and report HTML tests
+
+Remote push registration requires a physical development/EAS build; permission
+denial, simulators, missing EAS project configuration, and notification-network
+failures do not prevent login or local field work.

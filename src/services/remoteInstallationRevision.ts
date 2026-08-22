@@ -39,3 +39,23 @@ export function remoteInstallationTreeRevision(
     serverDerived: tree.serverDerived,
   })));
 }
+
+/**
+ * Stable identity for the server-owned records below the installation root.
+ * Assigned-work metadata refreshes may advance the server CAS revision while
+ * this fingerprint stays fixed. A changed fingerprint proves that advancing
+ * the local CAS base could overwrite an unknown concurrent tree/form edit.
+ */
+export function remoteInstallationWorkTreeFingerprint(
+  tree: RemoteInstallationTree,
+): string {
+  return sha256(JSON.stringify(canonicalize({
+    gridSupplies: byRemoteId(tree.gridSupplies ?? []),
+    zones: byRemoteId(tree.zones),
+    electricalAssets: byRemoteId(tree.electricalAssets),
+    siteAssets: byRemoteId(tree.siteAssets),
+    meterDevices: byRemoteId(tree.meterDevices ?? []),
+    measurementAssignments: byRemoteId(tree.measurementAssignments ?? []),
+    formSubmissions: byRemoteId(tree.formSubmissions),
+  })));
+}

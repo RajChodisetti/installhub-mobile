@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   applyLocalDeletionPlan,
+  assertLocalDeletionLifecycleAllowed,
+  assertLocalDeletionPlanStillAllowed,
   planLocalDeletion,
 } from '../src/repositories/deletionIntegrity';
 import { evidenceDirectoryIsReferenced } from '../src/services/formStorageOwnership';
@@ -454,6 +457,68 @@ test('draft-form deletion planning identifies later amendment descendants for re
   assert.deepEqual([...plan.formIds].sort(), [draft.id, later.id]);
 });
 
+test('queued deletion revalidates cloud, lifecycle, amendment, and Draft-form guards', () => {
+  const store = storeFixture();
+  const draft: FormSubmission = { ...form('form-draft-race'), status: 'Draft' };
+  store.formSubmissions.push(draft);
+
+  const initialPlan = planLocalDeletion(store, { kind: 'form_draft', id: draft.id });
+  assert.ok(initialPlan);
+  assert.doesNotThrow(() => assertLocalDeletionPlanStillAllowed(store, initialPlan));
+
+  store.cloudSync.pending_complete_attempts = {
+    'installation-1': {
+      version: 1,
+      id: 'complete-backup-attempt',
+      installation_id: 'installation-1',
+      payload: {},
+      payload_sha256: 'sha256',
+      local_tree_revision: 1,
+      tree_watermark: timestamp,
+      installation_status: 'Draft',
+      prepared_at: timestamp,
+    },
+  };
+  assert.throws(
+    () => assertLocalDeletionPlanStillAllowed(store, initialPlan),
+    /pending cloud backup/,
+  );
+
+  delete store.cloudSync.pending_complete_attempts['installation-1'];
+  store.installations[0]!.pending_completion = {
+    baseTreeRevision: 1,
+    idempotencyKey: 'completion-attempt',
+    createdAt: timestamp,
+  };
+  assert.throws(
+    () => assertLocalDeletionPlanStillAllowed(store, initialPlan),
+    /pending installation completion/,
+  );
+
+  delete store.installations[0]!.pending_completion;
+  store.formSubmissions.push({
+    ...form('form-later-race', { supersedes_id: draft.id }),
+    status: 'Draft',
+  });
+  const descendantPlan = planLocalDeletion(store, { kind: 'form_draft', id: draft.id });
+  assert.ok(descendantPlan);
+  assert.throws(
+    () => assertLocalDeletionPlanStillAllowed(store, descendantPlan),
+    /later amendment/,
+  );
+
+  store.formSubmissions = store.formSubmissions.filter(
+    (item) => item.id !== 'form-later-race',
+  );
+  draft.status = 'Completed';
+  const completedPlan = planLocalDeletion(store, { kind: 'form_draft', id: draft.id });
+  assert.ok(completedPlan);
+  assert.throws(
+    () => assertLocalDeletionPlanStillAllowed(store, completedPlan),
+    /Completed forms cannot be deleted/,
+  );
+});
+
 test('evidence ownership protects exact inherited amendment directories only', () => {
   const protectedUris = [
     'file:///documents/form-media/form-original/photo-1.jpg',
@@ -473,4 +538,78 @@ test('evidence ownership protects exact inherited amendment directories only', (
     ),
     false,
   );
+});
+
+test('all deletion invariants are revalidated inside the serialized store mutation', () => {
+  assert.doesNotThrow(() => {
+    assertLocalDeletionLifecycleAllowed('Draft', { kind: 'zone', id: 'zone-delete' });
+  });
+  assert.throws(
+    () => assertLocalDeletionLifecycleAllowed(
+      'Completed',
+      { kind: 'zone', id: 'zone-delete' },
+    ),
+    /Reopen this completed installation/,
+  );
+  assert.doesNotThrow(() => {
+    assertLocalDeletionLifecycleAllowed(
+      'Completed',
+      { kind: 'installation', id: 'installation-1' },
+    );
+  });
+
+  const repository = readFileSync(
+    new URL('../src/repositories/index.ts', import.meta.url),
+    'utf8',
+  );
+  const start = repository.indexOf('async function removeLocalTreeTarget(');
+  const end = repository.indexOf('\nexport const installationsRepo', start);
+  const remove = repository.slice(start, end);
+  const transaction = remove.indexOf('await updateStore((store) =>');
+  const transactionalPlan = remove.indexOf(
+    'const plan = planLocalDeletion(store, target)',
+    transaction,
+  );
+  const transactionalInvariantCheck = remove.indexOf(
+    'assertLocalDeletionPlanStillAllowed(store, plan)',
+    transaction,
+  );
+  const deletion = remove.indexOf('effects = applyLocalDeletionPlan', transaction);
+
+  assert.ok(transaction >= 0);
+  assert.ok(transactionalPlan > transaction);
+  assert.ok(transactionalInvariantCheck > transactionalPlan);
+  assert.ok(transactionalInvariantCheck < deletion);
+});
+
+test('amendment cloning re-reads a Completed source inside the transaction before insert', () => {
+  const repository = readFileSync(
+    new URL('../src/repositories/index.ts', import.meta.url),
+    'utf8',
+  );
+  const start = repository.indexOf('async cloneAmendment(id)');
+  const end = repository.indexOf('\n  async removeDraft(id)', start);
+  const cloneAmendment = repository.slice(start, end);
+  const transaction = cloneAmendment.indexOf('await updateStore((store) =>');
+  const reread = cloneAmendment.indexOf(
+    'const currentOriginal = store.formSubmissions.find',
+    transaction,
+  );
+  const existenceCheck = cloneAmendment.indexOf(
+    "if (!currentOriginal) throw new Error('Form submission not found')",
+    reread,
+  );
+  const completedCheck = cloneAmendment.indexOf(
+    "if (currentOriginal.status !== 'Completed')",
+    existenceCheck,
+  );
+  const cloneBuild = cloneAmendment.indexOf('clone = {', completedCheck);
+  const insert = cloneAmendment.indexOf('store.formSubmissions.unshift(clone)', cloneBuild);
+
+  assert.ok(transaction >= 0);
+  assert.ok(reread > transaction);
+  assert.ok(existenceCheck > reread);
+  assert.ok(completedCheck > existenceCheck);
+  assert.ok(cloneBuild > completedCheck);
+  assert.ok(insert > cloneBuild);
 });

@@ -10,7 +10,7 @@ import {
 import { apiClient, cloudConnectionErrorMessage } from '../api/apiClient';
 import { Badge, Button, Card, LoadingState } from '../components/ui';
 import { SYNC_API_URL } from '../constants/syncConfig';
-import { useTheme } from '../context/AppProviders';
+import { useAuth, useTheme } from '../context/AppProviders';
 import { useSyncStatus } from '../services/SyncStatusContext';
 import {
   clearGeneratedReportCache,
@@ -49,6 +49,7 @@ function withTimeout<T>(operation: Promise<T>, milliseconds: number): Promise<T>
 
 export function DiagnosticsScreen() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const {
     syncing,
     progress,
@@ -82,11 +83,12 @@ export function DiagnosticsScreen() {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!user?.id) return;
     setRefreshing(true);
     void refreshHealth();
     try {
       const [nextDiagnostics, nextOperationalEvents] = await Promise.all([
-        getStorageDiagnostics(),
+        getStorageDiagnostics(user.id),
         readOperationalDiagnostics(),
       ]);
       setDiagnostics(nextDiagnostics);
@@ -99,7 +101,7 @@ export function DiagnosticsScreen() {
     } finally {
       setRefreshing(false);
     }
-  }, [refreshHealth]);
+  }, [refreshHealth, user?.id]);
 
   useEffect(() => {
     void refresh();
@@ -128,6 +130,8 @@ export function DiagnosticsScreen() {
   };
 
   const clearReports = () => {
+    if (!user?.id) return;
+    const actorUserId = user.id;
     Alert.alert(
       'Clear generated reports?',
       'This removes only locally cached PDFs. Forms and original evidence are retained and reports can be generated again.',
@@ -138,7 +142,7 @@ export function DiagnosticsScreen() {
           style: 'destructive',
           onPress: () => {
             setCacheAction('reports');
-            void clearGeneratedReportCache()
+            void clearGeneratedReportCache(actorUserId)
               .then(async (result) => {
                 Alert.alert(
                   'Report cache cleared',
@@ -160,6 +164,8 @@ export function DiagnosticsScreen() {
   };
 
   const clearThumbnails = () => {
+    if (!user?.id) return;
+    const actorUserId = user.id;
     Alert.alert(
       'Clear imported previews?',
       'This removes only downloaded thumbnail copies. Remote originals and locally captured form evidence are retained.',
@@ -170,7 +176,7 @@ export function DiagnosticsScreen() {
           style: 'destructive',
           onPress: () => {
             setCacheAction('thumbnails');
-            void clearImportedThumbnailCache()
+            void clearImportedThumbnailCache(actorUserId)
               .then(async (result) => {
                 Alert.alert(
                   'Preview cache cleared',

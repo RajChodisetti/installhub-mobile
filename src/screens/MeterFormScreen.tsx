@@ -100,7 +100,13 @@ function meterBoardReachesGrid(
 }
 
 export function MeterFormScreen({ navigation, route }: Props) {
-  const { boardId, meterId, deviceType = 'A3RM', finishChannelMapping = false } = route.params;
+  const {
+    installationId,
+    boardId,
+    meterId,
+    deviceType = 'A3RM',
+    finishChannelMapping = false,
+  } = route.params;
   const { colors } = useTheme();
   const [meter, setMeter] = useState<Meter | null>(null);
   const [persistedMeterPhotoUris, setPersistedMeterPhotoUris] = useState<string[]>([]);
@@ -129,6 +135,11 @@ export function MeterFormScreen({ navigation, route }: Props) {
       const board = await electricalAssetsRepo.getById(boardId);
       if (!board) {
         setLoading(false);
+        return;
+      }
+      if (board.audit_id !== installationId) {
+        Alert.alert('Meter unavailable', 'This meter does not belong to the selected installation.');
+        navigation.goBack();
         return;
       }
       const [installation, forms, assignments, installationAssets, installationBoards, grids] = await Promise.all([
@@ -189,7 +200,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
       }
       setLoading(false);
     })();
-  }, [boardId, meterId, deviceType]);
+  }, [boardId, meterId, deviceType, installationId, navigation]);
 
   if (loading || !meter || !board) {
     return (
@@ -339,7 +350,10 @@ export function MeterFormScreen({ navigation, route }: Props) {
             onPress={async () => {
               if (!completedFormId) return;
               const amendment = await formsRepo.cloneAmendment(completedFormId);
-              navigation.replace('FormEditor', { formId: amendment.id });
+              navigation.replace('FormEditor', {
+                formId: amendment.id,
+                installationId,
+              });
             }}
           />
         </View>

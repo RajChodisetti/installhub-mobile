@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import type {
   InstallationReadiness,
+  InstallationReportDetailMode,
   UserSourceApp,
   UserSourceState,
   VirtualMeterDefinition,
@@ -25,12 +26,21 @@ import {
   installationReportVersionFields,
   type ReportVersionSelection,
 } from '../services/reportVersioning';
+import { buildNotificationDeviceDeletePath } from '../services/pushNotificationRegistration';
 export type { CloudUser } from '../services/authSession';
 
 const ACCESS_TOKEN_KEY = 'ih_cloud_jwt';
 const REFRESH_TOKEN_KEY = 'ih_cloud_refresh';
 const CLOUD_USER_KEY = 'ih_cloud_user';
 const cloudSessionMutations = createSessionMutationCoordinator();
+const cloudSessionAuthorityBrand: unique symbol = Symbol('cloud-session-authority');
+const cloudSessionAuthorityIdentity = Symbol('cloud-session-authority-runtime');
+
+export interface CloudSessionAuthority {
+  readonly actorUserId: string;
+  readonly generation: number;
+  readonly [cloudSessionAuthorityBrand]: symbol;
+}
 
 export class AuthError extends Error {
   readonly type = 'auth' as const;
@@ -42,7 +52,11 @@ export class NetworkError extends Error {
 
 export class ApiError extends Error {
   readonly type = 'api' as const;
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
     super(message);
   }
 }
@@ -73,6 +87,8 @@ export interface ExportJobStatus {
   recordVersionNumber: number | null;
   recordVersionPayloadHash: string | null;
   reportSource: 'canonical-version' | 'diagnostic-live';
+  detailMode: InstallationReportDetailMode | null;
+  reportVariantKey: string | null;
 }
 
 export type ReportJobVersionInput = ReportVersionSelection;
@@ -83,6 +99,8 @@ export interface ExportJobStartResponse {
   recordVersionNumber: number | null;
   recordVersionPayloadHash: string | null;
   reportSource: 'canonical-version' | 'diagnostic-live';
+  detailMode: InstallationReportDetailMode;
+  reportVariantKey: string | null;
 }
 
 export interface InstallationAccess {
@@ -206,20 +224,34 @@ async function getStoredCloudJwt(): Promise<string | null> {
   return SecureStore.getItemAsync(ACCESS_TOKEN_KEY).catch(() => null);
 }
 
-async function parseError(response: Response): Promise<string> {
+async function parseError(
+  response: Response,
+): Promise<{ message: string; code?: string }> {
   const text = await response.text().catch(() => response.statusText);
   try {
-    const parsed = JSON.parse(text) as { error?: string; detail?: string };
-    return parsed.detail || parsed.error || text;
+    const parsed = JSON.parse(text) as {
+      error?: string;
+      detail?: string;
+      code?: string;
+    };
+    return {
+      message: parsed.detail || parsed.error || text,
+      ...(typeof parsed.code === 'string' && parsed.code.trim()
+        ? { code: parsed.code.trim() }
+        : {}),
+    };
   } catch {
-    return text || response.statusText;
+    return { message: text || response.statusText };
   }
 }
 
 async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   try {
     const response = await fetch(url, init);
-    if (!response.ok) throw new ApiError(await parseError(response), response.status);
+    if (!response.ok) {
+      const parsed = await parseError(response);
+      throw new ApiError(parsed.message, response.status, parsed.code);
+    }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;
   } catch (error) {
@@ -328,6 +360,60 @@ async function captureStoredCloudSession(): Promise<
     if (!cloudSessionMutations.isCurrent(generation)) return null;
     return { generation, accessToken, refreshToken };
   });
+}
+
+/**
+ * Captures the exact persisted cloud-account generation that may own a
+ * multi-request workflow. Unlike a boolean session check, this lease becomes
+ * stale across every logout/login replacement, including the same user
+ * signing back in with new credentials.
+ */
+export async function captureCloudSessionAuthority(): Promise<CloudSessionAuthority | null> {
+  return cloudSessionMutations.runExclusive(async () => {
+    const generation = cloudSessionMutations.captureGeneration();
+    const [accessToken, user] = await Promise.all([
+      getStoredCloudJwt(),
+      getCachedCloudUser(),
+    ]);
+    if (
+      !cloudSessionMutations.isCurrent(generation)
+      || !accessToken
+      || !user
+    ) {
+      return null;
+    }
+    return {
+      actorUserId: user.id,
+      generation,
+      [cloudSessionAuthorityBrand]: cloudSessionAuthorityIdentity,
+    };
+  });
+}
+
+export function assertCurrentCloudSessionAuthority(
+  authority: CloudSessionAuthority,
+  expectedActorUserId: string = authority.actorUserId,
+): string {
+  if (
+    authority[cloudSessionAuthorityBrand] !== cloudSessionAuthorityIdentity
+    || authority.actorUserId !== expectedActorUserId
+    || !cloudSessionMutations.isCurrent(authority.generation)
+  ) {
+    throw new AuthError(
+      'The cloud account changed while this sync was running. Please retry.',
+    );
+  }
+  return authority.actorUserId;
+}
+
+export function cloudSessionAuthoritiesMatch(
+  left: CloudSessionAuthority,
+  right: CloudSessionAuthority,
+): boolean {
+  return left[cloudSessionAuthorityBrand] === cloudSessionAuthorityIdentity
+    && right[cloudSessionAuthorityBrand] === cloudSessionAuthorityIdentity
+    && left.generation === right.generation
+    && left.actorUserId === right.actorUserId;
 }
 
 async function performRefresh(
@@ -451,12 +537,21 @@ export async function hasStoredCloudSession(): Promise<boolean> {
 
 export async function runWithCloudAccessToken<T>(
   operation: (accessToken: string) => Promise<T>,
+  requiredAuthority?: CloudSessionAuthority,
 ): Promise<T> {
   const session = await captureStoredCloudSession();
   if (!session?.accessToken) {
     throw new AuthError('Cloud Backup is not connected.');
   }
-  return runWithSessionAccessLease(
+  if (requiredAuthority) {
+    assertCurrentCloudSessionAuthority(requiredAuthority);
+    if (session.generation !== requiredAuthority.generation) {
+      throw new AuthError(
+        'The cloud account changed while this download was running. Please retry.',
+      );
+    }
+  }
+  const result = await runWithSessionAccessLease(
     {
       generation: session.generation,
       accessToken: session.accessToken,
@@ -473,6 +568,10 @@ export async function runWithCloudAccessToken<T>(
       ),
     },
   );
+  if (requiredAuthority) {
+    assertCurrentCloudSessionAuthority(requiredAuthority);
+  }
+  return result;
 }
 
 async function request<T>(
@@ -481,12 +580,17 @@ async function request<T>(
   body?: unknown,
   retried = false,
   providedSession?: StoredCloudSessionSnapshot,
+  signal?: AbortSignal,
+  requiredAuthority?: CloudSessionAuthority,
 ): Promise<T> {
   const session = providedSession ?? await captureStoredCloudSession();
   if (!session?.accessToken) {
     throw new AuthError('Cloud Backup is not connected.');
   }
   const assertSessionIsCurrent = () => {
+    if (requiredAuthority) {
+      assertCurrentCloudSessionAuthority(requiredAuthority);
+    }
     if (!cloudSessionMutations.isCurrent(session.generation)) {
       throw new AuthError(
         'The cloud account changed while this request was running. Please retry.',
@@ -497,6 +601,7 @@ async function request<T>(
   try {
     const response = await fetch(`${SYNC_API_URL}${path}`, {
       method,
+      signal,
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -514,6 +619,8 @@ async function request<T>(
           body,
           true,
           { ...session, accessToken: refresh.accessToken },
+          signal,
+          requiredAuthority,
         );
       }
       if (refresh.status === 'offline') {
@@ -526,9 +633,9 @@ async function request<T>(
     }
     if (response.status === 401) throw new AuthError('Cloud session expired. Sign in again.');
     if (!response.ok) {
-      const message = await parseError(response);
+      const parsed = await parseError(response);
       assertSessionIsCurrent();
-      throw new ApiError(message, response.status);
+      throw new ApiError(parsed.message, response.status, parsed.code);
     }
     if (response.status === 204) return undefined as T;
     const text = await response.text();
@@ -650,10 +757,34 @@ export interface InstallationLifecycleResponse {
   treeRevision: number;
   recordVersionNumber: number | null;
   completedAt?: string | null;
+  completedByUserId?: string | null;
   completedFromRevision?: number | null;
+  completionNotes?: string | null;
+  /** Compatibility alias accepted only at the response boundary. */
+  completion_notes?: string | null;
   reopenedAt?: string | null;
   reopenReason?: string | null;
   readiness: InstallationReadiness;
+}
+
+export interface ActiveTimeSessionInput {
+  revision: number;
+  activeMilliseconds: number;
+  startedAt: string;
+  lastActiveAt: string;
+  endedAt: string | null;
+}
+
+export interface ActiveTimeSessionResponse extends ActiveTimeSessionInput {
+  sessionId: string;
+  applied: boolean;
+}
+
+export interface NotificationDeviceInput {
+  expoPushToken: string;
+  platform: 'ios' | 'android';
+  projectId: string;
+  registrationGeneration: number;
 }
 
 export interface InstallHubPullResponse {
@@ -664,13 +795,21 @@ export interface InstallHubPullResponse {
 export const apiClient = {
   health: () => fetchJson<{ status: string }>(`${SYNC_API_URL}/health`, { method: 'GET' }),
 
-  push: (payload: unknown) =>
-    request<InstallHubPushResponse>('POST', '/v1/installhub/sync/push', payload),
+  push: (payload: unknown, authority?: CloudSessionAuthority) =>
+    request<InstallHubPushResponse>(
+      'POST', '/v1/installhub/sync/push', payload, false, undefined, undefined, authority,
+    ),
 
-  pull: (since: string, installationId?: string) => {
+  pull: (
+    since: string,
+    installationId?: string,
+    authority?: CloudSessionAuthority,
+  ) => {
     const params = new URLSearchParams({ since });
     if (installationId) params.set('installationId', installationId);
-    return request<InstallHubPullResponse>('GET', `/v1/installhub/sync/pull?${params}`);
+    return request<InstallHubPullResponse>(
+      'GET', `/v1/installhub/sync/pull?${params}`, undefined, false, undefined, undefined, authority,
+    );
   },
 
   getInstallationMapping: (installationId: string, recordVersionNumber: number) => {
@@ -681,47 +820,131 @@ export const apiClient = {
     );
   },
 
-  deleteInstallationCloud: (installationId: string, purge = false) =>
+  deleteInstallationCloud: (
+    installationId: string,
+    purge = false,
+    authority?: CloudSessionAuthority,
+  ) =>
     request<void>(
       'DELETE',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}${
         purge ? '?purge=true' : ''
       }`,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      authority,
     ),
 
-  getInstallationReadiness: (installationId: string, recordVersionNumber?: number) => {
+  getInstallationReadiness: (
+    installationId: string,
+    recordVersionNumber?: number,
+    authority?: CloudSessionAuthority,
+  ) => {
     const query = recordVersionNumber === undefined
       ? ''
       : `?recordVersionNumber=${encodeURIComponent(String(recordVersionNumber))}`;
     return request<InstallationReadiness>(
       'GET',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/readiness${query}`,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      authority,
     );
   },
 
   completeInstallation: (
     installationId: string,
-    input: { baseTreeRevision: number; idempotencyKey: string },
+    input: {
+      baseTreeRevision: number;
+      idempotencyKey: string;
+      completionNotes?: string | null;
+    },
+    authority?: CloudSessionAuthority,
   ) => request<InstallationLifecycleResponse>(
     'POST',
     `/v1/installhub/installations/${encodeURIComponent(installationId)}/complete`,
     input,
+    false,
+    undefined,
+    undefined,
+    authority,
   ),
 
   reopenInstallation: (
     installationId: string,
     input: { baseTreeRevision: number; reason: string },
+    authority?: CloudSessionAuthority,
   ) => request<InstallationLifecycleResponse>(
     'POST',
     `/v1/installhub/installations/${encodeURIComponent(installationId)}/reopen`,
     input,
+    false,
+    undefined,
+    undefined,
+    authority,
   ),
 
-  checkPhoto: (identity: PhotoIdentity & { checksum: string }) =>
+  putInstallationActiveTimeSession: (
+    installationId: string,
+    sessionId: string,
+    input: ActiveTimeSessionInput,
+    authority?: CloudSessionAuthority,
+  ) => request<ActiveTimeSessionResponse>(
+    'PUT',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/active-time/sessions/${
+      encodeURIComponent(sessionId)
+    }`,
+    input,
+    false,
+    undefined,
+    undefined,
+    authority,
+  ),
+
+  putNotificationDevice: (
+    deviceId: string,
+    input: NotificationDeviceInput,
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(
+      'PUT',
+      `/v1/notifications/devices/${encodeURIComponent(deviceId)}`,
+      input,
+      false,
+      undefined,
+      signal,
+    ),
+
+  deleteNotificationDevice: (
+    deviceId: string,
+    registrationGeneration: number,
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(
+      'DELETE',
+      buildNotificationDeviceDeletePath(deviceId, registrationGeneration),
+      undefined,
+      false,
+      undefined,
+      signal,
+    ),
+
+  checkPhoto: (
+    identity: PhotoIdentity & { checksum: string },
+    authority?: CloudSessionAuthority,
+  ) =>
     request<{ exists: boolean; remoteUrl?: string; treeRevision?: number }>(
       'POST',
       '/v1/installhub/sync/check-photo',
       identity,
+      false,
+      undefined,
+      undefined,
+      authority,
     ),
 
   createUploadSession: (
@@ -730,6 +953,7 @@ export const apiClient = {
       filename: string;
       fileSizeBytes: number;
     },
+    authority?: CloudSessionAuthority,
   ) =>
     request<{
       sessionId: string;
@@ -737,7 +961,15 @@ export const apiClient = {
       alreadyExists: boolean;
       remoteUrl?: string;
       treeRevision?: number;
-    }>('POST', '/v1/installhub/sync/create-upload-session', input),
+    }>(
+      'POST',
+      '/v1/installhub/sync/create-upload-session',
+      input,
+      false,
+      undefined,
+      undefined,
+      authority,
+    ),
 
   uploadPhoto: async (
     uploadUrl: string,
@@ -750,18 +982,30 @@ export const apiClient = {
         headers: { 'Content-Type': mimeType },
         body: bytes as unknown as BodyInit,
       });
-      if (!response.ok) throw new ApiError(await parseError(response), response.status);
+      if (!response.ok) {
+        const parsed = await parseError(response);
+        throw new ApiError(parsed.message, response.status, parsed.code);
+      }
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new NetworkError(error instanceof Error ? error.message : String(error));
     }
   },
 
-  confirmUpload: (sessionId: string, checksum: string) =>
-    request<{ remoteUrl: string; treeRevision: number }>('POST', '/v1/installhub/sync/confirm-upload', {
-      sessionId,
-      checksum,
-    }),
+  confirmUpload: (
+    sessionId: string,
+    checksum: string,
+    authority?: CloudSessionAuthority,
+  ) =>
+    request<{ remoteUrl: string; treeRevision: number }>(
+      'POST',
+      '/v1/installhub/sync/confirm-upload',
+      { sessionId, checksum },
+      false,
+      undefined,
+      undefined,
+      authority,
+    ),
 
   startFormPdfJob: (
     installationId: string,
@@ -779,13 +1023,17 @@ export const apiClient = {
     installationId: string,
     formSubmissionIds: string[] | undefined,
     version: ReportJobVersionInput,
+    detailMode: InstallationReportDetailMode = 'by-electrical-hierarchy',
   ) =>
     request<ExportJobStartResponse>(
       'POST',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/report/pdf/jobs`,
       {
         formSubmissionIds:
-          formSubmissionIds?.length ? [...new Set(formSubmissionIds)] : undefined,
+          formSubmissionIds?.length
+            ? [...new Set(formSubmissionIds)].sort()
+            : undefined,
+        detailMode,
         ...installationReportVersionFields(version),
       },
     ),
@@ -856,11 +1104,16 @@ export const apiClient = {
   setInstallationAccess: (
     installationId: string,
     assignedInspectorUserId: string | null,
+    authority?: CloudSessionAuthority,
   ) =>
     request<InstallationAccess>(
       'PATCH',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/access`,
       { assignedInspectorUserId },
+      false,
+      undefined,
+      undefined,
+      authority,
     ),
 
   listInstallationFiles: (installationId: string) =>

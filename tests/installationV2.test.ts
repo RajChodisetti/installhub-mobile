@@ -107,6 +107,27 @@ test('legacy normalization is idempotent and preserves arbitrary custom meter ch
   assert.equal(JSON.stringify(store), once);
 });
 
+test('job metadata normalization preserves nullable outcomes and defaults legacy sites to Australia', () => {
+  const fixture = storeFixture();
+  Object.assign(fixture.installations[0]!, {
+    customer_name: 'End Customer',
+    maas: null,
+    service_type: 'Metering installation',
+    site_contact_name: 'Site Contact',
+    access_information: 'Collect keys from reception.',
+    monitoring_installed: false,
+    solar_capacity_kw: 42.5,
+  });
+
+  const installation = normalizeCanonicalStore(fixture).installations[0]!;
+  assert.equal(installation.site_country_code, 'AU');
+  assert.equal(installation.customer_name, 'End Customer');
+  assert.equal(installation.maas, null);
+  assert.equal(installation.monitoring_installed, false);
+  assert.equal(installation.solar_capacity_kw, 42.5);
+  assert.equal(installation.access_information, 'Collect keys from reception.');
+});
+
 test('meter commissioning metadata survives legacy-to-canonical-to-legacy normalization', () => {
   const store = storeFixture();
   const meter = store.electricalAssets[0]!.meters[0]!;
@@ -609,7 +630,6 @@ test('measurement-assignment identity hashing never mutates persisted phase orde
 test('virtual residual definitions use immediate children and deterministic IDs', () => {
   const store = normalizeCanonicalStore(storeFixture());
   const board = store.electricalAssets[0]!;
-  const gridId = store.gridSupplies[0]!.id;
   store.meterDevices = [{
     id: 'meter-total', installationId: 'installation', installedOnBoardId: board.id,
     deviceFamily: 'WATTWATCHERS', deviceModel: 'A3RM', serialNumber: 'serial',
@@ -624,7 +644,7 @@ test('virtual residual definitions use immediate children and deterministic IDs'
     {
       id: 'assignment-total', installationId: 'installation', meterId: 'meter-total',
       channelIds: ['total'], phaseMode: 'SINGLE_PHASE',
-      target: { kind: 'GRID_BOUNDARY', gridSupplyId: gridId }, direction: 'CONSUMPTION', status: 'CONFIRMED',
+      target: { kind: 'BOARD', boardId: board.id }, direction: 'CONSUMPTION', status: 'CONFIRMED',
     },
     {
       id: 'assignment-asset', installationId: 'installation', meterId: 'meter-total',
@@ -632,12 +652,61 @@ test('virtual residual definitions use immediate children and deterministic IDs'
       target: { kind: 'SITE_ASSET', siteAssetId: 'asset' }, direction: 'CONSUMPTION', status: 'CONFIRMED',
     },
   ];
-  store.siteAssets[0]!.electrical_source = { kind: 'GRID', gridSupplyId: gridId };
+  store.siteAssets[0]!.electrical_source = { kind: 'BOARD', boardId: board.id };
   const virtuals = deriveVirtualMeters(store, 'installation');
   assert.equal(virtuals.length, 1);
-  assert.equal(virtuals[0]!.parentNodeId, gridId);
+  assert.equal(virtuals[0]!.parentNodeId, board.id);
   assert.deepEqual(virtuals[0]!.subtractAssignmentIds, ['assignment-asset']);
   assert.match(virtuals[0]!.id, /^virtual_[a-f0-9]{24}$/);
+});
+
+test('virtual residual derivation rejects a total whose meter is on the wrong board', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const board = store.electricalAssets[0]!;
+  const unrelatedBoard = {
+    ...board,
+    id: 'unrelated-board',
+    asset_name: 'Unrelated board',
+    display_code: 'ESS-DB-099',
+    display_code_meta: {
+      value: 'ESS-DB-099',
+      generatedValue: 'ESS-DB-099',
+      isOverridden: false,
+      ruleVersion: 1 as const,
+    },
+    electrical_source: { kind: 'TBC' as const },
+    meters: [],
+  };
+  store.electricalAssets.push(unrelatedBoard);
+  store.meterDevices = [{
+    id: 'wrong-boundary-meter',
+    installationId: 'installation',
+    installedOnBoardId: unrelatedBoard.id,
+    deviceFamily: 'OTHER',
+    deviceModel: 'OTHER',
+    customManufacturerName: 'Example',
+    customModelName: 'Boundary',
+    serialNumber: 'WRONG-BOUNDARY',
+    displayName: {
+      value: 'Wrong boundary meter',
+      generatedValue: 'Wrong boundary meter',
+      isOverridden: false,
+      ruleVersion: 1,
+    },
+    channels: [{ id: 'wrong-total', ordinal: 1, purpose: 'MAIN_SUPPLY' }],
+  }];
+  store.measurementAssignments = [{
+    id: 'wrong-total-assignment',
+    installationId: 'installation',
+    meterId: 'wrong-boundary-meter',
+    channelIds: ['wrong-total'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'BOARD', boardId: board.id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+
+  assert.deepEqual(deriveVirtualMeters(store, 'installation'), []);
 });
 
 test('shared residual coverage uses one unallocated boundary ID for several known assets', () => {

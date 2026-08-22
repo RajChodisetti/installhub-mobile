@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { completeFormSubmissionInStore } from '../src/domain/formCompletion';
 import { installationReadiness } from '../src/domain/installationV2';
+import { requiredFormProgress } from '../src/forms/catalog';
 import type { AppDataStore, FormSubmission } from '../src/types';
 
 const timestamp = '2026-08-02T00:00:00.000Z';
@@ -70,6 +71,22 @@ test('WW form cannot resurrect a missing linked meter and leaves the store uncha
     /linked meter is no longer available/,
   );
   assert.equal(JSON.stringify(store), before);
+});
+
+test('visible safe-to-proceed No hard-blocks completion without mutating the store', () => {
+  const form = wwForm('board');
+  const safeProgress = requiredFormProgress(form);
+  form.answers['prestart.safe_to_proceed'] = 'no';
+  const blockedProgress = requiredFormProgress(form);
+  const store = fixture(form);
+  const before = JSON.stringify(store);
+  assert.throws(
+    () => completeFormSubmissionInStore(store, 'form', timestamp, () => 'meter-new'),
+    /must be Yes before the form can be completed/,
+  );
+  assert.equal(JSON.stringify(store), before);
+  assert.equal(blockedProgress.total, safeProgress.total);
+  assert.equal(blockedProgress.done, safeProgress.done - 1);
 });
 
 test('WW completion atomically pins canonical board and one stable operational meter', () => {

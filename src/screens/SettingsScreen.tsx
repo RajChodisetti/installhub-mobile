@@ -13,7 +13,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import appConfig from '../../app.json';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { Badge, Button, Card, SectionHeader } from '../components/ui';
-import { getCloudBackupStats, resetDemoData } from '../repositories';
+import { getCloudBackupStats } from '../repositories';
 import { spacing, typography, type ThemeMode } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { useSyncStatus } from '../services/SyncStatusContext';
@@ -32,6 +32,12 @@ import {
   sourceAppDisplayName,
   sourceUserDisplayEmail,
 } from '../utils/sourceManagedUsers';
+import {
+  ASSIGNED_WORK_RECOVERY_MANIFEST_WARNING,
+  listAssignedWorkRecoverySummaries,
+  shareAssignedWorkRecoveryManifest,
+  type AssignedWorkRecoverySummary,
+} from '../services/assignedWorkRecovery';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'> | any;
 
@@ -48,6 +54,7 @@ export function SettingsScreen({ navigation }: Props) {
   const { syncing, progress, lastSyncedAt, triggerSync, retrySync } = useSyncStatus();
   const [backupStats, setBackupStats] = useState(emptyBackupStats);
   const [storage, setStorage] = useState<StorageDiagnostics>();
+  const [recoveryManifests, setRecoveryManifests] = useState<AssignedWorkRecoverySummary[]>([]);
   const [clearing, setClearing] = useState<'reports' | 'previews'>();
   const sourceManaged = user?.source_managed === true;
   const sourceUnavailable = user?.source_state === 'orphaned';
@@ -58,13 +65,20 @@ export function SettingsScreen({ navigation }: Props) {
   );
 
   const refreshLocalStats = useCallback(async () => {
-    const [nextBackupStats, nextStorage] = await Promise.all([
-      getCloudBackupStats(),
-      getStorageDiagnostics(),
+    if (!user?.id) {
+      setBackupStats(emptyBackupStats);
+      setRecoveryManifests([]);
+      return;
+    }
+    const [nextBackupStats, nextStorage, nextRecoveryManifests] = await Promise.all([
+      getCloudBackupStats(user.id),
+      getStorageDiagnostics(user.id),
+      listAssignedWorkRecoverySummaries(),
     ]);
     setBackupStats(nextBackupStats);
     setStorage(nextStorage);
-  }, []);
+    setRecoveryManifests(nextRecoveryManifests);
+  }, [user?.id]);
 
   useFocusEffect(useCallback(() => {
     void refreshLocalStats().catch(() => {
@@ -73,6 +87,8 @@ export function SettingsScreen({ navigation }: Props) {
   }, [refreshLocalStats, progress, syncing]));
 
   const clearReports = () => {
+    if (!user?.id) return;
+    const actorUserId = user.id;
     Alert.alert(
       'Clear generated reports?',
       'Only locally generated PDF copies will be removed. Forms and original evidence remain protected.',
@@ -83,7 +99,7 @@ export function SettingsScreen({ navigation }: Props) {
           style: 'destructive',
           onPress: () => {
             setClearing('reports');
-            void clearGeneratedReportCache()
+            void clearGeneratedReportCache(actorUserId)
               .then(async (result) => {
                 await refreshLocalStats();
                 Alert.alert(
@@ -103,6 +119,8 @@ export function SettingsScreen({ navigation }: Props) {
   };
 
   const clearPreviews = () => {
+    if (!user?.id) return;
+    const actorUserId = user.id;
     Alert.alert(
       'Clear imported previews?',
       'Only downloaded thumbnail copies will be removed. Cloud originals and locally captured evidence remain protected.',
@@ -113,7 +131,7 @@ export function SettingsScreen({ navigation }: Props) {
           style: 'destructive',
           onPress: () => {
             setClearing('previews');
-            void clearImportedThumbnailCache()
+            void clearImportedThumbnailCache(actorUserId)
               .then(async (result) => {
                 await refreshLocalStats();
                 Alert.alert(
@@ -196,6 +214,50 @@ export function SettingsScreen({ navigation }: Props) {
           />
         ) : null}
       </Card>
+
+      {recoveryManifests.length ? (
+        <Card style={{ marginTop: spacing.md }}>
+          <SectionHeader title="Recovery support manifests" />
+          <Text style={[styles.note, { color: colors.mutedForeground }]}>
+            These actor-owned snapshots preserve unsent work that was on this
+            device when a canonical assignment moved to another account. They
+            are excluded from normal jobs and automatic Cloud Backup. A support
+            manifest lists the retained records and pending active-time sessions.
+          </Text>
+          <Text style={[styles.note, { color: colors.destructive, fontWeight: '700' }]}>
+            {ASSIGNED_WORK_RECOVERY_MANIFEST_WARNING}
+          </Text>
+          {recoveryManifests.map((recovery) => (
+            <View key={recovery.id} style={{ marginTop: spacing.md }}>
+              <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                {recovery.siteName || 'Recovered installation'}
+              </Text>
+              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                {recovery.clientName || 'Unknown client'} · saved{' '}
+                {new Date(recovery.quarantinedAt).toLocaleString()}
+              </Text>
+              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                {recovery.zones} zone(s) · {recovery.forms} form(s) ·{' '}
+                {recovery.pendingUploads} pending upload(s) ·{' '}
+                {recovery.pendingActiveTimeSessions} pending time session(s)
+              </Text>
+              <Button
+                title="Share support manifest"
+                variant="secondary"
+                style={{ marginTop: spacing.sm }}
+                onPress={() => {
+                  void shareAssignedWorkRecoveryManifest(recovery.id).catch((error) => {
+                    Alert.alert(
+                      'Could not share recovery manifest',
+                      error instanceof Error ? error.message : String(error),
+                    );
+                  });
+                }}
+              />
+            </View>
+          ))}
+        </Card>
+      ) : null}
 
       <Card style={{ marginTop: spacing.md }}>
         <SectionHeader title="Cloud Backup" />
@@ -320,32 +382,6 @@ export function SettingsScreen({ navigation }: Props) {
             />
           </Card>
 
-          <Card style={{ marginTop: spacing.md }}>
-            <SectionHeader title="Demo data" />
-            <Button
-              title="Reset fixture data"
-              variant="secondary"
-              onPress={() => {
-                Alert.alert(
-                  'Reset local fixture data?',
-                  'This replaces local demo records. Cloud backups are not deleted.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Reset',
-                      style: 'destructive',
-                      onPress: () => {
-                        void resetDemoData().then(async () => {
-                          await refreshLocalStats();
-                          Alert.alert('Done', 'Demo fixtures restored.');
-                        });
-                      },
-                    },
-                  ],
-                );
-              }}
-            />
-          </Card>
         </>
       ) : null}
 

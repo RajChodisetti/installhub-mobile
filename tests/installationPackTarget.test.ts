@@ -10,6 +10,7 @@ import {
 import {
   formReportJobKey,
   installationReportJobKey,
+  installationReportSelectionDigest,
 } from '../src/services/reportJobKeys';
 
 const importedAt = '2026-07-23T12:00:00.000Z';
@@ -319,4 +320,177 @@ test('remembered installation jobs are separated by target and exact tree revisi
     installationReportJobKey('local-copy'),
     'installation:local-copy',
   );
+});
+
+test('selected completed forms map from local import IDs to exact source IDs', () => {
+  const secondForm = {
+    ...pristineImportedTree.formSubmissions[0]!,
+    id: 'local-form-two',
+    import_source_server_id: 'source-form-two',
+  };
+  const tree = {
+    ...pristineImportedTree,
+    formSubmissions: [
+      pristineImportedTree.formSubmissions[0]!,
+      secondForm,
+    ],
+  };
+  const target = resolveInstallationPackServerTarget(
+    tree,
+    noSyncMetadata,
+    true,
+    ['local-form-two'],
+  );
+  assert.deepEqual(target.formSubmissionIds, ['source-form-two']);
+});
+
+test('report form selection rejects empty, draft and unknown IDs without broadening to all forms', () => {
+  assert.throws(
+    () => resolveInstallationPackServerTarget(
+      pristineImportedTree,
+      noSyncMetadata,
+      true,
+      [],
+    ),
+    /Select at least one completed form/,
+  );
+  const draft = {
+    ...pristineImportedTree.formSubmissions[0]!,
+    id: 'draft-form',
+    status: 'Draft' as const,
+    import_source_server_id: undefined,
+  };
+  const tree = {
+    ...pristineImportedTree,
+    formSubmissions: [...pristineImportedTree.formSubmissions, draft],
+  };
+  for (const invalidId of ['draft-form', 'missing-form']) {
+    assert.throws(
+      () => resolveInstallationPackServerTarget(
+        tree,
+        noSyncMetadata,
+        false,
+        [invalidId],
+      ),
+      /missing or not Completed/,
+    );
+  }
+});
+
+test('a reopened Draft always requests diagnostic live mode even when a historical pin remains', () => {
+  const target = resolveInstallationPackServerTarget(
+    {
+      ...pristineImportedTree,
+      installation: {
+        ...pristineImportedTree.installation,
+        status: 'Draft',
+        is_imported_copy: false,
+        import_source_server_id: undefined,
+        record_version_number: 9,
+      },
+    },
+    noSyncMetadata,
+    false,
+    ['local-form'],
+  );
+  assert.deepEqual(
+    { liveMode: target.liveMode, recordVersionNumber: target.recordVersionNumber },
+    { liveMode: true, recordVersionNumber: undefined },
+  );
+});
+
+test('an intact import from a never-completed Draft reuses the live source without a version pin', () => {
+  const draftSourceTree: InstallationBackupTree = {
+    ...pristineImportedTree,
+    installation: {
+      ...pristineImportedTree.installation,
+      status: 'Draft',
+      legacy_completed_unpinned: false,
+      import_source_record_version_number: undefined,
+      record_version_number: undefined,
+    },
+  };
+
+  assert.equal(
+    hasIntactImportedSourceProvenance(draftSourceTree, noSyncMetadata),
+    true,
+  );
+  const target = resolveInstallationPackServerTarget(
+    draftSourceTree,
+    noSyncMetadata,
+    true,
+    ['local-form'],
+  );
+  assert.deepEqual(
+    { liveMode: target.liveMode, recordVersionNumber: target.recordVersionNumber },
+    { liveMode: true, recordVersionNumber: undefined },
+  );
+  assert.equal(target.installationId, 'source-installation');
+  assert.equal(target.usesOriginalImportedRecord, true);
+});
+
+test('an intact import from a reopened Draft ignores its historical source pin', () => {
+  const reopenedDraftSourceTree: InstallationBackupTree = {
+    ...pristineImportedTree,
+    installation: {
+      ...pristineImportedTree.installation,
+      status: 'Draft',
+      legacy_completed_unpinned: false,
+      import_source_record_version_number: 7,
+      record_version_number: undefined,
+    },
+  };
+
+  const target = resolveInstallationPackServerTarget(
+    reopenedDraftSourceTree,
+    noSyncMetadata,
+    true,
+    ['local-form'],
+  );
+  assert.deepEqual(
+    { liveMode: target.liveMode, recordVersionNumber: target.recordVersionNumber },
+    { liveMode: true, recordVersionNumber: undefined },
+  );
+  assert.equal(target.installationId, 'source-installation');
+});
+
+test('installation report job identity includes grouping and a stable selected-form digest', () => {
+  const hierarchy = installationReportJobKey(
+    'local-copy',
+    'source-installation',
+    'revision-one',
+    7,
+    'by-electrical-hierarchy',
+    ['source-form', 'source-form-two'],
+  );
+  const zone = installationReportJobKey(
+    'local-copy',
+    'source-installation',
+    'revision-one',
+    7,
+    'by-zone',
+    ['source-form', 'source-form-two'],
+  );
+  const otherSelection = installationReportJobKey(
+    'local-copy',
+    'source-installation',
+    'revision-one',
+    7,
+    'by-electrical-hierarchy',
+    ['source-form'],
+  );
+  assert.notEqual(hierarchy, zone);
+  assert.notEqual(hierarchy, otherSelection);
+  assert.equal(
+    hierarchy,
+    installationReportJobKey(
+      'local-copy',
+      'source-installation',
+      'revision-one',
+      7,
+      'by-electrical-hierarchy',
+      ['source-form-two', 'source-form'],
+    ),
+  );
+  assert.equal(installationReportSelectionDigest(['a', 'b']).length, 24);
 });

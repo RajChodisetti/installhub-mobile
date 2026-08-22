@@ -167,8 +167,8 @@ export function buildFormReportHtml(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    @page { size: A4 portrait; margin: 17mm 14mm 16mm; }
-    * { box-sizing: border-box; }
+    @page { size: A4 portrait; margin: 17mm 14mm 22mm; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
     body { margin: 0; color: ${theme.body}; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 10pt; line-height: 1.45; }
 
     .cover { background: ${theme.cover}; border-top: 5px solid ${theme.coverAccent}; border-radius: 8px; padding: 20px 22px 18px; margin-bottom: 18px; }
@@ -188,12 +188,12 @@ export function buildFormReportHtml(
     .cover-status-completed { color: ${theme.successText}; background: ${theme.successBackground}; border-color: ${theme.successBorder}; }
     .cover-status-draft { color: ${theme.warningText}; background: ${theme.warningBackground}; border-color: ${theme.warningBorder}; }
 
-    section { break-inside: auto; margin: 0 0 14px; }
-    .section-bar { background: ${theme.navy}; color: ${theme.white}; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; padding: 7px 12px; margin-top: 14px; break-after: avoid; }
+    section { break-inside: auto; page-break-inside: auto; margin: 0 0 14px; }
+    .section-bar { background: ${theme.navy}; color: ${theme.white}; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; padding: 7px 12px; margin-top: 14px; break-after: avoid; page-break-after: avoid; }
     .section-number { display: inline-block; width: 19px; height: 19px; margin-right: 8px; border-radius: 50%; background: rgba(255,255,255,.18); text-align: center; line-height: 19px; letter-spacing: 0; }
-    h3 { color: ${theme.navy}; background: ${theme.surface}; border-left: 4px solid ${theme.navy}; font-size: 9.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 5px; padding: 7px 10px; break-after: avoid; }
+    h3 { color: ${theme.navy}; background: ${theme.surface}; border-left: 4px solid ${theme.navy}; font-size: 9.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 5px; padding: 7px 10px; break-after: avoid; page-break-after: avoid; }
     .fields { display: table; width: 100%; border: 1px solid ${theme.border}; border-top: 0; border-collapse: collapse; }
-    .field-row { display: table-row; break-inside: avoid; }
+    .field-row { display: table-row; break-inside: avoid; page-break-inside: avoid; }
     .field-label, .field-value { display: table-cell; border-top: 1px solid ${theme.border}; vertical-align: top; }
     .field-row:first-child .field-label, .field-row:first-child .field-value { border-top: 0; }
     .field-label { width: 40%; padding: 6px 10px 6px 12px; color: ${theme.slate}; background: ${theme.surfaceMuted}; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
@@ -204,7 +204,7 @@ export function buildFormReportHtml(
     .badge-no { color: ${theme.warningText}; background: ${theme.warningBackground}; border-color: ${theme.warningBorder}; }
     .badge-neutral { color: ${theme.neutralText}; background: ${theme.neutralBackground}; border-color: ${theme.neutralBorder}; }
 
-    .photo-block { break-inside: avoid; margin-top: 10px; }
+    .photo-block { break-inside: avoid; page-break-inside: avoid; margin-top: 10px; }
     .photo-grid { display: table; width: 100%; border-collapse: separate; border-spacing: 7px; table-layout: fixed; }
     .photo-row { display: table-row; }
     .photo { display: table-cell; width: 50%; min-height: 225px; padding: 5px; border: 1px solid ${theme.border}; border-radius: 6px; text-align: center; vertical-align: top; break-inside: avoid; }
@@ -216,8 +216,6 @@ export function buildFormReportHtml(
     .page-header-brand, .page-header-title { display: table-cell; vertical-align: middle; }
     .page-header-brand { width: 42%; font-weight: 900; letter-spacing: .08em; }
     .page-header-title { text-align: right; color: ${theme.slate}; }
-    .page-footer { position: fixed; bottom: -11mm; left: 0; right: 0; height: 7mm; border-top: 1px solid ${theme.borderStrong}; padding-top: 4px; color: ${theme.muted}; font-size: 7pt; text-align: center; }
-    .page-number::after { content: counter(page); }
     .document-footer { color: ${theme.muted}; font-size: 7pt; text-align: center; border-top: 1.5px solid ${theme.borderStrong}; padding-top: 8px; margin-top: 20px; }
   </style>
 </head>
@@ -226,7 +224,6 @@ export function buildFormReportHtml(
     <div class="page-header-brand">SUSTAINABILITY WISE</div>
     <div class="page-header-title">${escapeHtml(definition.shortTitle)} &middot; ${coverValue(submission, 'site.date_time')}</div>
   </div>
-  <div class="page-footer">Field App Complete field record &middot; Page <span class="page-number"></span></div>
   <header class="cover">
     <div class="cover-eyebrow">Field installation record &middot; Field App Complete</div>
     <h1 class="cover-title">${escapeHtml(definition.title)}</h1>

@@ -1,3 +1,5 @@
+import type { InstallationReportDetailMode } from '../types';
+
 export type ReportVersionSelection =
   | { recordVersionNumber: number; liveMode?: never }
   | { recordVersionNumber?: never; liveMode: true };
@@ -6,6 +8,8 @@ export interface ReportJobPin {
   recordVersionNumber?: number | null;
   recordVersionPayloadHash?: string | null;
   reportSource?: 'canonical-version' | 'diagnostic-live' | string | null;
+  detailMode?: InstallationReportDetailMode | string | null;
+  reportVariantKey?: string | null;
 }
 
 export function validRecordVersionNumber(value: unknown): number | undefined {
@@ -67,4 +71,24 @@ export function reportJobMatchesSelection(
     ? job.reportSource === 'canonical-version'
     : job.reportSource === 'diagnostic-live';
   return versionMatches && authoritativeHashPresent && hashMatches && sourceMatches;
+}
+
+/** Installation packs must also preserve their grouping and server variant. */
+export function installationReportJobMatchesSelection(
+  job: ReportJobPin,
+  selection: ReportVersionSelection,
+  detailMode: InstallationReportDetailMode,
+  expectedPayloadHash?: string | null,
+  expectedVariantKey?: string | null,
+): boolean {
+  const variantPresent =
+    typeof job.reportVariantKey === 'string' && job.reportVariantKey.length > 0;
+  const variantMatches =
+    !expectedVariantKey || job.reportVariantKey === expectedVariantKey;
+  return (
+    reportJobMatchesSelection(job, selection, expectedPayloadHash) &&
+    job.detailMode === detailMode &&
+    variantPresent &&
+    variantMatches
+  );
 }

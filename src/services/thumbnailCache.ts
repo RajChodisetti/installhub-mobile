@@ -1,6 +1,6 @@
 import { Directory, File, FileMode, Paths } from 'expo-file-system';
 import {
-  hasStoredCloudSession,
+  cloudSessionAuthoritiesMatch,
   runWithCloudAccessToken,
 } from '../api/apiClient';
 import {
@@ -16,8 +16,24 @@ import {
   interruptedThumbnailRecovery,
   thumbnailAttemptFilename,
 } from './thumbnailRecovery';
+import type { AuthenticatedCloudActionLease } from './authenticatedCloudAction';
+import { fetchAndCommitThumbnailForAuthority } from './thumbnailWorkerFence';
 
-let activeWorker: Promise<void> | null = null;
+type ActiveThumbnailWorker = {
+  lease: AuthenticatedCloudActionLease;
+  promise: Promise<void>;
+};
+
+let activeWorker: ActiveThumbnailWorker | null = null;
+
+function thumbnailWorkerLeasesMatch(
+  left: AuthenticatedCloudActionLease,
+  right: AuthenticatedCloudActionLease,
+): boolean {
+  return left.actorUserId === right.actorUserId
+    && left.processAuthority.generation === right.processAuthority.generation
+    && cloudSessionAuthoritiesMatch(left.cloudAuthority, right.cloudAuthority);
+}
 
 export function thumbnailUrlFor(originalUrl: string): string {
   return originalUrl.replace('/v1/files/', '/v1/thumbnails/');
@@ -50,107 +66,183 @@ function deleteInvalidThumbnail(uri?: string): void {
   } catch { /* cache cleanup is best effort */ }
 }
 
-async function downloadOne(): Promise<boolean> {
-  const job = await getNextThumbnailDownload();
+async function downloadOne(
+  lease: AuthenticatedCloudActionLease,
+): Promise<boolean> {
+  lease.assertCurrent();
+  const job = await getNextThumbnailDownload(
+    lease.actorUserId,
+    lease.processAuthority,
+  );
+  lease.assertCurrent();
   if (!job) return false;
 
   const attemptNumber = job.attempts + 1;
+  lease.assertCurrent();
   const directory = new Directory(Paths.cache, 'installhub-imported-thumbnails');
   directory.create({ idempotent: true, intermediates: true });
   const destination = new File(
     directory,
     thumbnailAttemptFilename(job.remote_uri, job.id, attemptNumber),
   );
-  await updateThumbnailDownload(job.id, {
-    status: 'downloading',
-    attempts: attemptNumber,
-    // Persist the immutable attempt identity before network I/O so startup can
-    // delete a possibly partial direct-write and retry at a fresh destination.
-    local_uri: destination.uri,
-    last_error: undefined,
-  });
+  const claimed = await updateThumbnailDownload(
+    job.id,
+    {
+      status: 'downloading',
+      attempts: attemptNumber,
+      // Persist the immutable attempt identity before network I/O so startup can
+      // delete a possibly partial direct-write and retry at a fresh destination.
+      local_uri: destination.uri,
+      last_error: undefined,
+    },
+    lease.actorUserId,
+    lease.processAuthority,
+  );
+  lease.assertCurrent();
+  if (!claimed) return true;
   try {
+    lease.assertCurrent();
     const request = trustedDownloadRequest(thumbnailUrlFor(job.remote_uri), SYNC_API_URL);
-    if (request.authorization === 'api-bearer' && !await hasStoredCloudSession()) {
-      await updateThumbnailDownload(job.id, { status: 'pending', local_uri: undefined });
-      return false;
-    }
     const storeDownloadedFile = async (token?: string) => {
-      const file = token
-        ? await authenticatedFileDownload({
-            url: request.url,
-            destination,
-            token,
-            expectedContentType: 'image/',
-          })
-        : await File.downloadFileAsync(
-          request.url,
-          destination,
-          {
-            idempotent: true,
-          },
-        );
-      if (!await isValidCommittedThumbnail(file.uri)) {
-        deleteInvalidThumbnail(file.uri);
-        throw new Error('Thumbnail download did not contain a recognized image.');
-      }
-      await updateThumbnailDownload(job.id, {
-        status: 'ready',
-        local_uri: file.uri,
-        last_error: undefined,
-      });
+      await fetchAndCommitThumbnailForAuthority(
+        lease.assertCurrent,
+        () => token
+          ? authenticatedFileDownload({
+              url: request.url,
+              destination,
+              token,
+              expectedContentType: 'image/',
+            })
+          : File.downloadFileAsync(
+              request.url,
+              destination,
+              {
+                idempotent: true,
+              },
+            ),
+        async (file) => {
+          if (!await isValidCommittedThumbnail(file.uri)) {
+            throw new Error('Thumbnail download did not contain a recognized image.');
+          }
+        },
+        async (file) => {
+          const committed = await updateThumbnailDownload(
+            job.id,
+            {
+              status: 'ready',
+              local_uri: file.uri,
+              last_error: undefined,
+            },
+            lease.actorUserId,
+            lease.processAuthority,
+          );
+          if (!committed) {
+            throw new Error('Thumbnail ownership changed before the cache could be committed.');
+          }
+        },
+        () => deleteInvalidThumbnail(destination.uri),
+      );
     };
     if (request.authorization === 'api-bearer') {
-      await runWithCloudAccessToken(storeDownloadedFile);
+      await runWithCloudAccessToken(storeDownloadedFile, lease.cloudAuthority);
     } else {
       await storeDownloadedFile();
     }
+    lease.assertCurrent();
   } catch (error) {
     deleteInvalidThumbnail(destination.uri);
-    await updateThumbnailDownload(job.id, {
-      status: 'failed',
-      local_uri: undefined,
-      last_error: error instanceof Error ? error.message : String(error),
-    });
+    // A replaced session must not write a failure into A's row as B. The
+    // destination is attempt-specific, so stale cleanup cannot touch B's file.
+    lease.assertCurrent();
+    await updateThumbnailDownload(
+      job.id,
+      {
+        status: 'failed',
+        local_uri: undefined,
+        last_error: error instanceof Error ? error.message : String(error),
+      },
+      lease.actorUserId,
+      lease.processAuthority,
+    );
+    lease.assertCurrent();
   }
   return true;
 }
 
-async function repairInterruptedOrEvictedPreviews(): Promise<void> {
-  const jobs = await listThumbnailDownloads();
+async function repairInterruptedOrEvictedPreviews(
+  lease: AuthenticatedCloudActionLease,
+): Promise<void> {
+  lease.assertCurrent();
+  const jobs = await listThumbnailDownloads(
+    lease.actorUserId,
+    lease.processAuthority,
+  );
+  lease.assertCurrent();
   for (const job of jobs) {
+    lease.assertCurrent();
     const interrupted = interruptedThumbnailRecovery(job);
     if (interrupted) {
       // File.downloadFileAsync may have been killed after writing only a valid
       // header, so no in-process signature check can safely adopt this file.
-      deleteInvalidThumbnail(job.local_uri);
-      await updateThumbnailDownload(job.id, {
-        ...interrupted,
-        last_error: undefined,
-      });
+      const reset = await updateThumbnailDownload(
+        job.id,
+        {
+          ...interrupted,
+          last_error: undefined,
+        },
+        lease.actorUserId,
+        lease.processAuthority,
+      );
+      lease.assertCurrent();
+      if (reset) deleteInvalidThumbnail(job.local_uri);
       continue;
     }
     const missingReadyFile =
       job.status === 'ready' && (!job.local_uri || !new File(job.local_uri).exists);
     if (missingReadyFile) {
-      await updateThumbnailDownload(job.id, {
-        status: 'pending',
-        local_uri: undefined,
-        last_error: undefined,
-      });
+      await updateThumbnailDownload(
+        job.id,
+        {
+          status: 'pending',
+          local_uri: undefined,
+          last_error: undefined,
+        },
+        lease.actorUserId,
+        lease.processAuthority,
+      );
+      lease.assertCurrent();
     }
   }
 }
 
-export function runThumbnailDownloadWorker(): Promise<void> {
-  if (activeWorker) return activeWorker;
-  activeWorker = (async () => {
-    await repairInterruptedOrEvictedPreviews();
-    while (await downloadOne()) {
+export function runThumbnailDownloadWorker(
+  lease: AuthenticatedCloudActionLease,
+): Promise<void> {
+  lease.assertCurrent();
+  const existing = activeWorker;
+  if (existing && thumbnailWorkerLeasesMatch(existing.lease, lease)) {
+    return existing.promise;
+  }
+
+  const operation = (async () => {
+    if (existing) await existing.promise.catch(() => undefined);
+    lease.assertCurrent();
+    await repairInterruptedOrEvictedPreviews(lease);
+    lease.assertCurrent();
+    while (await downloadOne(lease)) {
       // Process sequentially to keep memory and network use bounded.
+      lease.assertCurrent();
     }
   })();
-  return activeWorker.finally(() => {
-    activeWorker = null;
-  });
+  const worker: ActiveThumbnailWorker = { lease, promise: operation };
+  activeWorker = worker;
+  void operation.then(
+    () => {
+      if (activeWorker === worker) activeWorker = null;
+    },
+    () => {
+      if (activeWorker === worker) activeWorker = null;
+    },
+  );
+  return operation;
 }

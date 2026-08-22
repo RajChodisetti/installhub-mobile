@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   formReportVersionQuery,
+  installationReportJobMatchesSelection,
   installationReportVersionFields,
   reportJobMatchesSelection,
   reportVersionCacheToken,
@@ -73,6 +74,58 @@ test('remembered and completed jobs must echo the exact version and payload hash
         reportSource: 'canonical-version',
       },
       { liveMode: true },
+    ),
+    false,
+  );
+});
+
+test('installation jobs also require the exact grouping and opaque server variant', () => {
+  const selection = { recordVersionNumber: 6 } as const;
+  const job = {
+    recordVersionNumber: 6,
+    recordVersionPayloadHash: 'sha256:version-six',
+    reportSource: 'canonical-version',
+    detailMode: 'by-zone',
+    reportVariantKey: 'installation-pack:v3:by-zone:map:canonical:forms-digest',
+  } as const;
+
+  assert.equal(
+    installationReportJobMatchesSelection(job, selection, 'by-zone'),
+    true,
+  );
+  assert.equal(
+    installationReportJobMatchesSelection(
+      job,
+      selection,
+      'by-zone',
+      'sha256:version-six',
+      job.reportVariantKey,
+    ),
+    true,
+  );
+  assert.equal(
+    installationReportJobMatchesSelection(
+      { ...job, detailMode: 'by-electrical-hierarchy' },
+      selection,
+      'by-zone',
+    ),
+    false,
+  );
+  assert.equal(
+    installationReportJobMatchesSelection(
+      { ...job, reportVariantKey: null },
+      selection,
+      'by-zone',
+    ),
+    false,
+  );
+  assert.equal(
+    installationReportJobMatchesSelection(
+      job,
+      selection,
+      'by-zone',
+      undefined,
+      'installation-pack:v3:different',
     ),
     false,
   );
