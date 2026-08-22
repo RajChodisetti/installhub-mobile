@@ -6,6 +6,7 @@ import {
   FORM_DEFINITIONS,
   SENSOR_OPTIONS_BY_DEVICE,
   answersAfterChange,
+  createInitialFormAnswers,
   isFieldVisible,
   isSectionVisible,
   meterAfterCommsReplacement,
@@ -15,7 +16,36 @@ import {
 } from '../src/forms/catalog';
 import { buildFormReportHtml } from '../src/services/formReportHtml';
 import { formPdfFilename } from '../src/services/reportFilenames';
-import type { FormAttachment, FormSubmission } from '../src/types';
+import type {
+  FormAttachment,
+  FormSubmission,
+  Installation,
+  User,
+} from '../src/types';
+
+test('new forms prefer the installation customer over the contracting client', () => {
+  const user = {
+    full_name: 'Field Technician',
+  } as User;
+  const baseInstallation = {
+    client_name: 'Contracting Client',
+    customer_name: 'End Customer',
+    site_name: 'Customer Site',
+    site_address: '1 Test Street',
+  } as Installation;
+
+  assert.equal(
+    createInitialFormAnswers(baseInstallation, user)['site.customer_name'],
+    'End Customer',
+  );
+  assert.equal(
+    createInitialFormAnswers(
+      { ...baseInstallation, customer_name: '   ' },
+      user,
+    )['site.customer_name'],
+    'Contracting Client',
+  );
+});
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

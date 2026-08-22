@@ -450,48 +450,52 @@ export function InstallationForm({
       <TextField label="Quote number" value={quote_number} maxLength={100} onChangeText={setQuoteNumber} />
       <TextArea label="Job comments / scope notes" value={job_comments} maxLength={5000} onChangeText={setJobComments} />
 
-      <SectionHeader title="Installation outcome" />
-      <SelectChips
-        label="Warranty replacement device"
-        value={warranty_device}
-        options={['unknown', 'yes', 'no']}
-        onChange={setWarrantyDevice}
-        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-      />
-      <SelectChips
-        label="Monitoring installed"
-        value={monitoring_installed}
-        options={['unknown', 'yes', 'no']}
-        onChange={setMonitoringInstalled}
-        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-      />
-      <SelectChips
-        label="Hardware installed"
-        value={hardware_installed}
-        options={['unknown', 'yes', 'no']}
-        onChange={setHardwareInstalled}
-        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-      />
-      <TextField
-        label="Solar capacity (kW)"
-        value={solar_capacity_kw}
-        keyboardType="decimal-pad"
-        maxLength={12}
-        onChangeText={setSolarCapacityKw}
-      />
-      <SelectChips
-        label="Additional monitoring required"
-        value={additional_monitoring_required}
-        options={['unknown', 'yes', 'no']}
-        onChange={setAdditionalMonitoringRequired}
-        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-      />
-      <TextArea
-        label="Additional monitoring hardware"
-        value={additional_monitoring_hardware}
-        maxLength={5000}
-        onChangeText={setAdditionalMonitoringHardware}
-      />
+      {initial ? (
+        <>
+          <SectionHeader title="Installation outcome" />
+          <SelectChips
+            label="Warranty replacement device"
+            value={warranty_device}
+            options={['unknown', 'yes', 'no']}
+            onChange={setWarrantyDevice}
+            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+          />
+          <SelectChips
+            label="Monitoring installed"
+            value={monitoring_installed}
+            options={['unknown', 'yes', 'no']}
+            onChange={setMonitoringInstalled}
+            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+          />
+          <SelectChips
+            label="Hardware installed"
+            value={hardware_installed}
+            options={['unknown', 'yes', 'no']}
+            onChange={setHardwareInstalled}
+            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+          />
+          <TextField
+            label="Solar capacity (kW)"
+            value={solar_capacity_kw}
+            keyboardType="decimal-pad"
+            maxLength={12}
+            onChangeText={setSolarCapacityKw}
+          />
+          <SelectChips
+            label="Additional monitoring required"
+            value={additional_monitoring_required}
+            options={['unknown', 'yes', 'no']}
+            onChange={setAdditionalMonitoringRequired}
+            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+          />
+          <TextArea
+            label="Additional monitoring hardware"
+            value={additional_monitoring_hardware}
+            maxLength={5000}
+            onChangeText={setAdditionalMonitoringHardware}
+          />
+        </>
+      ) : null}
       {validationErrors.length ? (
         <Text
           accessibilityRole="alert"

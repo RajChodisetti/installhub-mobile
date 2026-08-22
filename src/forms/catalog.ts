@@ -791,7 +791,9 @@ export function createInitialFormAnswers(
 ): Record<string, FormValue> {
   return {
     'site.date_time': new Date().toISOString(),
-    'site.customer_name': installation.client_name || installation.site_name,
+    'site.customer_name': installation.customer_name?.trim()
+      || installation.client_name
+      || installation.site_name,
     'site.address': installation.site_address,
     'installer.name': user.full_name,
   };

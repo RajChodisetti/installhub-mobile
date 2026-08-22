@@ -249,6 +249,11 @@ projections only. Every board and site asset has an explicit `GRID`, `BOARD`, or
 source; absence never means Grid. Site-asset coverage is exactly `METERED`, `UNMETERED`, or `TBC`,
 and only the atomic reconciliation action may change it.
 
+New-installation entry collects identity, planning, contact, access, and job-reference data. The
+job-level outcome summaries are intentionally shown only after an installation exists, so creation
+does not ask installers to predict completed hardware or monitoring results. New field forms prefer
+the end-customer name and fall back to the contracting client and then the site name.
+
 A3RM/A6M devices have exact 3/6 positive channel ordinals. An Other meter instead requires its
 manufacturer, model, at least one explicitly numbered channel, and non-empty capabilities for each
 channel; it is never defaulted to three. Wattwatchers commissioning-form evidence is required only
