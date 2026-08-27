@@ -586,6 +586,9 @@ export function buildBackupPayload(
       ...(tree.installation.planned_meter_type !== undefined
         ? { plannedMeterType: tree.installation.planned_meter_type }
         : {}),
+      ...(tree.installation.custom_job_number !== undefined
+        ? { customJobNumber: tree.installation.custom_job_number }
+        : {}),
       siteName: tree.installation.site_name,
       siteAddress: tree.installation.site_address,
       ...(tree.installation.site_locality !== undefined

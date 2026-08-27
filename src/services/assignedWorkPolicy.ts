@@ -99,6 +99,7 @@ export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
   'service_type',
   'metering_solution_type',
   'planned_meter_type',
+  'custom_job_number',
   'site_contact_name',
   'site_contact_phone',
   'site_contact_email',
@@ -133,6 +134,7 @@ export function assignedWorkServerMetadataFromInstallation(
     service_type: installation.service_type ?? null,
     metering_solution_type: installation.metering_solution_type ?? null,
     planned_meter_type: installation.planned_meter_type ?? null,
+    custom_job_number: installation.custom_job_number ?? null,
     site_contact_name: installation.site_contact_name ?? null,
     site_contact_phone: installation.site_contact_phone ?? null,
     site_contact_email: installation.site_contact_email ?? null,
@@ -188,6 +190,12 @@ function assignedWorkServerMetadataFromRemote(
       'plannedMeterType',
       'planned_meter_type',
       fallback.planned_meter_type,
+    ),
+    custom_job_number: nullableText(
+      remote,
+      'customJobNumber',
+      'custom_job_number',
+      fallback.custom_job_number,
     ),
     site_contact_name: nullableText(
       remote,

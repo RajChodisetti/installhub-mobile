@@ -419,7 +419,7 @@ export const installationsRepo: InstallationsRepository = {
         'client_name', 'customer_name', 'site_name', 'site_address',
         'site_locality', 'site_state', 'site_postcode', 'site_country_code',
         'inspector_name', 'audit_date', 'site_code', 'timezone', 'maas',
-        'service_type', 'metering_solution_type', 'planned_meter_type',
+        'service_type', 'metering_solution_type', 'planned_meter_type', 'custom_job_number',
         'site_contact_name', 'site_contact_phone', 'site_contact_email',
         'fergus_job_number', 'quote_number', 'job_comments', 'access_information',
         'warranty_device', 'monitoring_installed', 'hardware_installed',

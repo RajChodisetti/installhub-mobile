@@ -53,5 +53,6 @@ export type RootStackParamList = {
 
 export type MainTabParamList = {
   Dashboard: undefined;
+  Inventory: undefined;
   Settings: undefined;
 };

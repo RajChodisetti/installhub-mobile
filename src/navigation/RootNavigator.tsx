@@ -37,6 +37,7 @@ import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
 import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
+import { InventoryScreen } from '../screens/InventoryScreen';
 import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
 import { getStore, subscribeStore } from '../data/seed';
 import { focusedAuditInstallationId } from '../services/auditWorkTrackingPolicy';
@@ -64,6 +65,14 @@ function MainTabs() {
         options={{
           title: 'Home',
           tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>⌂</Text>,
+        }}
+      />
+      <Tabs.Screen
+        name="Inventory"
+        component={InventoryScreen}
+        options={{
+          title: 'Inventory',
+          tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>▦</Text>,
         }}
       />
       <Tabs.Screen

@@ -61,6 +61,11 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
   const allowed = FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
     if (formType && definition.type !== formType) return false;
+    if (
+      (installation.service_type === 'comms_fault_m2'
+        || installation.service_type === 'meter_replacement_m3')
+      && definition.type !== 'comms-fault'
+    ) return false;
     return isFormTypeAvailableForContext(definition.type, { boardId, meterId, siteAssetId });
   });
   const showSwitchboardPicker = !boardId && (

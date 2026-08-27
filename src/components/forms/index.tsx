@@ -82,6 +82,17 @@ import {
 } from '../../services';
 
 const ELIGIBLE_METER_RESULT_LIMIT = 100;
+const FIELD_WORK_TYPES = ['M1 - New install', 'M2 - Faults / COMMS fault', 'M3 - Inspection', 'M4 - BD/Upselling', 'M5 - '];
+const FIELD_WORK_TYPE_LABELS: Record<string, string> = {
+  'M1 - New install': 'M1 — New install',
+  'M2 - Faults / COMMS fault': 'M2 — Faults / COMMS fault',
+  'M3 - Inspection': 'M3 — Inspection',
+  'M4 - BD/Upselling': 'M4 — BD/Upselling',
+  'M5 - ': 'M5 — Other',
+};
+const OTHER_WORK_TYPE = 'M5 - ';
+const METERING_TYPES = ['NEM meter', 'Revenue metering', 'Monitoring / sub-meter', 'Water meter'];
+const OTHER_METERING_TYPE = '__other_metering_type__';
 
 export function SelectChips<T extends string>({
   label,
@@ -256,7 +267,6 @@ export function InstallationForm({
   initial?: Partial<Installation>;
   onSubmit: (values: Pick<Installation,
     | 'client_name'
-    | 'customer_name'
     | 'site_name'
     | 'site_code'
     | 'site_address'
@@ -270,12 +280,10 @@ export function InstallationForm({
     | 'maas'
     | 'service_type'
     | 'metering_solution_type'
-    | 'planned_meter_type'
+    | 'custom_job_number'
     | 'site_contact_name'
     | 'site_contact_phone'
     | 'site_contact_email'
-    | 'fergus_job_number'
-    | 'quote_number'
     | 'job_comments'
     | 'access_information'
     | 'warranty_device'
@@ -289,7 +297,6 @@ export function InstallationForm({
 }) {
   const { colors } = useTheme();
   const [client_name, setClient] = useState(initial?.client_name ?? '');
-  const [customer_name, setCustomer] = useState(initial?.customer_name ?? '');
   const [site_name, setSite] = useState(initial?.site_name ?? '');
   const [site_code, setSiteCode] = useState(
     initial?.site_code?.trim() || normalizedSiteCode(initial?.site_name ?? ''),
@@ -311,16 +318,23 @@ export function InstallationForm({
   const [maas, setMaas] = useState<'unknown' | 'yes' | 'no'>(
     initial?.maas === true ? 'yes' : initial?.maas === false ? 'no' : 'unknown',
   );
-  const [service_type, setServiceType] = useState(initial?.service_type ?? '');
-  const [metering_solution_type, setMeteringSolutionType] = useState(
-    initial?.metering_solution_type ?? '',
+  const initialServiceType = initial?.service_type ?? '';
+  const [service_type, setServiceType] = useState(
+    FIELD_WORK_TYPES.includes(initialServiceType) || initialServiceType.startsWith(OTHER_WORK_TYPE)
+      ? initialServiceType
+      : initialServiceType ? `${OTHER_WORK_TYPE}${initialServiceType}` : '',
   );
-  const [planned_meter_type, setPlannedMeterType] = useState(initial?.planned_meter_type ?? '');
+  const initialMeteringType = initial?.metering_solution_type ?? '';
+  const [metering_solution_type, setMeteringSolutionType] = useState(
+    METERING_TYPES.includes(initialMeteringType) ? initialMeteringType : initialMeteringType ? OTHER_METERING_TYPE : '',
+  );
+  const [other_metering_type, setOtherMeteringType] = useState(
+    METERING_TYPES.includes(initialMeteringType) ? '' : initialMeteringType,
+  );
+  const [custom_job_number, setCustomJobNumber] = useState(initial?.custom_job_number ?? '');
   const [site_contact_name, setContactName] = useState(initial?.site_contact_name ?? '');
   const [site_contact_phone, setContactPhone] = useState(initial?.site_contact_phone ?? '');
   const [site_contact_email, setContactEmail] = useState(initial?.site_contact_email ?? '');
-  const [fergus_job_number, setFergusJobNumber] = useState(initial?.fergus_job_number ?? '');
-  const [quote_number, setQuoteNumber] = useState(initial?.quote_number ?? '');
   const [job_comments, setJobComments] = useState(initial?.job_comments ?? '');
   const [access_information, setAccessInformation] = useState(initial?.access_information ?? '');
   const [warranty_device, setWarrantyDevice] = useState<'unknown' | 'yes' | 'no'>(
@@ -352,7 +366,6 @@ export function InstallationForm({
   return (
     <View>
       <SectionHeader title="Customer and service" />
-      <TextField label="Customer name" value={customer_name} maxLength={300} onChangeText={setCustomer} />
       <TextField label="Client name" value={client_name} error={errorFor('client_name')} onChangeText={setClient} />
       <SelectChips
         label="MaaS"
@@ -361,20 +374,17 @@ export function InstallationForm({
         onChange={setMaas}
         getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
       />
-      <TextField label="Service type" value={service_type} maxLength={120} onChangeText={setServiceType} />
-      <TextField
-        label="Metering solution type"
-        value={metering_solution_type}
-        maxLength={120}
-        onChangeText={setMeteringSolutionType}
+      <SelectChips
+        label="Scope categorization"
+        value={service_type.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : service_type}
+        options={FIELD_WORK_TYPES}
+        onChange={setServiceType}
+        getLabel={(value) => FIELD_WORK_TYPE_LABELS[value]}
       />
-      <TextField
-        label="Planned meter type"
-        accessibilityHint="Planning information only; installed devices are recorded in the meter workflow"
-        value={planned_meter_type}
-        maxLength={120}
-        onChangeText={setPlannedMeterType}
-      />
+      {service_type.startsWith(OTHER_WORK_TYPE) ? <TextField label="Other scope" value={service_type.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChangeText={(value) => setServiceType(`${OTHER_WORK_TYPE}${value}`)} /> : null}
+      <SelectChips label="Metering type selection" value={metering_solution_type} options={[...METERING_TYPES, OTHER_METERING_TYPE]} onChange={setMeteringSolutionType} getLabel={(value) => value === OTHER_METERING_TYPE ? 'Other' : value} />
+      {metering_solution_type === OTHER_METERING_TYPE ? <TextField label="Other metering type" value={other_metering_type} maxLength={120} onChangeText={setOtherMeteringType} /> : null}
+      <TextField label="Custom job number" value={custom_job_number} maxLength={100} onChangeText={setCustomJobNumber} />
 
       <SectionHeader title="Site and schedule" />
       <TextField
@@ -445,9 +455,7 @@ export function InstallationForm({
         onChangeText={setAccessInformation}
       />
 
-      <SectionHeader title="Job references and notes" />
-      <TextField label="Fergus job number" value={fergus_job_number} maxLength={100} onChangeText={setFergusJobNumber} />
-      <TextField label="Quote number" value={quote_number} maxLength={100} onChangeText={setQuoteNumber} />
+      <SectionHeader title="Job notes" />
       <TextArea label="Job comments / scope notes" value={job_comments} maxLength={5000} onChangeText={setJobComments} />
 
       {initial ? (
@@ -511,6 +519,14 @@ export function InstallationForm({
         onPress={async () => {
           setBusy(true);
           try {
+            if (!initial && (!service_type || service_type === OTHER_WORK_TYPE)) {
+              Alert.alert('Select scope', 'Choose a scope category and enter the Other scope when applicable.');
+              return;
+            }
+            if (metering_solution_type === OTHER_METERING_TYPE && !other_metering_type.trim()) {
+              Alert.alert('Enter metering type', 'Enter the Other metering type before saving.');
+              return;
+            }
             if (site_postcode.trim() && !/^\d{4}$/.test(site_postcode.trim())) {
               Alert.alert('Check postcode', 'Australian postcodes must contain exactly four digits.');
               return;
@@ -535,7 +551,6 @@ export function InstallationForm({
             );
             const values = {
               client_name: client_name.trim(),
-              customer_name: nullableText(customer_name),
               site_name: site_name.trim(),
               site_code: site_code.trim().toUpperCase(),
               site_address: site_address.trim(),
@@ -548,13 +563,11 @@ export function InstallationForm({
               timezone: timezone.trim(),
               maas: nullableBoolean(maas),
               service_type: nullableText(service_type),
-              metering_solution_type: nullableText(metering_solution_type),
-              planned_meter_type: nullableText(planned_meter_type),
+              metering_solution_type: nullableText(metering_solution_type === OTHER_METERING_TYPE ? other_metering_type : metering_solution_type),
+              custom_job_number: nullableText(custom_job_number),
               site_contact_name: nullableText(site_contact_name),
               site_contact_phone: nullableText(site_contact_phone),
               site_contact_email: nullableText(site_contact_email),
-              fergus_job_number: nullableText(fergus_job_number),
-              quote_number: nullableText(quote_number),
               job_comments: nullableText(job_comments),
               access_information: nullableText(access_information),
               warranty_device: nullableBoolean(warranty_device),

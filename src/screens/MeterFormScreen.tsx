@@ -36,6 +36,7 @@ import type { RootStackParamList } from '../navigation/types';
 import { createId } from '../utils';
 import { boundedPickerResults } from '../domain/sourcePicker';
 import { deleteRemovedLocalPhotos } from '../services';
+import { apiClient, type InventoryMeter } from '../api/apiClient';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MeterForm'>;
 type AssignmentDraft = Omit<MeasurementAssignment, 'phaseMode' | 'target' | 'direction'> & {
@@ -129,6 +130,21 @@ export function MeterFormScreen({ navigation, route }: Props) {
     retainedCompletedFormIds: [] as string[],
     retainedEvidenceCount: 0,
   });
+  const [myInventory, setMyInventory] = useState<InventoryMeter[]>([]);
+  const [inventoryUnavailable, setInventoryUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (meterId) return;
+    let active = true;
+    void apiClient.listInventoryMeters('mine')
+      .then((response) => {
+        if (active) setMyInventory(response.data);
+      })
+      .catch(() => {
+        if (active) setInventoryUnavailable(true);
+      });
+    return () => { active = false; };
+  }, [meterId]);
 
   useEffect(() => {
     (async () => {
@@ -357,6 +373,57 @@ export function MeterFormScreen({ navigation, route }: Props) {
             }}
           />
         </View>
+      ) : null}
+      {!meterId && !readOnly ? (
+        <Card style={{ marginBottom: spacing.lg }}>
+          <Text style={[typography.subheading, { color: colors.foreground }]}>Choose from my inventory</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, marginBottom: spacing.md, lineHeight: 20 }}>
+            Selecting a registered meter fills its Device ID and model. It leaves your inventory when this installation is completed.
+          </Text>
+          {myInventory.length ? myInventory.map((item) => (
+            <Pressable
+              key={item.id}
+              accessibilityRole="button"
+              accessibilityState={{ selected: meter.device_id.trim().toUpperCase() === item.deviceId }}
+              onPress={() => {
+                const next = createEmptyMeter(item.deviceModel === 'OTHER' ? 'Other' : item.deviceModel);
+                setMeter({
+                  ...next,
+                  id: meter.id,
+                  device_id: item.deviceId,
+                  custom_manufacturer_name: item.customManufacturerName ?? undefined,
+                  custom_model_name: item.customModelName ?? undefined,
+                });
+                setAssignmentDrafts([]);
+              }}
+              style={{
+                minHeight: 54,
+                justifyContent: 'center',
+                borderWidth: 1,
+                borderColor: meter.device_id.trim().toUpperCase() === item.deviceId ? colors.primary : colors.border,
+                borderRadius: 12,
+                paddingHorizontal: spacing.md,
+                marginBottom: spacing.sm,
+                backgroundColor: meter.device_id.trim().toUpperCase() === item.deviceId ? colors.muted : colors.card,
+              }}
+            >
+              <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                {meter.device_id.trim().toUpperCase() === item.deviceId ? '✓ ' : ''}{item.deviceId}
+              </Text>
+              <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs }}>
+                {item.deviceModel === 'OTHER'
+                  ? `${item.customManufacturerName ?? 'Other'} ${item.customModelName ?? ''}`.trim()
+                  : item.deviceModel}
+              </Text>
+            </Pressable>
+          )) : (
+            <Text style={{ color: colors.mutedForeground }}>
+              {inventoryUnavailable
+                ? 'Cloud inventory is unavailable. You can still enter the meter manually.'
+                : 'No meters are in your inventory. Add one from the Inventory tab or enter it manually.'}
+            </Text>
+          )}
+        </Card>
       ) : null}
       <View
         pointerEvents={readOnly || lockedByCompletedForm ? 'none' : 'auto'}

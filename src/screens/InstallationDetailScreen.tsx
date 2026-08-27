@@ -221,7 +221,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const scopeSummary = [
     assignedJobSummary?.service_type,
     assignedJobSummary?.metering_solution_type,
-    assignedJobSummary?.planned_meter_type,
     assignedJobSummary?.job_comments,
   ].filter(Boolean).join(' · ');
   const assignedJobDetailRows = [
@@ -236,20 +235,17 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['MaaS', yesNoLabel(assignedJobSummary?.maas)],
     ['Contact', contactSummary],
     ['Scope', scopeSummary],
-    ['Fergus job number', assignedJobSummary?.fergus_job_number ?? ''],
-    ['Quote number', assignedJobSummary?.quote_number ?? ''],
+    ['Custom job number', assignedJobSummary?.custom_job_number ?? ''],
     ['Access information', assignedJobSummary?.access_information ?? ''],
   ] as const;
   const jobDetailRows = ([
     ['Customer', item.customer_name ?? ''],
-    ['Service type', item.service_type ?? ''],
-    ['Metering solution', item.metering_solution_type ?? ''],
-    ['Planned meter type', item.planned_meter_type ?? ''],
+    ['Scope categorization', item.service_type ?? ''],
+    ['Metering type', item.metering_solution_type ?? ''],
     ['MaaS', yesNoLabel(item.maas)],
     ['Site contact', [item.site_contact_name, item.site_contact_phone, item.site_contact_email]
       .filter(Boolean).join(' · ')],
-    ['Fergus job number', item.fergus_job_number ?? ''],
-    ['Quote number', item.quote_number ?? ''],
+    ['Custom job number', item.custom_job_number ?? ''],
     ['Access information', item.access_information ?? ''],
     ['Job comments / scope', item.job_comments ?? ''],
   ] as Array<readonly [string, string]>).filter(([, value]) => Boolean(value));

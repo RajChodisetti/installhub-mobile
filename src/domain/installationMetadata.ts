@@ -14,6 +14,7 @@ export const ADDITIVE_INSTALLATION_FORM_FIELDS = [
   'service_type',
   'metering_solution_type',
   'planned_meter_type',
+  'custom_job_number',
   'site_contact_name',
   'site_contact_phone',
   'site_contact_email',

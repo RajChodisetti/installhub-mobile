@@ -383,6 +383,7 @@ export interface AssignedWorkJobSummarySnapshot {
   service_type?: string;
   metering_solution_type?: string;
   planned_meter_type?: string;
+  custom_job_number?: string;
   site_contact_name?: string;
   site_contact_phone?: string;
   site_contact_email?: string;
@@ -414,6 +415,7 @@ export interface AssignedWorkServerMetadataSnapshot {
   service_type: string | null;
   metering_solution_type: string | null;
   planned_meter_type: string | null;
+  custom_job_number: string | null;
   site_contact_name: string | null;
   site_contact_phone: string | null;
   site_contact_email: string | null;
@@ -478,6 +480,7 @@ export interface Installation {
   metering_solution_type?: string | null;
   /** Planning intent only; installed meters remain canonical MeterDevice rows. */
   planned_meter_type?: string | null;
+  custom_job_number?: string | null;
   site_contact_name?: string | null;
   site_contact_phone?: string | null;
   site_contact_email?: string | null;

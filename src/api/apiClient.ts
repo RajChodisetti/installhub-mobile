@@ -74,6 +74,34 @@ export interface ManagedCloudUser {
   sourceState?: UserSourceState;
 }
 
+export type InventoryMeterModel = 'A3RM' | 'A6M' | 'OTHER';
+export type InventoryMeterStatus = 'company' | 'user' | 'installed';
+
+export interface InventoryMeter {
+  id: string;
+  deviceId: string;
+  deviceModel: InventoryMeterModel;
+  customManufacturerName: string | null;
+  customModelName: string | null;
+  status: InventoryMeterStatus;
+  custodianUserId: string | null;
+  custodianName?: string | null;
+  installedInstallationId: string | null;
+  businessClientId: string | null;
+  businessSiteId: string | null;
+  notes: string | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface InventoryMeterInput {
+  deviceId: string;
+  deviceModel: InventoryMeterModel;
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+  notes?: string | null;
+}
+
 export interface ExportJobStatus {
   id: string;
   status: 'queued' | 'running' | 'complete' | 'failed';
@@ -1054,6 +1082,42 @@ export const apiClient = {
 
   listUsers: () =>
     request<{ data: ManagedCloudUser[] }>('GET', '/v1/installhub/users'),
+
+  getInventoryAccess: () =>
+    request<{ userId: string; isMaintainer: boolean }>('GET', '/v1/installhub/inventory/me'),
+
+  listInventoryMeters: (scope: 'mine' | 'company' = 'mine', q = '') => {
+    const params = new URLSearchParams({ scope });
+    if (q.trim()) params.set('q', q.trim());
+    return request<{ data: InventoryMeter[] }>(
+      'GET',
+      `/v1/installhub/inventory/meters?${params}`,
+    );
+  },
+
+  scanInventoryMeter: (input: InventoryMeterInput) =>
+    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/scan', input),
+
+  createInventoryMeter: (
+    input: InventoryMeterInput & { custodianUserId?: string | null },
+  ) => request<InventoryMeter>('POST', '/v1/installhub/inventory/meters', input),
+
+  updateInventoryMeter: (
+    id: string,
+    input: Partial<InventoryMeterInput> & {
+      expectedRevision: number;
+      custodianUserId?: string | null;
+    },
+  ) => request<InventoryMeter>(
+    'PATCH',
+    `/v1/installhub/inventory/meters/${encodeURIComponent(id)}`,
+    input,
+  ),
+
+  deleteInventoryMeter: (id: string) => request<void>(
+    'DELETE',
+    `/v1/installhub/inventory/meters/${encodeURIComponent(id)}`,
+  ),
 
   createUser: (input: {
     email: string;

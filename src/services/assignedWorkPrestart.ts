@@ -39,6 +39,7 @@ export function assignedWorkSummarySha256(
     serviceType: summary.service_type ?? '',
     meteringSolutionType: summary.metering_solution_type ?? '',
     plannedMeterType: summary.planned_meter_type ?? '',
+    customJobNumber: summary.custom_job_number ?? '',
     siteContactName: summary.site_contact_name ?? '',
     siteContactPhone: summary.site_contact_phone ?? '',
     siteContactEmail: summary.site_contact_email ?? '',

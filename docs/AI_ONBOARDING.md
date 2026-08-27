@@ -234,9 +234,12 @@ foregrounding, and Cloud Backup; the API update does not mutate the installation
 
 ### Canonical installation v2
 
-Installation metadata carries nullable customer/MaaS/service/metering-plan fields, structured
-Australian address parts, site contact and access details, Fergus/quote references, job scope
-comments, and job-level installation-outcome summaries. Missing values from older clients mean
+Installation metadata carries nullable customer/MaaS/scope/metering-type fields, structured
+Australian address parts, site contact and access details, a custom job number, job scope comments,
+and job-level installation-outcome summaries. New authoring uses M1-M5 scope values and controlled
+NEM/revenue/monitoring/water metering choices with free-text Other. Planned-meter, Fergus, and quote
+values remain readable and syncable for older records but are not offered by current creation forms.
+Missing values from older clients mean
 “not supplied”; explicit `null` means “clear this value”. Boolean outcomes are tri-state so unknown
 is never silently converted to No. `planned_meter_type` is scheduling intent only: actual NMI,
 installed meter/device identity, and channel topology remain authoritative in `gridSupplies`,
