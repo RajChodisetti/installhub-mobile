@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sha256 } from 'js-sha256';
 import type { RemoteInstallationTree } from '../src/api/apiClient';
+import { australianAddressFingerprint } from '../src/domain/australianAddress';
 import {
   assertRemoteInstallationIdentity,
   remoteAttachmentCopyId,
@@ -88,6 +89,58 @@ test('canonical v2 import validation accepts a fully referenced direct-Grid tree
   assert.throws(
     () => assertRemoteInstallationIdentity(canonicalTree(), 'installation-2'),
     /different installation identity/,
+  );
+});
+
+test('Australian client/address metadata is additive, coherent, and fingerprinted', () => {
+  const legacy = canonicalTree();
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(legacy));
+
+  const address = {
+    display_address: '1 Test Street, Sydney NSW 2000',
+    locality: 'Sydney',
+    state: 'NSW',
+    postcode: '2000',
+    country_code: 'AU' as const,
+  };
+  const current = canonicalTree();
+  Object.assign(current.installation, {
+    clientId: 'client-1',
+    clientSiteId: 'site-1',
+    siteAddress: address.display_address,
+    siteLocality: address.locality,
+    siteState: address.state,
+    sitePostcode: address.postcode,
+    siteCountryCode: 'AU',
+    siteLatitude: -33.8688,
+    siteLongitude: 151.2093,
+    siteGeocodeProvider: 'geoapify',
+    siteGeocodePlaceId: 'place-1',
+    siteAddressSource: 'suggested',
+    siteGeocodeStatus: 'resolved',
+    siteAddressFingerprint: australianAddressFingerprint(address),
+  });
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(current));
+
+  const badFingerprint = structuredClone(current);
+  badFingerprint.installation.siteAddressFingerprint = 'a'.repeat(64);
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(badFingerprint),
+    /address fingerprint is invalid/,
+  );
+
+  const incompleteCoordinates = structuredClone(current);
+  incompleteCoordinates.installation.siteLongitude = null;
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(incompleteCoordinates),
+    /coordinates are invalid or incomplete/,
+  );
+
+  const orphanSite = canonicalTree();
+  orphanSite.installation.clientSiteId = 'site-1';
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(orphanSite),
+    /client site ID requires a client ID/,
   );
 });
 

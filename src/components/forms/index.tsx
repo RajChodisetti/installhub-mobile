@@ -70,6 +70,12 @@ import {
 } from '../../services/siteAssetEditorDraft';
 import { booleanConsequenceHint } from '../../domain/accessibilityCopy';
 import { searchEligibleMeters } from '../../domain/meterSearch';
+import { ClientAddressPicker } from '../ClientAddressPicker';
+import {
+  australianAddressFromInstallation,
+  installationAddressFields,
+  manualAustralianAddressEdit,
+} from '../../domain/australianAddress';
 import {
   DISPLAY_CODE_MAX_LENGTH,
   defaultMeterCustomName,
@@ -266,6 +272,8 @@ export function InstallationForm({
 }: {
   initial?: Partial<Installation>;
   onSubmit: (values: Pick<Installation,
+    | 'client_id'
+    | 'client_site_id'
     | 'client_name'
     | 'site_name'
     | 'site_code'
@@ -274,6 +282,13 @@ export function InstallationForm({
     | 'site_state'
     | 'site_postcode'
     | 'site_country_code'
+    | 'site_latitude'
+    | 'site_longitude'
+    | 'site_geocode_provider'
+    | 'site_geocode_place_id'
+    | 'site_address_source'
+    | 'site_geocoding_status'
+    | 'site_address_fingerprint'
     | 'inspector_name'
     | 'audit_date'
     | 'timezone'
@@ -296,20 +311,18 @@ export function InstallationForm({
   submitLabel?: string;
 }) {
   const { colors } = useTheme();
+  const [client_id, setClientId] = useState(initial?.client_id ?? null);
+  const [client_site_id, setClientSiteId] = useState(initial?.client_site_id ?? null);
   const [client_name, setClient] = useState(initial?.client_name ?? '');
   const [site_name, setSite] = useState(initial?.site_name ?? '');
   const [site_code, setSiteCode] = useState(
     initial?.site_code?.trim() || normalizedSiteCode(initial?.site_name ?? ''),
   );
   const siteCodeEdited = useRef(Boolean(initial?.site_code?.trim()));
-  const [site_address, setAddress] = useState(initial?.site_address ?? '');
-  const [site_locality, setLocality] = useState(initial?.site_locality ?? '');
-  const [site_state, setState] = useState(
-    ['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA'].includes(initial?.site_state ?? '')
-      ? initial!.site_state!
-      : 'unknown',
+  const siteNameEdited = useRef(Boolean(initial?.site_name?.trim()));
+  const [siteAddress, setSiteAddress] = useState(
+    australianAddressFromInstallation(initial),
   );
-  const [site_postcode, setPostcode] = useState(initial?.site_postcode ?? '');
   const [inspector_name, setInspector] = useState(initial?.inspector_name ?? '');
   const [audit_date, setDate] = useState(initial?.audit_date ?? new Date().toISOString().slice(0, 10));
   const [timezone, setTimezone] = useState(
@@ -366,59 +379,102 @@ export function InstallationForm({
   return (
     <View>
       <SectionHeader title="Customer and service" />
-      <TextField label="Client name" value={client_name} error={errorFor('client_name')} onChangeText={setClient} />
-      <SelectChips
-        label="MaaS"
-        value={maas}
-        options={['unknown', 'yes', 'no']}
-        onChange={setMaas}
-        getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-      />
-      <SelectChips
-        label="Scope categorization"
-        value={service_type.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : service_type}
-        options={FIELD_WORK_TYPES}
-        onChange={setServiceType}
-        getLabel={(value) => FIELD_WORK_TYPE_LABELS[value]}
-      />
-      {service_type.startsWith(OTHER_WORK_TYPE) ? <TextField label="Other scope" value={service_type.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChangeText={(value) => setServiceType(`${OTHER_WORK_TYPE}${value}`)} /> : null}
-      <SelectChips label="Metering type selection" value={metering_solution_type} options={[...METERING_TYPES, OTHER_METERING_TYPE]} onChange={setMeteringSolutionType} getLabel={(value) => value === OTHER_METERING_TYPE ? 'Other' : value} />
-      {metering_solution_type === OTHER_METERING_TYPE ? <TextField label="Other metering type" value={other_metering_type} maxLength={120} onChangeText={setOtherMeteringType} /> : null}
-      <TextField label="Custom job number" value={custom_job_number} maxLength={100} onChangeText={setCustomJobNumber} />
+      <ClientAddressPicker
+        clientName={client_name}
+        clientId={client_id}
+        clientError={errorFor('client_name')}
+        siteName={site_name}
+        address={siteAddress}
+        addressError={errorFor('site_address')}
+        onClientChange={(name, nextClientId) => {
+          if (nextClientId !== client_id) setClientSiteId(null);
+          setClientId(nextClientId);
+          setClient(name);
+        }}
+        onAddressChange={(nextAddress, nextClientSiteId, suggestedSiteName) => {
+          setSiteAddress(nextAddress);
+          setClientSiteId(nextClientSiteId);
+          if (suggestedSiteName && (!site_name.trim() || !siteNameEdited.current)) {
+            setSite(suggestedSiteName);
+            if (!siteCodeEdited.current) setSiteCode(normalizedSiteCode(suggestedSiteName));
+          }
+        }}
+      >
+        <SelectChips
+          label="MaaS"
+          value={maas}
+          options={['unknown', 'yes', 'no']}
+          onChange={setMaas}
+          getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+        />
+        <SelectChips
+          label="Scope categorization"
+          value={service_type.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : service_type}
+          options={FIELD_WORK_TYPES}
+          onChange={setServiceType}
+          getLabel={(value) => FIELD_WORK_TYPE_LABELS[value]}
+        />
+        {service_type.startsWith(OTHER_WORK_TYPE) ? <TextField label="Other scope" value={service_type.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChangeText={(value) => setServiceType(`${OTHER_WORK_TYPE}${value}`)} /> : null}
+        <SelectChips label="Metering type selection" value={metering_solution_type} options={[...METERING_TYPES, OTHER_METERING_TYPE]} onChange={setMeteringSolutionType} getLabel={(value) => value === OTHER_METERING_TYPE ? 'Other' : value} />
+        {metering_solution_type === OTHER_METERING_TYPE ? <TextField label="Other metering type" value={other_metering_type} maxLength={120} onChangeText={setOtherMeteringType} /> : null}
+        <TextField label="Custom job number" value={custom_job_number} maxLength={100} onChangeText={setCustomJobNumber} />
 
-      <SectionHeader title="Site and schedule" />
+        <SectionHeader title="Site and schedule" />
+        <TextField
+          label="Site name"
+          value={site_name}
+          error={errorFor('site_name')}
+          onChangeText={(value) => {
+            siteNameEdited.current = true;
+            setSite(value);
+            if (!siteCodeEdited.current) setSiteCode(normalizedSiteCode(value));
+          }}
+        />
+        <TextField
+          label="Installation short code"
+          accessibilityHint="Used as the first segment of generated board, asset, and meter codes"
+          value={site_code}
+          error={errorFor('site_code')}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={16}
+          onChangeText={(value) => {
+            siteCodeEdited.current = true;
+            setSiteCode(value.toUpperCase());
+          }}
+        />
+      </ClientAddressPicker>
       <TextField
-        label="Site name"
-        value={site_name}
-        error={errorFor('site_name')}
+        label="Suburb / locality"
+        value={siteAddress.locality ?? ''}
+        maxLength={120}
         onChangeText={(value) => {
-          setSite(value);
-          if (!siteCodeEdited.current) setSiteCode(normalizedSiteCode(value));
+          setClientSiteId(null);
+          setSiteAddress(manualAustralianAddressEdit(siteAddress, { locality: value }));
         }}
       />
-      <TextField
-        label="Installation short code"
-        accessibilityHint="Used as the first segment of generated board, asset, and meter codes"
-        value={site_code}
-        error={errorFor('site_code')}
-        autoCapitalize="characters"
-        autoCorrect={false}
-        maxLength={16}
-        onChangeText={(value) => {
-          siteCodeEdited.current = true;
-          setSiteCode(value.toUpperCase());
-        }}
-      />
-      <TextArea label="Site address" value={site_address} error={errorFor('site_address')} onChangeText={setAddress} />
-      <TextField label="Suburb / locality" value={site_locality} maxLength={120} onChangeText={setLocality} />
       <SelectChips
         label="State / territory"
-        value={site_state}
+        value={siteAddress.state ?? 'unknown'}
         options={['unknown', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']}
-        onChange={setState}
+        onChange={(value) => {
+          setClientSiteId(null);
+          setSiteAddress(manualAustralianAddressEdit(siteAddress, {
+            state: value === 'unknown' ? null : value,
+          }));
+        }}
         getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value}
       />
-      <TextField label="Postcode" value={site_postcode} keyboardType="number-pad" maxLength={4} onChangeText={setPostcode} />
+      <TextField
+        label="Postcode"
+        value={siteAddress.postcode ?? ''}
+        keyboardType="number-pad"
+        maxLength={4}
+        onChangeText={(value) => {
+          setClientSiteId(null);
+          setSiteAddress(manualAustralianAddressEdit(siteAddress, { postcode: value }));
+        }}
+      />
       <TextField label="Assigned technician" value={inspector_name} error={errorFor('inspector_name')} onChangeText={setInspector} />
       <TextField label="Scheduled date (YYYY-MM-DD)" value={audit_date} error={errorFor('audit_date')} onChangeText={setDate} />
       <TextField
@@ -527,7 +583,7 @@ export function InstallationForm({
               Alert.alert('Enter metering type', 'Enter the Other metering type before saving.');
               return;
             }
-            if (site_postcode.trim() && !/^\d{4}$/.test(site_postcode.trim())) {
+            if (siteAddress.postcode && !/^\d{4}$/.test(siteAddress.postcode)) {
               Alert.alert('Check postcode', 'Australian postcodes must contain exactly four digits.');
               return;
             }
@@ -550,14 +606,12 @@ export function InstallationForm({
               value === 'yes' ? true : value === 'no' ? false : null
             );
             const values = {
+              client_id,
+              client_site_id,
               client_name: client_name.trim(),
               site_name: site_name.trim(),
               site_code: site_code.trim().toUpperCase(),
-              site_address: site_address.trim(),
-              site_locality: nullableText(site_locality),
-              site_state: site_state === 'unknown' ? null : site_state,
-              site_postcode: nullableText(site_postcode),
-              site_country_code: 'AU',
+              ...installationAddressFields(siteAddress),
               inspector_name: inspector_name.trim(),
               audit_date: audit_date.trim(),
               timezone: timezone.trim(),

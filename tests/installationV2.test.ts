@@ -121,6 +121,13 @@ test('job metadata normalization preserves nullable outcomes and defaults legacy
 
   const installation = normalizeCanonicalStore(fixture).installations[0]!;
   assert.equal(installation.site_country_code, 'AU');
+  assert.equal(installation.client_id, null);
+  assert.equal(installation.client_site_id, null);
+  assert.equal(installation.site_address_source, 'manual');
+  assert.equal(installation.site_geocoding_status, 'unresolved');
+  assert.equal(installation.site_latitude, null);
+  assert.equal(installation.site_longitude, null);
+  assert.match(installation.site_address_fingerprint ?? '', /^[0-9a-f]{64}$/);
   assert.equal(installation.customer_name, 'End Customer');
   assert.equal(installation.maas, null);
   assert.equal(installation.monitoring_installed, false);

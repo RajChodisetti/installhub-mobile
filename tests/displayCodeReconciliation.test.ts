@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RemoteInstallationTree } from '../src/api/apiClient';
+import { australianAddressFingerprint } from '../src/domain/australianAddress';
 import { mergeResolvedDisplayCodes } from '../src/services/displayCodeReconciliation';
 import type { AppDataStore, DisplayCode } from '../src/types';
 
@@ -124,6 +125,58 @@ test('canonical identity and accepted retry revision converge in one mutation', 
   mergeResolvedDisplayCodes(store, 'installation', remoteTree(), 5);
 
   assert.equal(store.installations[0]!.external_key, 'ih_server-canonical-installation');
+  assert.equal(store.installations[0]!.server_tree_revision, 5);
+});
+
+test('accepted reconciliation adopts server client IDs and geocoding metadata atomically', () => {
+  const store = fixture();
+  const tree = remoteTree();
+  const canonicalAddress = {
+    display_address: '100 Canonical Street, Sydney NSW 2000',
+    locality: 'Sydney',
+    state: 'NSW',
+    postcode: '2000',
+    country_code: 'AU' as const,
+  };
+  assert.match(australianAddressFingerprint(canonicalAddress), /^[0-9a-f]{64}$/);
+  const canonicalFingerprint = 'f'.repeat(64);
+  Object.assign(tree.installation, {
+    clientId: 'client-1',
+    clientSiteId: 'site-1',
+    clientName: 'Canonical Client',
+    siteName: 'Canonical Sydney Site',
+    siteAddress: canonicalAddress.display_address,
+    siteLocality: canonicalAddress.locality,
+    siteState: canonicalAddress.state,
+    sitePostcode: canonicalAddress.postcode,
+    siteCountryCode: canonicalAddress.country_code,
+    siteLatitude: -33.8688,
+    siteLongitude: 151.2093,
+    siteGeocodeProvider: 'geoapify',
+    siteGeocodePlaceId: 'place-1',
+    siteAddressSource: 'suggested',
+    siteGeocodeStatus: 'resolved',
+    siteAddressFingerprint: canonicalFingerprint,
+  });
+
+  mergeResolvedDisplayCodes(store, 'installation', tree, 5);
+
+  assert.equal(store.installations[0]!.client_id, 'client-1');
+  assert.equal(store.installations[0]!.client_site_id, 'site-1');
+  assert.equal(store.installations[0]!.client_name, 'Canonical Client');
+  assert.equal(store.installations[0]!.site_name, 'Canonical Sydney Site');
+  assert.equal(store.installations[0]!.site_address, canonicalAddress.display_address);
+  assert.equal(store.installations[0]!.site_locality, canonicalAddress.locality);
+  assert.equal(store.installations[0]!.site_state, canonicalAddress.state);
+  assert.equal(store.installations[0]!.site_postcode, canonicalAddress.postcode);
+  assert.equal(store.installations[0]!.site_country_code, 'AU');
+  assert.equal(store.installations[0]!.site_latitude, -33.8688);
+  assert.equal(store.installations[0]!.site_longitude, 151.2093);
+  assert.equal(store.installations[0]!.site_geocode_provider, 'geoapify');
+  assert.equal(store.installations[0]!.site_geocode_place_id, 'place-1');
+  assert.equal(store.installations[0]!.site_address_source, 'suggested');
+  assert.equal(store.installations[0]!.site_geocoding_status, 'resolved');
+  assert.equal(store.installations[0]!.site_address_fingerprint, canonicalFingerprint);
   assert.equal(store.installations[0]!.server_tree_revision, 5);
 });
 

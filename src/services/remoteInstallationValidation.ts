@@ -4,6 +4,7 @@ import {
   DISPLAY_CODE_MAX_LENGTH,
   isValidZoneCode,
 } from '../domain/namingV2';
+import { australianAddressFingerprint } from '../domain/australianAddress';
 
 const text = (record: Record<string, unknown>, camel: string, snake?: string): string =>
   String(record[camel] ?? (snake ? record[snake] : '') ?? '');
@@ -334,6 +335,121 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
   requiredText(installation, 'clientName', 'client_name', 'installation client name');
   requiredText(installation, 'siteName', 'site_name', 'installation site name');
   requiredText(installation, 'siteAddress', 'site_address', 'installation site address');
+  const clientId = optionalStableId(
+    installation,
+    'clientId',
+    'client_id',
+    'installation client ID',
+  );
+  const clientSiteId = optionalStableId(
+    installation,
+    'clientSiteId',
+    'client_site_id',
+    'installation client site ID',
+  );
+  if (clientSiteId && !clientId) {
+    throw new Error('Cannot import canonical v2: installation client site ID requires a client ID.');
+  }
+  if (
+    hasDeclaredProperty(installation, 'siteCountryCode', 'site_country_code')
+    && property(installation, 'siteCountryCode', 'site_country_code') !== 'AU'
+  ) {
+    throw new Error('Cannot import canonical v2: installation country code must be AU.');
+  }
+  const hasAddressMetadata = [
+    ['siteLatitude', 'site_latitude'],
+    ['siteLongitude', 'site_longitude'],
+    ['siteGeocodeProvider', 'site_geocode_provider'],
+    ['siteGeocodePlaceId', 'site_geocode_place_id'],
+    ['siteAddressSource', 'site_address_source'],
+    ['siteGeocodeStatus', 'site_geocode_status'],
+    ['siteAddressFingerprint', 'site_address_fingerprint'],
+  ].some(([camel, snake]) => hasDeclaredProperty(installation, camel!, snake));
+  if (hasAddressMetadata) {
+    const latitude = property(installation, 'siteLatitude', 'site_latitude');
+    const longitude = property(installation, 'siteLongitude', 'site_longitude');
+    const coordinatesAbsent = (latitude === null || latitude === undefined)
+      && (longitude === null || longitude === undefined);
+    const coordinatesValid = typeof latitude === 'number'
+      && Number.isFinite(latitude)
+      && latitude >= -44
+      && latitude <= -9
+      && typeof longitude === 'number'
+      && Number.isFinite(longitude)
+      && longitude >= 112
+      && longitude <= 154;
+    if (!coordinatesAbsent && !coordinatesValid) {
+      throw new Error('Cannot import canonical v2: Australian address coordinates are invalid or incomplete.');
+    }
+    const source = hasDeclaredProperty(
+      installation,
+      'siteAddressSource',
+      'site_address_source',
+    ) ? exactEnum(
+        installation,
+        'siteAddressSource',
+        'site_address_source',
+        ['suggested', 'manual', 'client_saved'],
+        'installation address source',
+      ) : 'manual';
+    const status = hasDeclaredProperty(
+      installation,
+      'siteGeocodeStatus',
+      'site_geocode_status',
+    ) ? exactEnum(
+        installation,
+        'siteGeocodeStatus',
+        'site_geocode_status',
+        ['unresolved', 'resolved', 'manual', 'failed'],
+        'installation geocoding status',
+      ) : 'unresolved';
+    const provider = property(
+      installation,
+      'siteGeocodeProvider',
+      'site_geocode_provider',
+    );
+    const placeId = property(
+      installation,
+      'siteGeocodePlaceId',
+      'site_geocode_place_id',
+    );
+    const providerValid = provider === 'geoapify' || provider === 'photon';
+    const placeIdValid = typeof placeId === 'string' && Boolean(placeId.trim());
+    if (provider !== null && provider !== undefined && !providerValid) {
+      throw new Error('Cannot import canonical v2: installation geocoding provider is invalid.');
+    }
+    if (placeId !== null && placeId !== undefined && !placeIdValid) {
+      throw new Error('Cannot import canonical v2: installation geocoding place ID is invalid.');
+    }
+    if (
+      (source === 'suggested' || status === 'resolved')
+      && (!coordinatesValid || !providerValid || !placeIdValid)
+    ) {
+      throw new Error('Cannot import canonical v2: resolved suggested address metadata is incomplete.');
+    }
+    if (hasDeclaredProperty(
+      installation,
+      'siteAddressFingerprint',
+      'site_address_fingerprint',
+    )) {
+      const fingerprint = requiredText(
+        installation,
+        'siteAddressFingerprint',
+        'site_address_fingerprint',
+        'installation address fingerprint',
+      );
+      const expectedFingerprint = australianAddressFingerprint({
+        display_address: String(property(installation, 'siteAddress', 'site_address') ?? ''),
+        locality: optionalText(installation, 'siteLocality', 'site_locality') ?? null,
+        state: optionalText(installation, 'siteState', 'site_state') ?? null,
+        postcode: optionalText(installation, 'sitePostcode', 'site_postcode') ?? null,
+        country_code: 'AU',
+      });
+      if (!/^[0-9a-f]{64}$/.test(fingerprint) || fingerprint !== expectedFingerprint) {
+        throw new Error('Cannot import canonical v2: installation address fingerprint is invalid.');
+      }
+    }
+  }
   requiredText(installation, 'inspectorName', 'inspector_name', 'installation inspector name');
   requiredText(installation, 'auditDate', 'audit_date', 'installation audit date');
   if (requiredInteger(installation, 'treeSchemaVersion', 'tree_schema_version', 'installation tree schema version') !== 2) {

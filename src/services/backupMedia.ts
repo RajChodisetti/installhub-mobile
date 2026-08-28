@@ -572,6 +572,12 @@ export function buildBackupPayload(
     ...(syncStage ? { syncStage } : {}),
     installation: {
       id: installationId,
+      ...(tree.installation.client_id !== undefined
+        ? { clientId: tree.installation.client_id }
+        : {}),
+      ...(tree.installation.client_site_id !== undefined
+        ? { clientSiteId: tree.installation.client_site_id }
+        : {}),
       ...(tree.installation.customer_name !== undefined
         ? { customerName: tree.installation.customer_name }
         : {}),
@@ -602,6 +608,27 @@ export function buildBackupPayload(
         : {}),
       ...(tree.installation.site_country_code !== undefined
         ? { siteCountryCode: tree.installation.site_country_code }
+        : {}),
+      ...(tree.installation.site_latitude !== undefined
+        ? { siteLatitude: tree.installation.site_latitude }
+        : {}),
+      ...(tree.installation.site_longitude !== undefined
+        ? { siteLongitude: tree.installation.site_longitude }
+        : {}),
+      ...(tree.installation.site_geocode_provider !== undefined
+        ? { siteGeocodeProvider: tree.installation.site_geocode_provider }
+        : {}),
+      ...(tree.installation.site_geocode_place_id !== undefined
+        ? { siteGeocodePlaceId: tree.installation.site_geocode_place_id }
+        : {}),
+      ...(tree.installation.site_address_source !== undefined
+        ? { siteAddressSource: tree.installation.site_address_source }
+        : {}),
+      ...(tree.installation.site_geocoding_status !== undefined
+        ? { siteGeocodeStatus: tree.installation.site_geocoding_status }
+        : {}),
+      ...(tree.installation.site_address_fingerprint !== undefined
+        ? { siteAddressFingerprint: tree.installation.site_address_fingerprint }
         : {}),
       ...(tree.installation.site_contact_name !== undefined
         ? { siteContactName: tree.installation.site_contact_name }

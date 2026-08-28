@@ -16,10 +16,15 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     schemaVersion: 3,
     user: { id: 'user', email: 'field@example.test', full_name: 'Field', role: 'admin' },
     installations: [{
-      id: 'installation', client_name: 'Client', site_name: 'Golden Site', site_address: 'Address',
+      id: 'installation', client_id: 'client-1', client_site_id: 'site-1',
+      client_name: 'Client', site_name: 'Golden Site',
+      site_address: '1 Example Road, Sydney NSW 2000',
       customer_name: 'End Customer', maas: null, service_type: 'Metering installation',
       metering_solution_type: 'Multi-circuit monitoring', planned_meter_type: 'Wattwatchers',
       site_locality: 'Sydney', site_state: 'NSW', site_postcode: '2000', site_country_code: 'AU',
+      site_latitude: -33.8688, site_longitude: 151.2093,
+      site_geocode_provider: 'geoapify', site_geocode_place_id: 'place-1',
+      site_address_source: 'suggested', site_geocoding_status: 'resolved',
       site_contact_name: 'Site Contact', site_contact_phone: '+61 400 000 001',
       site_contact_email: 'contact@example.test', fergus_job_number: 'FERGUS-1',
       quote_number: 'Q-1', job_comments: 'Install the planned monitoring.',
@@ -103,10 +108,19 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
   };
   const wire = buildBackupPayload(backupTree, [], 'complete');
   assert.equal(wire.installation.siteCode, 'Legacy Site Code / 2024');
+  assert.equal(wire.installation.clientId, 'client-1');
+  assert.equal(wire.installation.clientSiteId, 'site-1');
   assert.equal(wire.installation.customerName, 'End Customer');
   assert.equal(wire.installation.maas, null);
   assert.equal(wire.installation.siteState, 'NSW');
   assert.equal(wire.installation.sitePostcode, '2000');
+  assert.equal(wire.installation.siteLatitude, -33.8688);
+  assert.equal(wire.installation.siteLongitude, 151.2093);
+  assert.equal(wire.installation.siteGeocodeProvider, 'geoapify');
+  assert.equal(wire.installation.siteGeocodePlaceId, 'place-1');
+  assert.equal(wire.installation.siteAddressSource, 'suggested');
+  assert.equal(wire.installation.siteGeocodeStatus, 'resolved');
+  assert.match(String(wire.installation.siteAddressFingerprint), /^[0-9a-f]{64}$/);
   assert.equal(wire.installation.accessInformation, 'Collect keys from reception.');
   assert.equal(wire.installation.monitoringInstalled, false);
   assert.equal(wire.installation.solarCapacityKw, 42.5);

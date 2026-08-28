@@ -83,7 +83,60 @@ function nullableNonNegativeNumber(
   return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
+function nullableCoordinate(
+  record: Record<string, unknown>,
+  camel: string,
+  snake: string,
+  fallback: number | null,
+): number | null {
+  if (!has(record, camel, snake)) return fallback;
+  const value = remoteValue(record, camel, snake);
+  if (value === null) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function nullableAddressProvider(
+  record: Record<string, unknown>,
+  camel: string,
+  snake: string,
+  fallback: AssignedWorkServerMetadataSnapshot['site_geocode_provider'],
+): AssignedWorkServerMetadataSnapshot['site_geocode_provider'] {
+  if (!has(record, camel, snake)) return fallback;
+  const value = remoteValue(record, camel, snake);
+  if (value === null) return null;
+  return value === 'geoapify' || value === 'photon' ? value : fallback;
+}
+
+function addressSource(
+  record: Record<string, unknown>,
+  camel: string,
+  snake: string,
+  fallback: AssignedWorkServerMetadataSnapshot['site_address_source'],
+): AssignedWorkServerMetadataSnapshot['site_address_source'] {
+  if (!has(record, camel, snake)) return fallback;
+  const value = remoteValue(record, camel, snake);
+  return value === 'suggested' || value === 'manual' || value === 'client_saved'
+    ? value
+    : fallback;
+}
+
+function geocodingStatus(
+  record: Record<string, unknown>,
+  camel: string,
+  snake: string,
+  fallback: AssignedWorkServerMetadataSnapshot['site_geocoding_status'],
+): AssignedWorkServerMetadataSnapshot['site_geocoding_status'] {
+  if (!has(record, camel, snake)) return fallback;
+  const value = remoteValue(record, camel, snake);
+  return value === 'unresolved' || value === 'resolved' || value === 'manual' || value === 'failed'
+    ? value
+    : fallback;
+}
+
 export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
+  'client_id',
+  'client_site_id',
   'client_name',
   'customer_name',
   'site_name',
@@ -92,6 +145,13 @@ export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
   'site_state',
   'site_postcode',
   'site_country_code',
+  'site_latitude',
+  'site_longitude',
+  'site_geocode_provider',
+  'site_geocode_place_id',
+  'site_address_source',
+  'site_geocoding_status',
+  'site_address_fingerprint',
   'inspector_name',
   'audit_date',
   'timezone',
@@ -119,6 +179,8 @@ export function assignedWorkServerMetadataFromInstallation(
   installation: Installation,
 ): AssignedWorkServerMetadataSnapshot {
   return {
+    client_id: installation.client_id ?? null,
+    client_site_id: installation.client_site_id ?? null,
     client_name: installation.client_name,
     customer_name: installation.customer_name ?? null,
     site_name: installation.site_name,
@@ -127,6 +189,13 @@ export function assignedWorkServerMetadataFromInstallation(
     site_state: installation.site_state ?? null,
     site_postcode: installation.site_postcode ?? null,
     site_country_code: installation.site_country_code ?? null,
+    site_latitude: installation.site_latitude ?? null,
+    site_longitude: installation.site_longitude ?? null,
+    site_geocode_provider: installation.site_geocode_provider ?? null,
+    site_geocode_place_id: installation.site_geocode_place_id ?? null,
+    site_address_source: installation.site_address_source ?? 'manual',
+    site_geocoding_status: installation.site_geocoding_status ?? 'unresolved',
+    site_address_fingerprint: installation.site_address_fingerprint ?? '',
     inspector_name: installation.inspector_name,
     audit_date: installation.audit_date,
     timezone: installation.timezone ?? null,
@@ -151,11 +220,36 @@ export function assignedWorkServerMetadataFromInstallation(
   };
 }
 
+/** Fill fields absent from pre-address-contract snapshots without inventing a remote edit. */
+function completeStoredMetadataSnapshot(
+  snapshot: Partial<AssignedWorkServerMetadataSnapshot> | undefined,
+  fallback: AssignedWorkServerMetadataSnapshot,
+): AssignedWorkServerMetadataSnapshot | undefined {
+  if (!snapshot) return undefined;
+  const completed: AssignedWorkServerMetadataSnapshot = { ...fallback };
+  for (const field of ASSIGNED_WORK_SERVER_METADATA_FIELDS) {
+    if (
+      Object.prototype.hasOwnProperty.call(snapshot, field)
+      && snapshot[field] !== undefined
+    ) {
+      Object.assign(completed, { [field]: snapshot[field] });
+    }
+  }
+  return completed;
+}
+
 function assignedWorkServerMetadataFromRemote(
   remote: Record<string, unknown>,
   fallback: AssignedWorkServerMetadataSnapshot,
 ): AssignedWorkServerMetadataSnapshot {
   return {
+    client_id: nullableText(remote, 'clientId', 'client_id', fallback.client_id),
+    client_site_id: nullableText(
+      remote,
+      'clientSiteId',
+      'client_site_id',
+      fallback.client_site_id,
+    ),
     client_name: requiredText(remote, 'clientName', 'client_name', fallback.client_name),
     customer_name: nullableText(remote, 'customerName', 'customer_name', fallback.customer_name),
     site_name: requiredText(remote, 'siteName', 'site_name', fallback.site_name),
@@ -169,6 +263,48 @@ function assignedWorkServerMetadataFromRemote(
       'site_country_code',
       fallback.site_country_code,
     ),
+    site_latitude: nullableCoordinate(
+      remote,
+      'siteLatitude',
+      'site_latitude',
+      fallback.site_latitude,
+    ),
+    site_longitude: nullableCoordinate(
+      remote,
+      'siteLongitude',
+      'site_longitude',
+      fallback.site_longitude,
+    ),
+    site_geocode_provider: nullableAddressProvider(
+      remote,
+      'siteGeocodeProvider',
+      'site_geocode_provider',
+      fallback.site_geocode_provider,
+    ),
+    site_geocode_place_id: nullableText(
+      remote,
+      'siteGeocodePlaceId',
+      'site_geocode_place_id',
+      fallback.site_geocode_place_id,
+    ),
+    site_address_source: addressSource(
+      remote,
+      'siteAddressSource',
+      'site_address_source',
+      fallback.site_address_source,
+    ),
+    site_geocoding_status: geocodingStatus(
+      remote,
+      'siteGeocodeStatus',
+      'site_geocode_status',
+      fallback.site_geocoding_status,
+    ),
+    site_address_fingerprint: nullableText(
+      remote,
+      'siteAddressFingerprint',
+      'site_address_fingerprint',
+      fallback.site_address_fingerprint,
+    ) ?? fallback.site_address_fingerprint,
     inspector_name: requiredText(
       remote,
       'inspectorName',
@@ -594,7 +730,10 @@ export function mergeAssignedInstallationServerState(
     }
 
     const current = assignedWorkServerMetadataFromInstallation(local);
-    const storedBase = local.assigned_work_server_metadata_base;
+    const storedBase = completeStoredMetadataSnapshot(
+      local.assigned_work_server_metadata_base,
+      current,
+    );
     const storedTreeFingerprint = local.assigned_work_server_tree_fingerprint;
 
     if (authoritativeReopen) {
@@ -774,12 +913,15 @@ export function acceptAssignedWorkServerRefresh(
   if (installation.server_tree_revision !== conflict.local_base_tree_revision) {
     throw new Error('The local server revision changed before job details were accepted.');
   }
+  const current = assignedWorkServerMetadataFromInstallation(installation);
+  const base = completeStoredMetadataSnapshot(conflict.base, current)!;
+  const incoming = completeStoredMetadataSnapshot(conflict.incoming, base)!;
   for (const field of ASSIGNED_WORK_SERVER_METADATA_FIELDS) {
-    if (!sameMetadataValue(conflict.base[field], conflict.incoming[field])) {
-      Object.assign(installation, { [field]: conflict.incoming[field] });
+    if (!sameMetadataValue(base[field], incoming[field])) {
+      Object.assign(installation, { [field]: incoming[field] });
     }
   }
-  installation.assigned_work_server_metadata_base = conflict.incoming;
+  installation.assigned_work_server_metadata_base = incoming;
   installation.assigned_work_server_tree_fingerprint = conflict.incoming_tree_fingerprint;
   installation.server_tree_revision = conflict.remote_tree_revision;
   installation.server_derived = undefined;

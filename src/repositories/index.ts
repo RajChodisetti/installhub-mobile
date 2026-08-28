@@ -81,6 +81,36 @@ import {
   type ServerResultCommitFence,
 } from '../services/serverResultCommitFence';
 import { buildInstallationBackupTree } from './cloudSyncRepository';
+import {
+  australianAddressFingerprint,
+  australianAddressFromInstallation,
+  installationAddressFields,
+  manualAustralianAddressEdit,
+  normalizeClientNameKey,
+} from '../domain/australianAddress';
+
+const INSTALLATION_ADDRESS_KEYS: ReadonlyArray<keyof Installation> = [
+  'site_address',
+  'site_locality',
+  'site_state',
+  'site_postcode',
+  'site_country_code',
+  'site_latitude',
+  'site_longitude',
+  'site_geocode_provider',
+  'site_geocode_place_id',
+  'site_address_source',
+  'site_geocoding_status',
+  'site_address_fingerprint',
+];
+
+const INSTALLATION_ADDRESS_TEXT_KEYS = [
+  'site_address',
+  'site_locality',
+  'site_state',
+  'site_postcode',
+  'site_country_code',
+] as const satisfies ReadonlyArray<keyof Installation>;
 
 function boardDefaultName(typeCode: ReturnType<typeof boardTypeCode>, customTypeName?: string): string {
   return typeCode === 'OTHER'
@@ -370,8 +400,12 @@ export const installationsRepo: InstallationsRepository = {
       );
     }
     const id = createId('inst');
+    const addressFields = installationAddressFields(
+      australianAddressFromInstallation(input),
+    );
     const record: Installation = {
       ...input,
+      ...addressFields,
       id,
       local_owner_user_id: localOwnerUserId,
       assigned_work_state: 'none',
@@ -380,7 +414,8 @@ export const installationsRepo: InstallationsRepository = {
       tree_schema_version: 2,
       external_key: input.external_key ?? `local:${id}`,
       site_code: input.site_code,
-      site_country_code: input.site_country_code?.trim().toUpperCase() || 'AU',
+      client_id: input.client_id?.trim() || null,
+      client_site_id: input.client_site_id?.trim() || null,
       timezone: input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       tree_revision: 0,
       backup_conflict: { kind: 'NONE' },
@@ -416,8 +451,8 @@ export const installationsRepo: InstallationsRepository = {
         );
       }
       const domainKeys: Array<keyof Installation> = [
-        'client_name', 'customer_name', 'site_name', 'site_address',
-        'site_locality', 'site_state', 'site_postcode', 'site_country_code',
+        'client_id', 'client_site_id', 'client_name', 'customer_name', 'site_name',
+        ...INSTALLATION_ADDRESS_KEYS,
         'inspector_name', 'audit_date', 'site_code', 'timezone', 'maas',
         'service_type', 'metering_solution_type', 'planned_meter_type', 'custom_job_number',
         'site_contact_name', 'site_contact_phone', 'site_contact_email',
@@ -429,7 +464,43 @@ export const installationsRepo: InstallationsRepository = {
       if (s.installations[idx].status === 'Completed' && domainKeys.some((key) => key in patch)) {
         throw new Error('Reopen this completed installation before editing it.');
       }
-      updated = { ...s.installations[idx], ...patch, id, updated_at: nowIso() };
+      const normalizedPatch: Partial<Installation> = { ...patch };
+      if (INSTALLATION_ADDRESS_KEYS.some((key) => key in patch)) {
+        const currentAddress = australianAddressFromInstallation(s.installations[idx]);
+        const candidateAddress = australianAddressFromInstallation({
+          ...s.installations[idx],
+          ...patch,
+        });
+        const addressTextChanged = INSTALLATION_ADDRESS_TEXT_KEYS.some((key) => (
+          Object.prototype.hasOwnProperty.call(patch, key)
+          && patch[key] !== s.installations[idx][key]
+        ));
+        const suppliedFingerprint = patch.site_address_fingerprint;
+        const hasCoherentExplicitMetadata = typeof suppliedFingerprint === 'string'
+          && suppliedFingerprint === australianAddressFingerprint(candidateAddress);
+        const normalizedAddress = addressTextChanged && !hasCoherentExplicitMetadata
+          ? manualAustralianAddressEdit(currentAddress, {
+              display_address: candidateAddress.display_address,
+              locality: candidateAddress.locality,
+              state: candidateAddress.state,
+              postcode: candidateAddress.postcode,
+            })
+          : candidateAddress;
+        Object.assign(
+          normalizedPatch,
+          installationAddressFields(normalizedAddress),
+        );
+      }
+      if (
+        typeof patch.client_name === 'string'
+        && normalizeClientNameKey(patch.client_name)
+          !== normalizeClientNameKey(s.installations[idx].client_name)
+        && !Object.prototype.hasOwnProperty.call(patch, 'client_id')
+      ) {
+        normalizedPatch.client_id = null;
+        normalizedPatch.client_site_id = null;
+      }
+      updated = { ...s.installations[idx], ...normalizedPatch, id, updated_at: nowIso() };
       s.installations[idx] = updated;
       if (domainKeys.some((key) => key in patch)) bumpTreeRevision(s, id);
     });

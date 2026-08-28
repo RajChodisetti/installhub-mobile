@@ -34,6 +34,10 @@ import type {
   SiteAssetTypeCode,
   VirtualMeterDefinition,
 } from '../types';
+import {
+  australianAddressFromInstallation,
+  installationAddressFields,
+} from './australianAddress';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
 export const LOCAL_STORE_SCHEMA_VERSION = 3 as const;
@@ -503,7 +507,12 @@ function ensureInstallationMetadata(installation: Installation): void {
   if (!installation.site_code?.trim()) {
     installation.site_code = normalizedSiteCode(installation.site_name);
   }
-  installation.site_country_code = installation.site_country_code?.trim().toUpperCase() || 'AU';
+  Object.assign(
+    installation,
+    installationAddressFields(australianAddressFromInstallation(installation)),
+  );
+  installation.client_id = installation.client_id?.trim() || null;
+  installation.client_site_id = installation.client_site_id?.trim() || null;
   installation.tree_revision = Math.max(0, installation.tree_revision ?? 0);
   if (installation.server_tree_revision === undefined) {
     const exactCanonicalRevision = installation.server_derived?.treeRevision;

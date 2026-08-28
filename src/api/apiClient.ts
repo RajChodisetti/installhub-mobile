@@ -1,6 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import type {
+  AddressGeocodingStatus,
+  AddressProvider,
+  AddressSource,
   InstallationReadiness,
   InstallationReportDetailMode,
   UserSourceApp,
@@ -100,6 +103,78 @@ export interface InventoryMeterInput {
   customManufacturerName?: string | null;
   customModelName?: string | null;
   notes?: string | null;
+}
+
+export interface ClientDirectorySite {
+  id: string;
+  clientId: string;
+  siteName: string;
+  displayAddress: string;
+  locality: string | null;
+  state: string | null;
+  postcode: string | null;
+  countryCode: 'AU';
+  latitude: number | null;
+  longitude: number | null;
+  provider: AddressProvider | null;
+  placeId: string | null;
+  source: AddressSource;
+  geocodingStatus: AddressGeocodingStatus;
+  fingerprint: string;
+  timezone: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  accessInformation: string | null;
+  updatedAt: string;
+}
+
+export interface ClientDirectoryClient {
+  id: string;
+  name: string;
+  normalizedKey: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  updatedAt: string;
+  sites: ClientDirectorySite[];
+}
+
+export interface ClientDirectoryResponse {
+  companyScope: 'current';
+  clients: ClientDirectoryClient[];
+}
+
+export interface ClientAddressSuggestion {
+  kind: 'client_saved' | 'provider';
+  id: string;
+  label: string;
+  clientId: string | null;
+  clientSiteId: string | null;
+  siteName: string | null;
+  address: {
+    displayAddress: string;
+    locality: string | null;
+    state: string | null;
+    postcode: string | null;
+    countryCode: 'AU';
+    latitude: number | null;
+    longitude: number | null;
+    provider: AddressProvider | null;
+    placeId: string | null;
+    source: AddressSource;
+    geocodingStatus: AddressGeocodingStatus;
+    fingerprint: string;
+  };
+}
+
+export interface ClientAddressSuggestionsResponse {
+  available: boolean;
+  provider: AddressProvider | null;
+  attribution: string | null;
+  storedSuggestions: ClientAddressSuggestion[];
+  providerSuggestions: ClientAddressSuggestion[];
+  suggestions: ClientAddressSuggestion[];
 }
 
 export interface ExportJobStatus {
@@ -839,6 +914,41 @@ export const apiClient = {
       'GET', `/v1/installhub/sync/pull?${params}`, undefined, false, undefined, undefined, authority,
     );
   },
+
+  listClientDirectory: (
+    input: { q?: string; clientId?: string; limit?: number } = {},
+    signal?: AbortSignal,
+    authority?: CloudSessionAuthority,
+  ) => {
+    const params = new URLSearchParams();
+    if (input.q) params.set('q', input.q);
+    if (input.clientId) params.set('clientId', input.clientId);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    const query = params.toString();
+    return request<ClientDirectoryResponse>(
+      'GET',
+      `/v1/installhub/client-directory${query ? `?${query}` : ''}`,
+      undefined,
+      false,
+      undefined,
+      signal,
+      authority,
+    );
+  },
+
+  suggestClientAddresses: (
+    input: { clientId?: string; query: string; postcode?: string; limit?: number },
+    signal?: AbortSignal,
+    authority?: CloudSessionAuthority,
+  ) => request<ClientAddressSuggestionsResponse>(
+    'POST',
+    '/v1/installhub/client-address-suggestions',
+    input,
+    false,
+    undefined,
+    signal,
+    authority,
+  ),
 
   getInstallationMapping: (installationId: string, recordVersionNumber: number) => {
     const params = new URLSearchParams({ recordVersionNumber: String(recordVersionNumber) });

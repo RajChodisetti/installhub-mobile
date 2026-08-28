@@ -22,7 +22,7 @@ import {
 } from '../src/services/assignedWorkPolicy';
 import { nextCopyIndex } from '../src/repositories/copyNaming';
 import { remoteInstallationWorkTreeFingerprint } from '../src/services/remoteInstallationRevision';
-import type { Installation } from '../src/types';
+import type { AssignedWorkServerMetadataSnapshot, Installation } from '../src/types';
 import {
   auditWorkIsSuspendedForActor,
   registerAuditWorkSuspension,
@@ -472,6 +472,56 @@ test('metadata-only assigned pull advances CAS without replacing local-only meta
   assert.equal('warranty_device' in (result.metadataPatch ?? {}), false);
   assert.equal(local.tree_revision, 11);
   assert.equal(local.warranty_device, true);
+});
+
+test('pre-address metadata bases upgrade without inventing a same-revision server edit', () => {
+  const remote = {
+    ...tree({ id: 'assigned', status: 'Draft', treeRevision: 4 }),
+    treeRevision: 4,
+  };
+  const original = localInstallation({
+    client_id: 'client-1',
+    client_site_id: 'site-1',
+    site_locality: 'Sydney',
+    site_state: 'NSW',
+    site_postcode: '2000',
+    site_country_code: 'AU',
+    site_latitude: -33.8688,
+    site_longitude: 151.2093,
+    site_geocode_provider: 'geoapify',
+    site_geocode_place_id: 'place-1',
+    site_address_source: 'suggested',
+    site_geocoding_status: 'resolved',
+    site_address_fingerprint: 'f'.repeat(64),
+    server_tree_revision: 4,
+  });
+  const legacyBase = {
+    ...assignedWorkServerMetadataFromInstallation(original),
+  } as Partial<AssignedWorkServerMetadataSnapshot>;
+  for (const field of [
+    'client_id',
+    'client_site_id',
+    'site_latitude',
+    'site_longitude',
+    'site_geocode_provider',
+    'site_geocode_place_id',
+    'site_address_source',
+    'site_geocoding_status',
+    'site_address_fingerprint',
+  ] as const) delete legacyBase[field];
+  const local = localInstallation({
+    ...original,
+    assigned_work_server_metadata_base:
+      legacyBase as AssignedWorkServerMetadataSnapshot,
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(remote),
+  });
+
+  const result = mergeAssignedInstallationServerState(local, remote);
+  assert.equal(result.refreshConflict, null);
+  assert.equal(result.serverMetadataBase?.client_id, 'client-1');
+  assert.equal(result.serverMetadataBase?.client_site_id, 'site-1');
+  assert.equal(result.serverMetadataBase?.site_geocode_provider, 'geoapify');
 });
 
 test('authoritative completion can advance a proven metadata-only assigned CAS base', () => {

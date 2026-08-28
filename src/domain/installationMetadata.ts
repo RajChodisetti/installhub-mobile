@@ -6,10 +6,19 @@ import type { Installation } from '../types';
  * it is different from an explicit null chosen after the field was loaded.
  */
 export const ADDITIVE_INSTALLATION_FORM_FIELDS = [
+  'client_id',
+  'client_site_id',
   'customer_name',
   'site_locality',
   'site_state',
   'site_postcode',
+  'site_latitude',
+  'site_longitude',
+  'site_geocode_provider',
+  'site_geocode_place_id',
+  'site_address_source',
+  'site_geocoding_status',
+  'site_address_fingerprint',
   'maas',
   'service_type',
   'metering_solution_type',

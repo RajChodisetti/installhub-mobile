@@ -12,6 +12,74 @@ import {
 } from './serverResultCommitFence';
 import { assignedWorkServerMetadataFromInstallation } from './assignedWorkPolicy';
 import { remoteInstallationWorkTreeFingerprint } from './remoteInstallationRevision';
+import {
+  australianAddressFromInstallation,
+  installationAddressFields,
+} from '../domain/australianAddress';
+
+function hasRemote(root: Record<string, unknown>, camel: string, snake: string): boolean {
+  return Object.prototype.hasOwnProperty.call(root, camel)
+    || Object.prototype.hasOwnProperty.call(root, snake);
+}
+
+function remoteValue(root: Record<string, unknown>, camel: string, snake: string): unknown {
+  return Object.prototype.hasOwnProperty.call(root, camel) ? root[camel] : root[snake];
+}
+
+/** Server-generated directory identity and canonical address join the accepted CAS revision atomically. */
+function reconcileCanonicalAddressMetadata(
+  installation: AppDataStore['installations'][number],
+  root: Record<string, unknown>,
+): string | undefined {
+  for (const [local, camel, snake] of [
+    ['client_name', 'clientName', 'client_name'],
+    ['site_name', 'siteName', 'site_name'],
+  ] as const) {
+    if (!hasRemote(root, camel, snake)) continue;
+    const value = remoteValue(root, camel, snake);
+    if (typeof value === 'string') installation[local] = value;
+  }
+  for (const [local, camel, snake] of [
+    ['client_id', 'clientId', 'client_id'],
+    ['client_site_id', 'clientSiteId', 'client_site_id'],
+  ] as const) {
+    if (!hasRemote(root, camel, snake)) continue;
+    const value = remoteValue(root, camel, snake);
+    installation[local] = typeof value === 'string' && value.trim() ? value : null;
+  }
+  const addressFields = [
+    ['site_address', 'siteAddress', 'site_address'],
+    ['site_locality', 'siteLocality', 'site_locality'],
+    ['site_state', 'siteState', 'site_state'],
+    ['site_postcode', 'sitePostcode', 'site_postcode'],
+    ['site_country_code', 'siteCountryCode', 'site_country_code'],
+    ['site_latitude', 'siteLatitude', 'site_latitude'],
+    ['site_longitude', 'siteLongitude', 'site_longitude'],
+    ['site_geocode_provider', 'siteGeocodeProvider', 'site_geocode_provider'],
+    ['site_geocode_place_id', 'siteGeocodePlaceId', 'site_geocode_place_id'],
+    ['site_address_source', 'siteAddressSource', 'site_address_source'],
+    ['site_geocoding_status', 'siteGeocodeStatus', 'site_geocode_status'],
+    ['site_address_fingerprint', 'siteAddressFingerprint', 'site_address_fingerprint'],
+  ] as const;
+  if (!addressFields.some(([, camel, snake]) => hasRemote(root, camel, snake))) return undefined;
+  const candidate = { ...installation };
+  for (const [local, camel, snake] of addressFields) {
+    if (hasRemote(root, camel, snake)) {
+      Object.assign(candidate, { [local]: remoteValue(root, camel, snake) });
+    }
+  }
+  const canonicalFields = installationAddressFields(australianAddressFromInstallation(candidate));
+  let canonicalFingerprint: string | undefined;
+  if (hasRemote(root, 'siteAddressFingerprint', 'site_address_fingerprint')) {
+    const fingerprint = remoteValue(root, 'siteAddressFingerprint', 'site_address_fingerprint');
+    if (typeof fingerprint === 'string' && /^[0-9a-f]{64}$/.test(fingerprint)) {
+      canonicalFields.site_address_fingerprint = fingerprint;
+      canonicalFingerprint = fingerprint;
+    }
+  }
+  Object.assign(installation, canonicalFields);
+  return canonicalFingerprint;
+}
 
 function remoteRevision(tree: RemoteInstallationTree): number | undefined {
   const value = tree.treeRevision
@@ -186,6 +254,10 @@ export function mergeResolvedDisplayCodes(
   }
 
   installation.external_key = externalKey;
+  const canonicalAddressFingerprint = reconcileCanonicalAddressMetadata(
+    installation,
+    tree.installation,
+  );
   // The identity and its accepted CAS base must advance in the same durable
   // store commit. Persisting only the revision can strand an imported copy
   // with its source canonical key if the confirmation pull is interrupted.
@@ -226,6 +298,11 @@ export function mergeResolvedDisplayCodes(
     };
   }
   projectCanonicalCompatibility(store, installationId);
+  // Compatibility projection normalizes legacy address rows. The exact digest
+  // from this accepted canonical revision remains authoritative after that pass.
+  if (canonicalAddressFingerprint) {
+    installation.site_address_fingerprint = canonicalAddressFingerprint;
+  }
   return changes;
 }
 

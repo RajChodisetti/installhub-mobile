@@ -366,6 +366,26 @@ export interface AssignedWorkPrestartAcknowledgement {
   acknowledged_at: string;
 }
 
+export type AddressSource = 'suggested' | 'manual' | 'client_saved';
+export type AddressGeocodingStatus = 'unresolved' | 'resolved' | 'manual' | 'failed';
+export type AddressProvider = 'geoapify' | 'photon';
+
+/** Shared Australian address value used by product records and client-site memory. */
+export interface AustralianAddress {
+  display_address: string;
+  locality: string | null;
+  state: string | null;
+  postcode: string | null;
+  country_code: 'AU';
+  latitude: number | null;
+  longitude: number | null;
+  provider: AddressProvider | null;
+  place_id: string | null;
+  source: AddressSource;
+  geocoding_status: AddressGeocodingStatus;
+  fingerprint: string;
+}
+
 /** Local-only scheduler summary captured independently from the editable installation tree. */
 export interface AssignedWorkJobSummarySnapshot {
   actor_user_id: string;
@@ -400,6 +420,8 @@ export interface AssignedWorkJobSummarySnapshot {
  * unrelated zone, asset, meter, or form edits as metadata conflicts.
  */
 export interface AssignedWorkServerMetadataSnapshot {
+  client_id: string | null;
+  client_site_id: string | null;
   client_name: string;
   customer_name: string | null;
   site_name: string;
@@ -408,6 +430,13 @@ export interface AssignedWorkServerMetadataSnapshot {
   site_state: string | null;
   site_postcode: string | null;
   site_country_code: string | null;
+  site_latitude: number | null;
+  site_longitude: number | null;
+  site_geocode_provider: AddressProvider | null;
+  site_geocode_place_id: string | null;
+  site_address_source: AddressSource;
+  site_geocoding_status: AddressGeocodingStatus;
+  site_address_fingerprint: string;
   inspector_name: string;
   audit_date: string;
   timezone: string | null;
@@ -461,6 +490,9 @@ export interface Installation {
   assigned_work_server_tree_fingerprint?: string;
   /** Pauses backup until overlapping or unknown remote edits are explicitly resolved. */
   assigned_work_refresh_conflict?: AssignedWorkRefreshConflict;
+  /** Canonical shared-directory identities returned by the unified API. */
+  client_id?: string | null;
+  client_site_id?: string | null;
   client_name: string;
   /** The end customer when different from the contracting client. */
   customer_name?: string | null;
@@ -471,6 +503,14 @@ export interface Installation {
   site_state?: string | null;
   site_postcode?: string | null;
   site_country_code?: string | null;
+  /** Geocoded address metadata; display text remains valid without coordinates. */
+  site_latitude?: number | null;
+  site_longitude?: number | null;
+  site_geocode_provider?: AddressProvider | null;
+  site_geocode_place_id?: string | null;
+  site_address_source?: AddressSource;
+  site_geocoding_status?: AddressGeocodingStatus;
+  site_address_fingerprint?: string;
   inspector_name: string;
   audit_date: string;
   status: InstallationStatus;
