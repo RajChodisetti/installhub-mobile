@@ -60,6 +60,7 @@ export function InventoryScreen() {
   const [currentUserId, setCurrentUserId] = useState('');
   const [scope, setScope] = useState<'mine' | 'company'>('mine');
   const [meters, setMeters] = useState<InventoryMeter[]>([]);
+  const [inventoryTotal, setInventoryTotal] = useState(0);
   const [users, setUsers] = useState<ManagedCloudUser[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -72,6 +73,9 @@ export function InventoryScreen() {
   const [customModel, setCustomModel] = useState('');
   const [notes, setNotes] = useState('');
   const [editing, setEditing] = useState<InventoryMeter | null>(null);
+  const [addMode, setAddMode] = useState<'scan' | 'manual' | null>(null);
+  const [claimDeviceId, setClaimDeviceId] = useState('');
+  const [scanKey, setScanKey] = useState(0);
 
   const load = useCallback(async (nextScope?: 'mine' | 'company') => {
     const selectedScope = nextScope ?? scope;
@@ -87,6 +91,7 @@ export function InventoryScreen() {
       setIsMaintainer(access.isMaintainer);
       setScope(effectiveScope);
       setMeters(inventory.data);
+      setInventoryTotal(inventory.total);
       setUsers(directory.data.filter((user) => user.isActive));
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -153,6 +158,69 @@ export function InventoryScreen() {
     }
   }
 
+  function chooseAddMethod() {
+    Alert.alert('Add meter', 'Choose how to enter the company-stock meter Device ID.', [
+      {
+        text: 'Scan barcode',
+        onPress: () => {
+          setClaimDeviceId('');
+          setAddMode('scan');
+          setScanKey((value) => value + 1);
+        },
+      },
+      {
+        text: 'Enter manually',
+        onPress: () => {
+          setClaimDeviceId('');
+          setAddMode('manual');
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  async function claimMeter(rawDeviceId: string, continueScanning: boolean) {
+    const normalized = rawDeviceId.trim().toUpperCase();
+    if (!normalized) {
+      Alert.alert('Device ID required', 'Scan or enter the meter Device ID / serial.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await apiClient.claimInventoryMeterByDeviceId(normalized);
+      setClaimDeviceId('');
+      await load('mine');
+      if (continueScanning) {
+        setScanKey((value) => value + 1);
+      } else {
+        setAddMode(null);
+      }
+    } catch (claimError) {
+      const message = errorMessage(claimError);
+      setError(message);
+      Alert.alert('Meter could not be added', message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function confirmScannedMeter(value: string) {
+    const normalized = value.trim().toUpperCase();
+    if (!normalized) return;
+    Alert.alert('Confirm meter', `Add ${normalized} to your inventory?`, [
+      {
+        text: 'Scan again',
+        style: 'cancel',
+        onPress: () => setScanKey((key) => key + 1),
+      },
+      {
+        text: 'Add meter',
+        onPress: () => void claimMeter(normalized, true),
+      },
+    ]);
+  }
+
   if (loading) {
     return <View style={{ flex: 1, backgroundColor: colors.background }}><LoadingState /></View>;
   }
@@ -179,13 +247,23 @@ export function InventoryScreen() {
           </View>
         ) : null}
 
+        <Card style={{ marginTop: spacing.lg }}>
+          <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700', textTransform: 'uppercase' }}>
+            {scope === 'mine' ? 'My inventory total' : 'Company inventory shown'}
+          </Text>
+          <Text style={[typography.title, { color: colors.foreground, marginTop: spacing.xs }]}>{inventoryTotal}</Text>
+          {scope === 'mine' ? (
+            <Button title="Add meter" style={{ marginTop: spacing.md }} onPress={chooseAddMethod} />
+          ) : null}
+        </Card>
+
         {error ? (
           <Card style={{ marginTop: spacing.lg, borderColor: colors.destructive }}>
             <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{error}</Text>
           </Card>
         ) : null}
 
-        <Card style={{ marginTop: spacing.lg }}>
+        {scope === 'company' && isMaintainer ? <Card style={{ marginTop: spacing.lg }}>
           <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.md }]}>Register a meter</Text>
           <BarcodeScanField label="Device ID / serial" value={deviceId} onChangeText={setDeviceId} placeholder="Scan or enter Device ID" />
           <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '600', marginBottom: spacing.sm }}>Meter model</Text>
@@ -206,7 +284,7 @@ export function InventoryScreen() {
             disabled={busy}
             onPress={() => void register()}
           />
-        </Card>
+        </Card> : null}
 
         <View style={{ marginTop: spacing.xl }}>
           <SearchBar value={search} onChangeText={setSearch} placeholder="Search Device ID, model, or user" />
@@ -254,6 +332,59 @@ export function InventoryScreen() {
             }}
           />
         ) : null}
+      </Modal>
+
+      <Modal visible={addMode !== null} animationType="slide" onRequestClose={() => setAddMode(null)}>
+        <ScrollView
+          style={{ flex: 1, backgroundColor: colors.background }}
+          contentContainerStyle={{ padding: spacing.lg, paddingTop: 56, paddingBottom: spacing.xxl }}
+        >
+          <Text style={[typography.title, { color: colors.foreground }]}>Add meter</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, marginBottom: spacing.lg, lineHeight: 21 }}>
+            The meter must already be registered in company stock. Adding it transfers custody to you and updates Scheduler immediately.
+          </Text>
+          {addMode === 'scan' ? (
+            <>
+              <BarcodeScanField
+                label="Device ID / serial"
+                value={claimDeviceId}
+                onChangeText={setClaimDeviceId}
+                modes={['barcode']}
+                autoOpenKey={scanKey}
+                onScanResult={confirmScannedMeter}
+                editable={!busy}
+              />
+              <Text style={{ color: colors.mutedForeground, marginBottom: spacing.lg }}>
+                After confirmation, the scanner opens again automatically for the next meter.
+              </Text>
+              <Button
+                title="Enter Device ID manually instead"
+                variant="secondary"
+                disabled={busy}
+                onPress={() => {
+                  setClaimDeviceId('');
+                  setAddMode('manual');
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <TextField
+                label="Device ID / serial"
+                value={claimDeviceId}
+                onChangeText={setClaimDeviceId}
+                autoCapitalize="characters"
+                editable={!busy}
+              />
+              <Button
+                title={busy ? 'Adding…' : 'Add to my inventory'}
+                disabled={busy}
+                onPress={() => void claimMeter(claimDeviceId, false)}
+              />
+            </>
+          )}
+          <Button title="Close" variant="ghost" disabled={busy} style={{ marginTop: spacing.md }} onPress={() => setAddMode(null)} />
+        </ScrollView>
       </Modal>
     </>
   );

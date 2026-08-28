@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useTheme } from '../context/AppProviders';
@@ -30,6 +30,8 @@ export function BarcodeScanField({
   placeholder,
   modes = ['barcode', 'qr'],
   editable = true,
+  autoOpenKey,
+  onScanResult,
 }: {
   label?: string;
   value: string;
@@ -37,11 +39,14 @@ export function BarcodeScanField({
   placeholder?: string;
   modes?: ScanMode[];
   editable?: boolean;
+  autoOpenKey?: number;
+  onScanResult?: (value: string) => void;
 }) {
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+  const lastAutoOpenKey = useRef<number | undefined>(undefined);
   const includesBarcode = modes.includes('barcode');
   const includesQr = modes.includes('qr');
   const scanLabel =
@@ -63,6 +68,12 @@ export function BarcodeScanField({
     }
     setOpen(true);
   };
+
+  useEffect(() => {
+    if (autoOpenKey === undefined || lastAutoOpenKey.current === autoOpenKey || !editable) return;
+    lastAutoOpenKey.current = autoOpenKey;
+    void openScanner();
+  }, [autoOpenKey, editable]);
 
   return (
     <View>
@@ -134,6 +145,7 @@ export function BarcodeScanField({
                       setScanned(true);
                       onChangeText(data);
                       setOpen(false);
+                      onScanResult?.(data);
                     }
               }
             />

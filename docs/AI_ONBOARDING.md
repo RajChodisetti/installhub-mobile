@@ -36,6 +36,14 @@ Installation trees and evidence are backed up only after the user enables backup
 installation. Zone-summary sending is intentionally unavailable until an
 authenticated API destination is defined; client-report UI remains a placeholder.
 
+The Inventory tab is cloud-authoritative and shows the authenticated user's
+current meter list and total. Add meter offers barcode scan and manual Device ID
+entry. Both paths claim an existing company-stock meter in one API transaction;
+they do not create unregistered stock. A confirmed barcode claim reopens the
+scanner for batch intake. Scheduler company and per-user counts reflect the
+same custody rows, and completed installation projection removes installed
+meters from active stock without deleting movement history.
+
 ## 2. Repository tree
 
 ```text

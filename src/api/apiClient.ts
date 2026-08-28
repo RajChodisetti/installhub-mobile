@@ -1199,7 +1199,7 @@ export const apiClient = {
   listInventoryMeters: (scope: 'mine' | 'company' = 'mine', q = '') => {
     const params = new URLSearchParams({ scope });
     if (q.trim()) params.set('q', q.trim());
-    return request<{ data: InventoryMeter[] }>(
+    return request<{ data: InventoryMeter[]; total: number; truncated: boolean }>(
       'GET',
       `/v1/installhub/inventory/meters?${params}`,
     );
@@ -1207,6 +1207,9 @@ export const apiClient = {
 
   scanInventoryMeter: (input: InventoryMeterInput) =>
     request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/scan', input),
+
+  claimInventoryMeterByDeviceId: (deviceId: string) =>
+    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/claim-by-device', { deviceId }),
 
   createInventoryMeter: (
     input: InventoryMeterInput & { custodianUserId?: string | null },
