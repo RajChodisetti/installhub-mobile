@@ -342,6 +342,6 @@ test('Expo config and runtime use the scheduler channel and build identity', () 
       < runtime.indexOf('await registerPushNotificationDevice'),
   );
 
-  assert.equal(app.expo.ios.buildNumber, '2');
+  assert.equal(app.expo.ios.buildNumber, '3');
   assert.equal(app.expo.android.versionCode, 2);
 });

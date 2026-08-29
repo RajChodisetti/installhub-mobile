@@ -44,6 +44,14 @@ scanner for batch intake. Scheduler company and per-user counts reflect the
 same custody rows, and completed installation projection removes installed
 meters from active stock without deleting movement history.
 
+The authenticated technician can also request a transient daily route from the
+Dashboard. The API orders the day's eligible Field App Scheduler stops from either a
+one-time foreground location or an entered Australian starting address. Selecting a
+suggestion reuses its known coordinates; otherwise the API geocodes the typed address
+server-side.
+The app displays stop order, distances, travel times, warnings and unroutable jobs;
+it does not provide maps, navigation, background tracking or persisted route history.
+
 ## 2. Repository tree
 
 ```text
@@ -434,6 +442,7 @@ are administrative/storage inspection contracts) are:
 /v1/installhub/installations/:id/files         stored originals and generated reports
 /v1/installhub/installations/:id/versions/*    immutable sync snapshots
 /v1/installhub/installations/:id/.../pdf/jobs  form and installation-pack jobs
+/v1/installhub/route-suggestions               signed-in technician's transient daily route
 /v1/export/jobs/*                              durable status and authenticated download
 ```
 
@@ -572,6 +581,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `InstallationAccess` | `installationId` | Admin assign/clear one active user's backup access |
 | `CloudStorage` | installation ID/name | Browse authenticated originals/reports and inspect immutable versions |
 | `Diagnostics` | none | Admin API health, sync, entity, queue and storage diagnostics |
+| `DailyRoute` | none | Map-free ordered stops and travel estimates for the signed-in technician |
 
 When adding a route, update both the route type and navigator registration. Use
 `NativeStackScreenProps`/typed navigation rather than untyped route objects. `SettingsScreen`
@@ -692,7 +702,7 @@ tree.
 | `expo-status-bar ~57.0.1` | Theme-aware status bar |
 | `expo-file-system ~57.0.1` | Durable form-media storage and PDF image embedding |
 | `expo-image-manipulator ~57.0.6` | Resize/compress evidence before durable storage |
-| `expo-location ~57.0.6` | Capture installation coordinates with manual fallback |
+| `expo-location ~57.0.7` | One-time foreground capture for form coordinates and daily-route origins |
 | `expo-constants ~57.0.11` | Read the configured EAS project ID used for Expo push-token exchange |
 | `expo-device ~57.0.1` | Prevent remote push registration on simulators and emulators |
 | `expo-notifications ~57.0.11` | Notification permission, Expo push tokens, Android channel, rotation listener and foreground presentation |
@@ -714,7 +724,7 @@ diagnostics tests use Node's test runner via `tsx`.
 `app.json` defines:
 
 - App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`;
-  the notification-enabled native build is iOS build `2` / Android versionCode `2`.
+  the notification-enabled native build is iOS build `3` / Android versionCode `2`.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
 - Camera and photo-library usage descriptions.
@@ -800,6 +810,19 @@ installation evidence explicitly reminds the installer to include the antenna.
 
 `BarcodeScanField` uses a full-screen `CameraView`, supports common QR/1D formats, and closes after
 the first scan. Permission denial falls back to manual typing.
+
+### Daily route location
+
+`DailyRouteScreen` requests one foreground position only when the technician taps Plan route. If
+permission is denied, location is unavailable, or the device is outside Australia, the technician
+can enter an Australian starting address instead. A selected suggestion sends its known coordinates;
+free-form text is sent as `startingAddress` for server-side Australian geocoding. Those mutually
+exclusive origin inputs are sent to `POST /v1/installhub/route-suggestions` for that calculation and
+are not persisted by the app or API as attendance, location history or route history. Route responses
+are also transient. The current backend response contains eligible Field App installation stops. The
+transient wire types remain source-aware for forward compatibility, but only a visible local Field
+App installation can be opened. Opening it still passes through the assigned-work pre-start and
+access guards.
 
 ### PDF
 

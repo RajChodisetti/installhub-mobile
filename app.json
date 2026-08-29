@@ -9,14 +9,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tuvi.installhub",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "config": {
         "usesNonExemptEncryption": false
       },
       "infoPlist": {
         "NSCameraUsageDescription": "Field App Complete needs camera access to scan device barcodes and capture switchboard and device photos.",
         "NSPhotoLibraryUsageDescription": "Field App Complete needs photo library access to attach site photos.",
-        "NSLocationWhenInUseUsageDescription": "Field App Complete uses your location to record installation coordinates on field forms."
+        "NSLocationWhenInUseUsageDescription": "Field App Complete uses your location to record installation coordinates on field forms and calculate a one-time daily route."
       }
     },
     "android": {
@@ -59,7 +59,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow Field App Complete to record installation coordinates on field forms."
+          "locationWhenInUsePermission": "Field App Complete uses your location to record installation coordinates on field forms and calculate a one-time daily route."
         }
       ],
       [

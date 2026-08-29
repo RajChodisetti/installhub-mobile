@@ -44,6 +44,7 @@ export type RootStackParamList = {
   };
   ChangePassword: undefined;
   Diagnostics: undefined;
+  DailyRoute: undefined;
   InstallationAccess: { installationId: string };
   CloudStorage: {
     installationId: string;

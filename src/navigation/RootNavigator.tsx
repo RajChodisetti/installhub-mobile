@@ -38,6 +38,7 @@ import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
 import { InventoryScreen } from '../screens/InventoryScreen';
+import { DailyRouteScreen } from '../screens/DailyRouteScreen';
 import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
 import { getStore, subscribeStore } from '../data/seed';
 import { focusedAuditInstallationId } from '../services/auditWorkTrackingPolicy';
@@ -254,6 +255,7 @@ export function RootNavigator() {
             <Stack.Screen name="UserEditor" component={UserEditorScreen} options={{ title: 'User' }} />
             <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ title: 'Change Password' }} />
             <Stack.Screen name="Diagnostics" component={DiagnosticsScreen} options={{ title: 'Diagnostics' }} />
+            <Stack.Screen name="DailyRoute" component={DailyRouteScreen} options={{ title: 'Daily Route' }} />
             <Stack.Screen name="InstallationAccess" component={InstallationAccessScreen} options={{ title: 'Cloud Access' }} />
             <Stack.Screen name="CloudStorage" component={CloudStorageScreen} options={{ title: 'Cloud Files & History' }} />
           </>

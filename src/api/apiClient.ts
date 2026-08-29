@@ -177,6 +177,77 @@ export interface ClientAddressSuggestionsResponse {
   suggestions: ClientAddressSuggestion[];
 }
 
+export type SchedulerRouteSourceApp =
+  | 'ecoaudit'
+  | 'solarsense'
+  | 'installhub'
+  | 'custom';
+
+export type SchedulerRouteSourceType =
+  | 'audit'
+  | 'assessment'
+  | 'installation'
+  | 'site'
+  | 'custom';
+
+export interface SchedulerRouteCurrentLocation {
+  latitude: number;
+  longitude: number;
+  accuracyMeters?: number;
+  capturedAt?: string;
+}
+
+export interface SchedulerRouteJob {
+  sequence: number;
+  eventId: string;
+  sourceApp: SchedulerRouteSourceApp;
+  sourceType: SchedulerRouteSourceType;
+  sourceId: string;
+  title: string;
+  address: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string | null;
+  travelDistanceMeters: number;
+  travelDurationSeconds: number;
+}
+
+export interface SchedulerUnroutableJob {
+  eventId: string;
+  sourceApp: SchedulerRouteSourceApp;
+  sourceType: SchedulerRouteSourceType;
+  sourceId: string | null;
+  title: string;
+  address: string | null;
+  reason: string;
+}
+
+export interface SchedulerRouteSuggestion {
+  date: string;
+  timezone: string;
+  assigneeFieldUserId: string;
+  currentLocation: SchedulerRouteCurrentLocation;
+  jobs: SchedulerRouteJob[];
+  unroutableJobs: SchedulerUnroutableJob[];
+  totalDistanceMeters: number;
+  totalDurationSeconds: number;
+  optimization: 'road_duration' | 'straight_line_distance';
+  /** Retained only for compatibility with older route responses. */
+  googleMapsUrl?: null;
+  warnings: string[];
+}
+
+export type SchedulerRouteSuggestionInput =
+  | {
+    date: string;
+    currentLocation: SchedulerRouteCurrentLocation;
+    startingAddress?: never;
+  }
+  | {
+    date: string;
+    startingAddress: string;
+    currentLocation?: never;
+  };
+
 export interface ExportJobStatus {
   id: string;
   status: 'queued' | 'running' | 'complete' | 'failed';
@@ -914,6 +985,18 @@ export const apiClient = {
       'GET', `/v1/installhub/sync/pull?${params}`, undefined, false, undefined, undefined, authority,
     );
   },
+
+  getMyRouteSuggestion: (
+    input: SchedulerRouteSuggestionInput,
+    signal?: AbortSignal,
+  ) => request<SchedulerRouteSuggestion>(
+    'POST',
+    '/v1/installhub/route-suggestions',
+    input,
+    false,
+    undefined,
+    signal,
+  ),
 
   listClientDirectory: (
     input: { q?: string; clientId?: string; limit?: number } = {},
