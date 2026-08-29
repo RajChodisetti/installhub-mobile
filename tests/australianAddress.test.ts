@@ -76,6 +76,22 @@ test('legacy and invalid suggested addresses remain valid manual Australian reco
   });
   assert.equal(incompleteSuggestion.source, 'manual');
   assert.equal(incompleteSuggestion.geocoding_status, 'unresolved');
+
+  const outsideAustralia = normalizeAustralianAddress({
+    ...legacy,
+    latitude: 33.4484,
+    longitude: -112.074,
+    provider: 'geoapify',
+    place_id: 'phoenix-device-position',
+    source: 'suggested',
+    geocoding_status: 'resolved',
+  });
+  assert.equal(outsideAustralia.latitude, null);
+  assert.equal(outsideAustralia.longitude, null);
+  assert.equal(outsideAustralia.provider, null);
+  assert.equal(outsideAustralia.place_id, null);
+  assert.equal(outsideAustralia.source, 'manual');
+  assert.equal(outsideAustralia.geocoding_status, 'unresolved');
 });
 
 test('installation mapping carries every additive wire field without requiring coordinates', () => {

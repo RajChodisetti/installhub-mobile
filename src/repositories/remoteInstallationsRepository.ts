@@ -7,6 +7,9 @@ import {
 } from '../api/apiClient';
 import { getStore, initStore, updateStore } from '../data/seed';
 import type {
+  AddressGeocodingStatus,
+  AddressProvider,
+  AddressSource,
   DisplayCode,
   ElectricalAsset,
   ElectricalSource,
@@ -43,6 +46,10 @@ import {
   siteAssetTypeCode,
 } from '../domain/installationV2';
 import { defaultMeterCustomName } from '../domain/namingV2';
+import {
+  installationAddressFields,
+  normalizeAustralianAddress,
+} from '../domain/australianAddress';
 import { validRecordVersionNumber } from '../services/reportVersioning';
 import {
   assertRemoteInstallationIdentity,
@@ -144,32 +151,14 @@ const nullableCoordinate = (
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
-const addressProvider = (
-  record: Record<string, unknown>,
-  camel: string,
-  snake?: string,
-) => {
-  const value = record[camel] ?? (snake ? record[snake] : undefined);
-  return value === 'geoapify' || value === 'photon' ? value : null;
-};
-const addressSource = (
-  record: Record<string, unknown>,
-  camel: string,
-  snake?: string,
-) => {
-  const value = record[camel] ?? (snake ? record[snake] : undefined);
-  return value === 'suggested' || value === 'client_saved' ? value : 'manual';
-};
-const geocodingStatus = (
-  record: Record<string, unknown>,
-  camel: string,
-  snake?: string,
-) => {
-  const value = record[camel] ?? (snake ? record[snake] : undefined);
-  return value === 'resolved' || value === 'manual' || value === 'failed'
+const normalizedAddressProvider = (value: unknown): AddressProvider | null =>
+  value === 'geoapify' || value === 'photon' ? value : null;
+const normalizedAddressSource = (value: unknown): AddressSource =>
+  value === 'suggested' || value === 'client_saved' ? value : 'manual';
+const normalizedGeocodingStatus = (value: unknown): AddressGeocodingStatus =>
+  value === 'resolved' || value === 'manual' || value === 'failed'
     ? value
     : 'unresolved';
-};
 const array = <T>(record: Record<string, unknown>, camel: string, snake?: string): T[] => {
   const value = record[camel] ?? (snake ? record[snake] : undefined);
   return Array.isArray(value) ? value as T[] : [];
@@ -645,6 +634,30 @@ export async function importRemoteInstallationAsCopy(
   const copiedSiteName = isAssignedMaterialization
     ? sourceSiteName
     : copyName(sourceSiteName, copyIndex!);
+  const importedAddress = normalizeAustralianAddress({
+    display_address: text(source, 'siteAddress', 'site_address'),
+    locality: optionalText(source, 'siteLocality', 'site_locality'),
+    state: optionalText(source, 'siteState', 'site_state'),
+    postcode: optionalText(source, 'sitePostcode', 'site_postcode'),
+    country_code: 'AU',
+    latitude: nullableCoordinate(source, 'siteLatitude', 'site_latitude'),
+    longitude: nullableCoordinate(source, 'siteLongitude', 'site_longitude'),
+    provider: normalizedAddressProvider(
+      source.siteGeocodeProvider ?? source.site_geocode_provider,
+    ),
+    place_id: optionalText(source, 'siteGeocodePlaceId', 'site_geocode_place_id'),
+    source: normalizedAddressSource(
+      source.siteAddressSource ?? source.site_address_source,
+    ),
+    geocoding_status: normalizedGeocodingStatus(
+      source.siteGeocodeStatus ?? source.site_geocode_status,
+    ),
+    fingerprint: optionalText(
+      source,
+      'siteAddressFingerprint',
+      'site_address_fingerprint',
+    ) ?? '',
+  });
   const sourceSiteCode = optionalText(source, 'siteCode', 'site_code');
   const serverTreeRevision = Number(tree.treeRevision ?? source.treeRevision ?? source.tree_revision);
   const assignedActorUserId = options.assignedActorUserId;
@@ -680,38 +693,7 @@ export async function importRemoteInstallationAsCopy(
     client_name: text(source, 'clientName', 'client_name'),
     customer_name: optionalText(source, 'customerName', 'customer_name'),
     site_name: copiedSiteName,
-    site_address: text(source, 'siteAddress', 'site_address'),
-    site_locality: optionalText(source, 'siteLocality', 'site_locality'),
-    site_state: optionalText(source, 'siteState', 'site_state'),
-    site_postcode: optionalText(source, 'sitePostcode', 'site_postcode'),
-    site_country_code: optionalText(source, 'siteCountryCode', 'site_country_code') ?? 'AU',
-    site_latitude: nullableCoordinate(source, 'siteLatitude', 'site_latitude') ?? null,
-    site_longitude: nullableCoordinate(source, 'siteLongitude', 'site_longitude') ?? null,
-    site_geocode_provider: addressProvider(
-      source,
-      'siteGeocodeProvider',
-      'site_geocode_provider',
-    ),
-    site_geocode_place_id: optionalText(
-      source,
-      'siteGeocodePlaceId',
-      'site_geocode_place_id',
-    ) ?? null,
-    site_address_source: addressSource(
-      source,
-      'siteAddressSource',
-      'site_address_source',
-    ),
-    site_geocoding_status: geocodingStatus(
-      source,
-      'siteGeocodeStatus',
-      'site_geocode_status',
-    ),
-    site_address_fingerprint: optionalText(
-      source,
-      'siteAddressFingerprint',
-      'site_address_fingerprint',
-    ) ?? '',
+    ...installationAddressFields(importedAddress),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     audit_date: text(source, 'auditDate', 'audit_date'),
     maas: nullableBool(source, 'maas'),

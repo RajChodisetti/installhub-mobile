@@ -394,6 +394,10 @@ must be non-empty and unique, canonical arrays must be present, source/target/st
 enums must be explicit, channel sets must be non-empty and duplicate-free, asset metering state must
 exactly match assignment targets, every reference must resolve, and the returned installation ID must
 exactly match the request. Canonical-v2 values are mapped without TBC/OTHER/CONSUMPTION fallbacks.
+Location metadata is the compatibility exception: import does not reject an otherwise valid tree
+for a stale country, out-of-region coordinates, a partial coordinate pair, or stale geocoder
+metadata. The country is normalized to `AU`, while unusable coordinates/provider metadata become
+a manual unresolved address without changing the saved address text.
 Attachment-copy IDs are deterministic SHA-256 identities, so retries are idempotent.
 
 Imported copies default to local-only. If one is later opted into backup, the API reconciles
