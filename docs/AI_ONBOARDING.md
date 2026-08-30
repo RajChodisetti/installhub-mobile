@@ -736,7 +736,7 @@ diagnostics tests use Node's test runner via `tsx`.
 `app.json` defines:
 
 - App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`;
-  the notification-enabled native build is iOS build `2` / Android versionCode `2`.
+  the current App Store release candidate is iOS build `13` / Android versionCode `2`.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
 - Camera and photo-library usage descriptions.

@@ -148,7 +148,6 @@ test('canonical v2 import accepts unfinished inspector metadata for field comple
     /real date in YYYY-MM-DD format/,
   );
 });
-
 test('Australian client/address metadata is additive, coherent, and fingerprinted', () => {
   const legacy = canonicalTree();
   assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(legacy));
