@@ -31,8 +31,8 @@ import {
   captureAssignedWorkMutationAuthority,
   type AssignedWorkMutationAuthority,
 } from './assignedWorkMutationGuard';
+import { lastSyncedAtSecureStoreKey } from './syncStatusStorage';
 
-const lastSyncedKey = (actorUserId: string) => `ih_last_synced_at:${actorUserId}`;
 const defaultProgress: SyncProgress = {
   phase: 'idle',
   uploaded: 0,
@@ -79,7 +79,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
     setLastSyncedAt(null);
     setProgress(defaultProgress);
     if (!actorUserId) return () => { current = false; };
-    SecureStore.getItemAsync(lastSyncedKey(actorUserId))
+    SecureStore.getItemAsync(lastSyncedAtSecureStoreKey(actorUserId))
       .then((value) => {
         if (current && user?.id === actorUserId) setLastSyncedAt(value);
       })
@@ -162,7 +162,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
         }
         if (result.phase === 'done') {
           const now = new Date().toISOString();
-          await SecureStore.setItemAsync(lastSyncedKey(actorUserId), now);
+          await SecureStore.setItemAsync(lastSyncedAtSecureStoreKey(actorUserId), now);
           assertCurrentAssignedWorkAuthority(authority, actorUserId);
           setLastSyncedAt(now);
         }

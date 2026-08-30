@@ -3,7 +3,7 @@ import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { InstallationForm } from '../components/forms';
 import { LoadingState } from '../components/ui';
-import { installationsRepo } from '../repositories';
+import { canonicalInstallationRepo, installationsRepo } from '../repositories';
 import type { Installation } from '../types';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
@@ -21,12 +21,19 @@ export function InstallationFormScreen({ navigation, route }: Props) {
   const { user } = useAuth();
   const id = route.params?.installationId;
   const [initial, setInitial] = useState<Installation | null>(null);
+  const [initialElectricityNmi, setInitialElectricityNmi] = useState('');
   const [loading, setLoading] = useState(!!id);
 
   useEffect(() => {
     if (!id) return;
-    void installationsRepo.getById(id).then((item) => {
+    void Promise.all([
+      installationsRepo.getById(id),
+      canonicalInstallationRepo.gridSupplies(id),
+    ]).then(([item, gridSupplies]) => {
+      const defaultGrid = gridSupplies.find((grid) => grid.isDefault)
+        ?? [...gridSupplies].sort((a, b) => a.id.localeCompare(b.id))[0];
       setInitial(item);
+      setInitialElectricityNmi(defaultGrid?.nmi ?? '');
       setLoading(false);
     });
   }, [id]);
@@ -45,13 +52,14 @@ export function InstallationFormScreen({ navigation, route }: Props) {
       </Text>
       <InstallationForm
         initial={initial ?? undefined}
+        initialElectricityNmi={initialElectricityNmi}
         submitLabel={id ? 'Update' : 'Create Installation'}
-        onSubmit={async (values) => {
+        onSubmit={async (values, planning) => {
           if (id) {
-            await installationsRepo.update(id, values);
+            await installationsRepo.update(id, values, undefined, planning);
             navigation.goBack();
           } else {
-            const created = await installationsRepo.create(values);
+            const created = await installationsRepo.create(values, planning);
             navigation.replace('InstallationDetail', { installationId: created.id });
           }
         }}

@@ -46,6 +46,7 @@ screens / hooks → repositories → local JSON store (AsyncStorage)
 ## Features
 
 - Dashboard: list / search / create installations
+- Map-free daily route planning for the signed-in technician, with ordered stops and travel estimates
 - Installation detail: zones, status, report entry points
 - Zone workspace: boards, site assets, send summary stub
 - Board detail + Wattwatcher A3RM/A6M forms

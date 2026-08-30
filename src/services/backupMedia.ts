@@ -606,9 +606,7 @@ export function buildBackupPayload(
       ...(tree.installation.site_postcode !== undefined
         ? { sitePostcode: tree.installation.site_postcode }
         : {}),
-      ...(tree.installation.site_country_code !== undefined
-        ? { siteCountryCode: tree.installation.site_country_code }
-        : {}),
+      siteCountryCode: 'AU',
       ...(tree.installation.site_latitude !== undefined
         ? { siteLatitude: tree.installation.site_latitude }
         : {}),

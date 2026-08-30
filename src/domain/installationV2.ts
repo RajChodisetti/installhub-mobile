@@ -557,6 +557,28 @@ function ensureGridSupply(store: AppDataStore, installation: Installation): Grid
   return grid;
 }
 
+export const GRID_SUPPLY_NMI_MAX_LENGTH = 100;
+
+export function normalizeGridSupplyNmi(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim() || '';
+  if (normalized.length > GRID_SUPPLY_NMI_MAX_LENGTH) {
+    throw new Error(`Electricity NMI must contain at most ${GRID_SUPPLY_NMI_MAX_LENGTH} characters.`);
+  }
+  return normalized || undefined;
+}
+
+export function setDefaultGridSupplyNmi(
+  store: AppDataStore,
+  installationId: string,
+  value: string | null | undefined,
+): GridSupply {
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('Installation not found');
+  const grid = ensureGridSupply(store, installation);
+  grid.nmi = normalizeGridSupplyNmi(value);
+  return grid;
+}
+
 function sourceFromLegacyBoard(board: ElectricalAsset, gridSupply: GridSupply): ElectricalSource {
   if (board.electrical_parent_tbc) return { kind: 'TBC' };
   if (board.electrical_parent_id) {

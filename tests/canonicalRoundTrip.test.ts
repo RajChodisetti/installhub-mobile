@@ -107,6 +107,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     watermark: timestamp,
   };
   const wire = buildBackupPayload(backupTree, [], 'complete');
+  assert.equal(wire.installation.siteCountryCode, 'AU');
   assert.equal(wire.installation.siteCode, 'Legacy Site Code / 2024');
   assert.equal(wire.installation.clientId, 'client-1');
   assert.equal(wire.installation.clientSiteId, 'site-1');
@@ -153,6 +154,12 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     verification: { voltageChecked: true, communicationsOk: true },
     commissioning: { deviceOnline: true, channelsReporting: true },
   });
+
+  const repairedCountryWire = buildBackupPayload({
+    ...backupTree,
+    installation: { ...backupTree.installation, site_country_code: null },
+  }, [], 'complete');
+  assert.equal(repairedCountryWire.installation.siteCountryCode, 'AU');
 
   store.meterDevices[0]!.commissioningData!.prestart!.additionalHazards =
     'no' as unknown as boolean;

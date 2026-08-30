@@ -44,6 +44,14 @@ scanner for batch intake. Scheduler company and per-user counts reflect the
 same custody rows, and completed installation projection removes installed
 meters from active stock without deleting movement history.
 
+The authenticated technician can also request a transient daily route from the
+Dashboard. The API orders the day's eligible Field App Scheduler stops from either a
+one-time foreground location or an entered Australian starting address. Selecting a
+suggestion reuses its known coordinates; otherwise the API geocodes the typed address
+server-side.
+The app displays stop order, distances, travel times, warnings and unroutable jobs;
+it does not provide maps, navigation, background tracking or persisted route history.
+
 ## 2. Repository tree
 
 ```text
@@ -125,9 +133,12 @@ to `POST /v1/auth/login` with `app=installhub`; it writes the returned user
 profile into the local store only after the API issues a valid Field App
 Complete session. The API user ID replaces the fixture/profile ID. Passwords
 and password hashes are never stored locally. Tokens and the cached server
-identity remain in SecureStore. The optional account-source selector converts a
-plain username to the explicit Eco Audit or Solar Sense local identity when the
-same username exists in both source applications.
+identity remain in SecureStore. Login source resolution is automatic: the UI sends
+the entered identifier without asking the technician to choose Eco Audit, Solar Sense,
+or Automatic. The retained auth compatibility helper still understands explicit legacy
+`*.users.local` aliases, while the unified API resolves plain usernames canonically.
+Actor-scoped last-sync timestamps use a SHA-256-derived SecureStore key so canonical
+user IDs containing `:` or `@` never violate Expo's native key-name restrictions.
 
 Do not access these contexts outside their provider. Use `useAuth()` and `useTheme()`, which fail
 fast when misused.
@@ -386,6 +397,12 @@ must be non-empty and unique, canonical arrays must be present, source/target/st
 enums must be explicit, channel sets must be non-empty and duplicate-free, asset metering state must
 exactly match assignment targets, every reference must resolve, and the returned installation ID must
 exactly match the request. Canonical-v2 values are mapped without TBC/OTHER/CONSUMPTION fallbacks.
+Location metadata is the deliberate compatibility exception: this Australia-only client never rejects an
+otherwise valid tree for a stale country, out-of-region coordinates, partial coordinate pairs, or stale
+geocoder metadata. Import normalizes the country to `AU`; unusable coordinate/provider metadata becomes
+a manual unresolved address without changing the saved address text. Inspector name and audit date are also allowed to be unfinished on a pulled
+Scheduler job; the technician completes those editable fields through the normal installation
+readiness flow rather than losing the whole assignment at import time.
 Attachment-copy IDs are deterministic SHA-256 identities, so retries are idempotent.
 
 Imported copies default to local-only. If one is later opted into backup, the API reconciles
@@ -434,6 +451,7 @@ are administrative/storage inspection contracts) are:
 /v1/installhub/installations/:id/files         stored originals and generated reports
 /v1/installhub/installations/:id/versions/*    immutable sync snapshots
 /v1/installhub/installations/:id/.../pdf/jobs  form and installation-pack jobs
+/v1/installhub/route-suggestions               signed-in technician's transient daily route
 /v1/export/jobs/*                              durable status and authenticated download
 ```
 
@@ -543,13 +561,16 @@ Delete behavior is implemented manually:
 
 ## 5. Navigation and screen responsibility
 
-The root stack is auth-gated. Signed-in users see `MainTabs`, which contains Home/Dashboard and
-Settings. Feature screens sit above the tabs in the root native stack.
+The root stack is auth-gated. Signed-in users see `MainTabs`, which contains Home/Dashboard,
+Inventory, and Settings. At widths of 768 points or more, including full-screen iPad layouts,
+the tabs render as a Sustainability Wise navy left sidebar with an accessible expand/collapse
+button. Compact widths retain the same icon routes in a bottom tab bar. Feature screens sit above
+the tabs in the root native stack.
 
 | Route | Params | Responsibility |
 | --- | --- | --- |
 | `Login` | none | Field App Complete API credentials, session restore and auth state |
-| `MainTabs` | none | Dashboard/Settings bottom tabs |
+| `MainTabs` | none | Adaptive Home/Inventory/Settings sidebar or compact bottom tabs |
 | `InstallationForm` | optional `installationId` | Create or edit an installation |
 | `InstallationDetail` | `installationId` | Site summary, status, zones, report entry points |
 | `DeviceSearch` | `installationId` | Search every device in one installation across all of its zones by ID/serial, optional site/asset tag, name, zone, board, or type; open or start a prefilled replacement form |
@@ -572,6 +593,7 @@ Settings. Feature screens sit above the tabs in the root native stack.
 | `InstallationAccess` | `installationId` | Admin assign/clear one active user's backup access |
 | `CloudStorage` | installation ID/name | Browse authenticated originals/reports and inspect immutable versions |
 | `Diagnostics` | none | Admin API health, sync, entity, queue and storage diagnostics |
+| `DailyRoute` | none | Map-free ordered stops and travel estimates for the signed-in technician |
 
 When adding a route, update both the route type and navigator registration. Use
 `NativeStackScreenProps`/typed navigation rather than untyped route objects. `SettingsScreen`
@@ -681,7 +703,7 @@ tree.
 | `react-native 0.86.0` | Native UI/runtime |
 | `@react-navigation/native ^7.3.12` | Navigation container and themes |
 | `@react-navigation/native-stack ^7.18.4` | Root native stack |
-| `@react-navigation/bottom-tabs ^7.18.12` | Dashboard/Settings tabs |
+| `@react-navigation/bottom-tabs ^7.18.12` | Adaptive left-sidebar and compact bottom-tab navigation |
 | `react-native-safe-area-context ~5.7.0` | Root safe-area provider |
 | `react-native-screens ~4.26.0` | Native navigation screen integration |
 | `@react-native-async-storage/async-storage 2.2.0` | Domain store, theme and active report-job persistence |
@@ -692,7 +714,7 @@ tree.
 | `expo-status-bar ~57.0.1` | Theme-aware status bar |
 | `expo-file-system ~57.0.1` | Durable form-media storage and PDF image embedding |
 | `expo-image-manipulator ~57.0.6` | Resize/compress evidence before durable storage |
-| `expo-location ~57.0.6` | Capture installation coordinates with manual fallback |
+| `expo-location ~57.0.7` | One-time foreground capture for form coordinates and daily-route origins |
 | `expo-constants ~57.0.11` | Read the configured EAS project ID used for Expo push-token exchange |
 | `expo-device ~57.0.1` | Prevent remote push registration on simulators and emulators |
 | `expo-notifications ~57.0.11` | Notification permission, Expo push tokens, Android channel, rotation listener and foreground presentation |
@@ -800,6 +822,19 @@ installation evidence explicitly reminds the installer to include the antenna.
 
 `BarcodeScanField` uses a full-screen `CameraView`, supports common QR/1D formats, and closes after
 the first scan. Permission denial falls back to manual typing.
+
+### Daily route location
+
+`DailyRouteScreen` requests one foreground position only when the technician taps Plan route. If
+permission is denied, location is unavailable, or the device is outside Australia, the technician
+can enter an Australian starting address instead. A selected suggestion sends its known coordinates;
+free-form text is sent as `startingAddress` for server-side Australian geocoding. Those mutually
+exclusive origin inputs are sent to `POST /v1/installhub/route-suggestions` for that calculation and
+are not persisted by the app or API as attendance, location history or route history. Route responses
+are also transient. The current backend response contains eligible Field App installation stops. The
+transient wire types remain source-aware for forward compatibility, but only a visible local Field
+App installation can be opened. Opening it still passes through the assigned-work pre-start and
+access guards.
 
 ### PDF
 

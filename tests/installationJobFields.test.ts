@@ -2,12 +2,17 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-test('Field App authors the new scope, metering type, and custom job number only', () => {
+test('Field App authors Electricity NMI, MaaS, scope, and metering type', () => {
   const source = readFileSync(
     new URL('../src/components/forms/index.tsx', import.meta.url),
     'utf8',
   );
 
+  assert.match(source, /label="Electricity NMI"/);
+  assert.match(source, /initialElectricityNmi/);
+  assert.match(source, /electricityNmi: nullableText\(electricity_nmi\)/);
+  assert.match(source, /label="MaaS"/);
+  assert.match(source, /Not recorded/);
   assert.match(source, /label="Scope categorization"/);
   assert.match(source, /M1 - New install/);
   assert.match(source, /M2 - Faults \/ COMMS fault/);

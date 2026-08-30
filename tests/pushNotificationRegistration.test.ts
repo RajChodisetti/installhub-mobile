@@ -319,7 +319,7 @@ test('Expo config and runtime use the scheduler channel and build identity', () 
   const app = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8')) as {
     expo: {
       plugins: Array<string | [string, Record<string, unknown>]>;
-      ios: { buildNumber: string };
+      ios: { buildNumber: string; infoPlist: Record<string, unknown> };
       android: { versionCode: number };
     };
   };
@@ -328,6 +328,16 @@ test('Expo config and runtime use the scheduler channel and build identity', () 
   );
   assert.ok(Array.isArray(plugin));
   assert.equal(plugin[1].defaultChannel, 'scheduler');
+
+  const locationPlugin = app.expo.plugins.find(
+    (entry) => Array.isArray(entry) && entry[0] === 'expo-location',
+  );
+  assert.ok(Array.isArray(locationPlugin));
+  assert.equal(typeof locationPlugin[1].motionUsagePermission, 'string');
+  assert.match(
+    String(locationPlugin[1].motionUsagePermission),
+    /Field App Complete/,
+  );
 
   const runtime = readFileSync(
     new URL('../src/services/pushNotifications.ts', import.meta.url),
@@ -342,6 +352,6 @@ test('Expo config and runtime use the scheduler channel and build identity', () 
       < runtime.indexOf('await registerPushNotificationDevice'),
   );
 
-  assert.equal(app.expo.ios.buildNumber, '2');
+  assert.equal(app.expo.ios.buildNumber, '3');
   assert.equal(app.expo.android.versionCode, 2);
 });

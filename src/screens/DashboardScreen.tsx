@@ -112,6 +112,12 @@ export function DashboardScreen({ navigation }: Props) {
         style={{ marginBottom: spacing.md }}
       />
       <Button
+        title="Plan My Route"
+        variant="secondary"
+        onPress={() => navigation.navigate('DailyRoute')}
+        style={{ marginBottom: spacing.md }}
+      />
+      <Button
         title="Browse Cloud Backups"
         variant="ghost"
         onPress={() => navigation.navigate('RemoteInstallations')}

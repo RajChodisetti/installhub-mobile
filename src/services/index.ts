@@ -10,3 +10,4 @@ export * from './installationPackTarget';
 export * from './remoteInstallationRevision';
 export * from './importedSourceVerification';
 export * from './localMedia';
+export * from './routeLocation';

@@ -8,9 +8,11 @@ import {
 } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Alert, Text, View } from 'react-native';
+import { Alert, Text, useWindowDimensions, View } from 'react-native';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { Button, Card, LoadingState } from '../components/ui';
+import { CollapsibleTabBar } from '../components/navigation/CollapsibleTabBar';
+import { usesSidebarNavigation } from '../domain/mainNavigation';
 import type { MainTabParamList, RootStackParamList } from './types';
 import { LoginScreen } from '../screens/LoginScreen';
 import { DashboardScreen } from '../screens/DashboardScreen';
@@ -38,6 +40,7 @@ import { InstallationAccessScreen } from '../screens/InstallationAccessScreen';
 import { CloudStorageScreen } from '../screens/CloudStorageScreen';
 import { DeviceSearchScreen } from '../screens/DeviceSearchScreen';
 import { InventoryScreen } from '../screens/InventoryScreen';
+import { DailyRouteScreen } from '../screens/DailyRouteScreen';
 import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
 import { getStore, subscribeStore } from '../data/seed';
 import { focusedAuditInstallationId } from '../services/auditWorkTrackingPolicy';
@@ -49,14 +52,18 @@ const Tabs = createBottomTabNavigator<MainTabParamList>();
 
 function MainTabs() {
   const { colors } = useTheme();
+  const { width } = useWindowDimensions();
+  const isSidebar = usesSidebarNavigation(width);
   return (
     <Tabs.Navigator
+      tabBar={(props) => <CollapsibleTabBar {...props} />}
       screenOptions={{
         headerStyle: { backgroundColor: colors.card },
         headerTintColor: colors.foreground,
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.mutedForeground,
+        tabBarPosition: isSidebar ? 'left' : 'bottom',
+        tabBarVariant: isSidebar ? 'material' : 'uikit',
       }}
     >
       <Tabs.Screen
@@ -64,7 +71,7 @@ function MainTabs() {
         component={DashboardScreen}
         options={{
           title: 'Home',
-          tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>⌂</Text>,
+          tabBarAccessibilityLabel: 'Home tab',
         }}
       />
       <Tabs.Screen
@@ -72,14 +79,15 @@ function MainTabs() {
         component={InventoryScreen}
         options={{
           title: 'Inventory',
-          tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>▦</Text>,
+          tabBarAccessibilityLabel: 'Inventory tab',
         }}
       />
       <Tabs.Screen
         name="Settings"
         component={SettingsScreen}
         options={{
-          tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>⚙</Text>,
+          title: 'Settings',
+          tabBarAccessibilityLabel: 'Settings tab',
         }}
       />
     </Tabs.Navigator>
@@ -254,6 +262,7 @@ export function RootNavigator() {
             <Stack.Screen name="UserEditor" component={UserEditorScreen} options={{ title: 'User' }} />
             <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ title: 'Change Password' }} />
             <Stack.Screen name="Diagnostics" component={DiagnosticsScreen} options={{ title: 'Diagnostics' }} />
+            <Stack.Screen name="DailyRoute" component={DailyRouteScreen} options={{ title: 'Daily Route' }} />
             <Stack.Screen name="InstallationAccess" component={InstallationAccessScreen} options={{ title: 'Cloud Access' }} />
             <Stack.Screen name="CloudStorage" component={CloudStorageScreen} options={{ title: 'Cloud Files & History' }} />
           </>

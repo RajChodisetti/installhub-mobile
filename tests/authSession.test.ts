@@ -83,6 +83,14 @@ test('login identity preserves automatic usernames and applies an explicit sourc
 test('login payload normalizes only identity and preserves password bytes', () => {
   const password = ' Case-Sensitive Password ';
   assert.deepEqual(
+    buildCloudLoginPayload({ identifier: ' Raj ', password }),
+    {
+      app: 'installhub',
+      email: 'raj',
+      password,
+    },
+  );
+  assert.deepEqual(
     buildCloudLoginPayload({
       identifier: ' Raj ',
       password,

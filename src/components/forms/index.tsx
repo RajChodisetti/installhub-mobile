@@ -267,10 +267,12 @@ function PhotoAttachmentField({
 
 export function InstallationForm({
   initial,
+  initialElectricityNmi = '',
   onSubmit,
   submitLabel = 'Save',
 }: {
   initial?: Partial<Installation>;
+  initialElectricityNmi?: string;
   onSubmit: (values: Pick<Installation,
     | 'client_id'
     | 'client_site_id'
@@ -307,7 +309,7 @@ export function InstallationForm({
     | 'solar_capacity_kw'
     | 'additional_monitoring_required'
     | 'additional_monitoring_hardware'
-  >) => Promise<void> | void;
+  >, planning: { electricityNmi: string | null }) => Promise<void> | void;
   submitLabel?: string;
 }) {
   const { colors } = useTheme();
@@ -328,6 +330,7 @@ export function InstallationForm({
   const [timezone, setTimezone] = useState(
     initial?.timezone ?? 'Australia/Sydney',
   );
+  const [electricity_nmi, setElectricityNmi] = useState(initialElectricityNmi);
   const [maas, setMaas] = useState<'unknown' | 'yes' | 'no'>(
     initial?.maas === true ? 'yes' : initial?.maas === false ? 'no' : 'unknown',
   );
@@ -400,12 +403,20 @@ export function InstallationForm({
           }
         }}
       >
+        <TextField
+          label="Electricity NMI"
+          value={electricity_nmi}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={100}
+          onChangeText={setElectricityNmi}
+        />
         <SelectChips
           label="MaaS"
           value={maas}
           options={['unknown', 'yes', 'no']}
           onChange={setMaas}
-          getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
+          getLabel={(value) => value === 'unknown' ? 'Not recorded' : value === 'yes' ? 'Yes' : 'No'}
         />
         <SelectChips
           label="Scope categorization"
@@ -637,7 +648,10 @@ export function InstallationForm({
               return;
             }
             setValidationErrors([]);
-            await onSubmit(preserveUnmaterializedInstallationFields(initial, values));
+            await onSubmit(
+              preserveUnmaterializedInstallationFields(initial, values),
+              { electricityNmi: nullableText(electricity_nmi) },
+            );
           } finally {
             setBusy(false);
           }

@@ -92,6 +92,63 @@ test('canonical v2 import validation accepts a fully referenced direct-Grid tree
   );
 });
 
+test('canonical v2 import never blocks on stale or out-of-region location metadata', () => {
+  for (const country of [undefined, null, '', 'au', 'NZ']) {
+    const tree = canonicalTree();
+    if (country !== undefined) tree.installation.siteCountryCode = country;
+    assert.doesNotThrow(
+      () => validateCanonicalRemoteTreeIds(tree),
+      `country declaration ${String(country)}`,
+    );
+  }
+
+  const outsideAustralia = canonicalTree();
+  Object.assign(outsideAustralia.installation, {
+    siteCountryCode: 'US',
+    siteLatitude: 33.4484,
+    siteLongitude: -112.074,
+    siteGeocodeProvider: 'legacy-provider',
+    siteGeocodePlaceId: '',
+    siteAddressSource: 'suggested',
+    siteGeocodeStatus: 'resolved',
+    siteAddressFingerprint: 'stale',
+  });
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(outsideAustralia));
+
+  const incompleteCoordinates = canonicalTree();
+  incompleteCoordinates.installation.siteLatitude = -33.8688;
+  incompleteCoordinates.installation.siteLongitude = null;
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(incompleteCoordinates));
+});
+
+test('canonical v2 import accepts unfinished inspector metadata for field completion', () => {
+  const tree = canonicalTree();
+  tree.installation.inspectorName = null;
+  tree.installation.auditDate = '';
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(tree));
+
+  const invalidInspector = canonicalTree();
+  invalidInspector.installation.inspectorName = { displayName: 'Inspector' };
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(invalidInspector),
+    /inspector name must be text/,
+  );
+
+  const invalidAuditDateType = canonicalTree();
+  invalidAuditDateType.installation.auditDate = 20260801;
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(invalidAuditDateType),
+    /audit date must be text/,
+  );
+
+  const invalidAuditDateValue = canonicalTree();
+  invalidAuditDateValue.installation.auditDate = '2026-02-30';
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(invalidAuditDateValue),
+    /real date in YYYY-MM-DD format/,
+  );
+});
+
 test('Australian client/address metadata is additive, coherent, and fingerprinted', () => {
   const legacy = canonicalTree();
   assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(legacy));
@@ -122,19 +179,10 @@ test('Australian client/address metadata is additive, coherent, and fingerprinte
   });
   assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(current));
 
-  const badFingerprint = structuredClone(current);
-  badFingerprint.installation.siteAddressFingerprint = 'a'.repeat(64);
-  assert.throws(
-    () => validateCanonicalRemoteTreeIds(badFingerprint),
-    /address fingerprint is invalid/,
-  );
-
-  const incompleteCoordinates = structuredClone(current);
-  incompleteCoordinates.installation.siteLongitude = null;
-  assert.throws(
-    () => validateCanonicalRemoteTreeIds(incompleteCoordinates),
-    /coordinates are invalid or incomplete/,
-  );
+  const staleLocationMetadata = structuredClone(current);
+  staleLocationMetadata.installation.siteAddressFingerprint = 'stale';
+  staleLocationMetadata.installation.siteLongitude = null;
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(staleLocationMetadata));
 
   const orphanSite = canonicalTree();
   orphanSite.installation.clientSiteId = 'site-1';

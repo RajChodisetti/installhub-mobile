@@ -38,11 +38,13 @@ import {
   installationReadiness,
   isValidInstallationSiteCode,
   meteringInventorySummary,
+  normalizeGridSupplyNmi,
   normalizeCanonicalStore,
   primaryGridSupplyId,
   projectCanonicalCompatibility,
   replaceBoardMetersFromLegacy,
   replaceMeterMeasurementAssignments,
+  setDefaultGridSupplyNmi,
   setAssetMeteringState,
   SITE_ASSET_TYPE_LABELS,
   siteAssetTypeCode,
@@ -173,11 +175,14 @@ export interface InstallationsRepository {
     | 'thumbnail_status'
     | 'thumbnail_total'
     | 'thumbnail_ready'
-  > & { status?: Installation['status']; cloud_backup_enabled?: boolean }): Promise<Installation>;
+  > & { status?: Installation['status']; cloud_backup_enabled?: boolean }, options?: {
+    electricityNmi?: string | null;
+  }): Promise<Installation>;
   update(
     id: string,
     patch: Partial<Installation>,
     authority?: AssignedWorkMutationAuthority,
+    options?: { electricityNmi?: string | null },
   ): Promise<Installation>;
   acknowledgeAssignedWorkPrestart(
     id: string,
@@ -388,7 +393,7 @@ export const installationsRepo: InstallationsRepository = {
       ? installation
       : null;
   },
-  async create(input) {
+  async create(input, options) {
     const authority = captureAssignedWorkMutationAuthority();
     const localOwnerUserId = actorForCurrentAssignedWorkAuthority(authority);
     if (!localOwnerUserId) {
@@ -424,10 +429,13 @@ export const installationsRepo: InstallationsRepository = {
     };
     await updateStore((s) => {
       s.installations.unshift(record);
+      if (options && Object.prototype.hasOwnProperty.call(options, 'electricityNmi')) {
+        setDefaultGridSupplyNmi(s, id, options.electricityNmi);
+      }
     });
     return record;
   },
-  async update(id, patch, authority) {
+  async update(id, patch, authority, options) {
     const assertAssignedWorkAccess = authority
       ? (installation: Installation) => {
           assertAssignedWorkMutationAllowed(installation, authority);
@@ -461,7 +469,13 @@ export const installationsRepo: InstallationsRepository = {
         'solar_capacity_kw', 'additional_monitoring_required',
         'additional_monitoring_hardware',
       ];
-      if (s.installations[idx].status === 'Completed' && domainKeys.some((key) => key in patch)) {
+      const updatesElectricityNmi = Boolean(
+        options && Object.prototype.hasOwnProperty.call(options, 'electricityNmi'),
+      );
+      if (
+        s.installations[idx].status === 'Completed'
+        && (domainKeys.some((key) => key in patch) || updatesElectricityNmi)
+      ) {
         throw new Error('Reopen this completed installation before editing it.');
       }
       const normalizedPatch: Partial<Installation> = { ...patch };
@@ -502,7 +516,12 @@ export const installationsRepo: InstallationsRepository = {
       }
       updated = { ...s.installations[idx], ...normalizedPatch, id, updated_at: nowIso() };
       s.installations[idx] = updated;
-      if (domainKeys.some((key) => key in patch)) bumpTreeRevision(s, id);
+      if (updatesElectricityNmi) {
+        setDefaultGridSupplyNmi(s, id, options?.electricityNmi);
+      }
+      if (domainKeys.some((key) => key in patch) || updatesElectricityNmi) {
+        bumpTreeRevision(s, id);
+      }
     });
     return updated!;
   },
@@ -1384,7 +1403,7 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
         ...input,
         id: createId('grid'),
         name: input.name.trim(),
-        nmi: input.nmi?.trim() || undefined,
+        nmi: normalizeGridSupplyNmi(input.nmi),
         externalKey: input.externalKey?.trim() || undefined,
         isDefault: makeDefault,
       };
@@ -1419,7 +1438,7 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
         id,
         installationId: current.installationId,
         name: patch.name?.trim() ?? current.name,
-        nmi: patch.nmi !== undefined ? patch.nmi.trim() || undefined : current.nmi,
+        nmi: patch.nmi !== undefined ? normalizeGridSupplyNmi(patch.nmi) : current.nmi,
         externalKey: patch.externalKey !== undefined ? patch.externalKey.trim() || undefined : current.externalKey,
       };
       store.gridSupplies[index] = updated;

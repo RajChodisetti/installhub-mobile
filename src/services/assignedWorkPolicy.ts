@@ -188,7 +188,7 @@ export function assignedWorkServerMetadataFromInstallation(
     site_locality: installation.site_locality ?? null,
     site_state: installation.site_state ?? null,
     site_postcode: installation.site_postcode ?? null,
-    site_country_code: installation.site_country_code ?? null,
+    site_country_code: 'AU',
     site_latitude: installation.site_latitude ?? null,
     site_longitude: installation.site_longitude ?? null,
     site_geocode_provider: installation.site_geocode_provider ?? null,
@@ -257,12 +257,7 @@ function assignedWorkServerMetadataFromRemote(
     site_locality: nullableText(remote, 'siteLocality', 'site_locality', fallback.site_locality),
     site_state: nullableText(remote, 'siteState', 'site_state', fallback.site_state),
     site_postcode: nullableText(remote, 'sitePostcode', 'site_postcode', fallback.site_postcode),
-    site_country_code: nullableText(
-      remote,
-      'siteCountryCode',
-      'site_country_code',
-      fallback.site_country_code,
-    ),
+    site_country_code: 'AU',
     site_latitude: nullableCoordinate(
       remote,
       'siteLatitude',

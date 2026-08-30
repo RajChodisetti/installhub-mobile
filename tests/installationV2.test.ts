@@ -16,10 +16,12 @@ import {
   meteringInventorySummary,
   normalizeCanonicalStore,
   normalizedSiteCode,
+  normalizeGridSupplyNmi,
   primaryGridSupplyId,
   replaceBoardMetersFromLegacy,
   replaceMeterMeasurementAssignments,
   setAssetMeteringState,
+  setDefaultGridSupplyNmi,
   siteAssetTypeCode,
   siteAssetTypeFromCode,
   SITE_ASSET_TYPE_LABELS,
@@ -69,6 +71,21 @@ test('site-code rule matches the canonical eight-initial cross-client fixtures',
   for (const invalid of ['bad', 'BAD SITE', 'BAD!', '-BAD', 'BAD-', 'BAD--SITE', 'ABCDEFGHIJKLMNOPQ']) {
     assert.equal(isValidInstallationSiteCode(invalid), false);
   }
+});
+
+test('Electricity NMI is trimmed onto the canonical default Grid supply and can be cleared', () => {
+  const store = storeFixture();
+  const grid = setDefaultGridSupplyNmi(store, 'installation', ' 41020000000 ');
+
+  assert.equal(grid.id, primaryGridSupplyId('installation'));
+  assert.equal(grid.isDefault, true);
+  assert.equal(grid.nmi, '41020000000');
+  assert.equal(setDefaultGridSupplyNmi(store, 'installation', null).nmi, undefined);
+  assert.equal(normalizeGridSupplyNmi(' NMI-ABC '), 'NMI-ABC');
+  assert.throws(
+    () => normalizeGridSupplyNmi('N'.repeat(101)),
+    /Electricity NMI must contain at most 100 characters/,
+  );
 });
 
 test('Refrigeration and Compressed Air are first-class choices without rewriting legacy Other data', () => {
