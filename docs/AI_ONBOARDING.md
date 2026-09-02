@@ -748,7 +748,7 @@ diagnostics tests use Node's test runner via `tsx`.
 `app.json` defines:
 
 - App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`;
-  the local manifest declares iOS build `14` / Android versionCode `2`. Store builds use the
+  the local manifest declares iOS build `15` / Android versionCode `2`. Store builds use the
   remote EAS version source, and the TestFlight/production profiles auto-increment that authority.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
