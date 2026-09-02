@@ -3,7 +3,7 @@ import { Alert, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-n
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useInstallations } from '../hooks';
 import { InstallationCard } from '../components/domain';
-import { Button, EmptyState, LoadingState, SearchBar } from '../components/ui';
+import { Button, Card, EmptyState, LoadingState, SearchBar, SectionHeader } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { searchMatch } from '../utils';
 import { spacing, typography } from '../theme';
@@ -16,6 +16,11 @@ import {
 } from '../services/auditWorkTrackingBridge';
 import { captureAuditWorkResumeAuthority } from '../services/assignedWorkMutationGuard';
 import { useSyncStatus } from '../services/SyncStatusContext';
+import {
+  dashboardJobGroupLabel,
+  dashboardJobTiming,
+  sortDashboardJobs,
+} from '../domain/jobDashboard';
 
 type Props = { navigation: NativeStackNavigationProp<RootStackParamList> };
 
@@ -27,13 +32,21 @@ export function DashboardScreen({ navigation }: Props) {
   const [query, setQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const filtered = useMemo(
-    () =>
+    () => sortDashboardJobs(
       items.filter((i) =>
         i.thumbnail_status !== 'pending' &&
         searchMatch(`${i.site_name} ${i.client_name} ${i.site_address} ${i.inspector_name}`, query),
       ),
+    ),
     [items, query],
   );
+  const jobCounts = useMemo(() => filtered.reduce(
+    (counts, installation) => {
+      counts[dashboardJobTiming(installation).group] += 1;
+      return counts;
+    },
+    { scheduled: 0, unscheduled: 0, completed: 0 },
+  ), [filtered]);
 
   const deleteInstallation = async (installation: Installation) => {
     if (deletingId) return;
@@ -105,6 +118,15 @@ export function DashboardScreen({ navigation }: Props) {
           Site installations & Wattwatcher metering
         </Text>
       </View>
+      <Card style={{ marginBottom: spacing.md }} accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '800' }}>My jobs</Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
+          {jobCounts.scheduled} scheduled · {jobCounts.unscheduled} unscheduled · {jobCounts.completed} completed
+        </Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12, lineHeight: 18 }}>
+          Scheduled work is ordered by the nearest scheduled start or deadline. Unscheduled work stays below it.
+        </Text>
+      </Card>
       <SearchBar value={query} onChangeText={setQuery} placeholder="Search sites or clients" />
       <Button
         title="Start New Site Installation"
@@ -139,14 +161,25 @@ export function DashboardScreen({ navigation }: Props) {
           ListEmptyComponent={
             <EmptyState title="No installations" subtitle="Create a site installation to get started." />
           }
-          renderItem={({ item }) => (
-            <InstallationCard
-              item={item}
-              onPress={() => navigation.navigate('InstallationDetail', { installationId: item.id })}
-              onDelete={() => { void deleteInstallation(item); }}
-              deleteDisabled={Boolean(deletingId)}
-            />
-          )}
+          renderItem={({ item, index }) => {
+            const group = dashboardJobTiming(item).group;
+            const previousGroup = index > 0
+              ? dashboardJobTiming(filtered[index - 1]).group
+              : undefined;
+            return (
+              <View>
+                {group !== previousGroup ? (
+                  <SectionHeader title={dashboardJobGroupLabel(group)} />
+                ) : null}
+                <InstallationCard
+                  item={item}
+                  onPress={() => navigation.navigate('InstallationDetail', { installationId: item.id })}
+                  onDelete={() => { void deleteInstallation(item); }}
+                  deleteDisabled={Boolean(deletingId)}
+                />
+              </View>
+            );
+          }}
           ListFooterComponent={<View style={{ height: 24 }} />}
         />
       )}

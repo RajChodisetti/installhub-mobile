@@ -35,7 +35,7 @@ import {
   getPendingCompleteBackupAttempt,
 } from '../repositories/cloudSyncRepository';
 import { useSyncStatus } from '../services/SyncStatusContext';
-import { formatDate } from '../utils';
+import { formatDate, formatDateTime } from '../utils';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { recordCompletionRejection } from '../services/operationalDiagnostics';
@@ -84,6 +84,17 @@ import {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
+const assignedWorkChangeLabels: Record<string, string> = {
+  inspector_name: 'assigned technician',
+  audit_date: 'scheduled date',
+  job_comments: 'job comments',
+  schedule_event_id: 'Scheduler assignment',
+  scheduled_start_at: 'scheduled start',
+  scheduled_end_at: 'scheduled finish',
+  deadline_at: 'deadline',
+  schedule_status: 'job status',
+};
+
 export function InstallationDetailScreen({ navigation, route }: Props) {
   const { installationId } = route.params;
   const { colors } = useTheme();
@@ -102,6 +113,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     refresh,
   } = useInstallation(installationId);
   const [zoneModal, setZoneModal] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const zonesSectionY = useRef(0);
   const [zoneName, setZoneName] = useState('');
   const [zoneCode, setZoneCode] = useState('');
   const zoneCodeEdited = useRef(false);
@@ -224,6 +237,17 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     assignedJobSummary?.job_comments,
   ].filter(Boolean).join(' · ');
   const assignedJobDetailRows = [
+    ['Scheduled start', assignedJobSummary?.scheduled_start_at
+      ? formatDateTime(assignedJobSummary.scheduled_start_at)
+      : 'Not scheduled'],
+    ['Deadline', assignedJobSummary?.deadline_at
+      ? formatDateTime(assignedJobSummary.deadline_at)
+      : 'Not recorded'],
+    ['Schedule status', assignedJobSummary?.schedule_status === 'in_progress'
+      ? 'In progress'
+      : assignedJobSummary?.schedule_status === 'planned'
+        ? 'Planned'
+        : 'Not scheduled'],
     ['Client', assignedJobSummary?.client_name ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['Customer', assignedJobSummary?.customer_name ?? ''],
     ['Site', assignedJobSummary?.site_name ?? 'Assigned job summary unavailable — refresh assigned work'],
@@ -239,6 +263,12 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['Access information', assignedJobSummary?.access_information ?? ''],
   ] as const;
   const jobDetailRows = ([
+    ['Scheduled start', assignedJobSummary?.scheduled_start_at
+      ? formatDateTime(assignedJobSummary.scheduled_start_at)
+      : ''],
+    ['Deadline', assignedJobSummary?.deadline_at
+      ? formatDateTime(assignedJobSummary.deadline_at)
+      : ''],
     ['Customer', item.customer_name ?? ''],
     ['Scope categorization', item.service_type ?? ''],
     ['Metering type', item.metering_solution_type ?? ''],
@@ -249,6 +279,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['Access information', item.access_information ?? ''],
     ['Job comments / scope', item.job_comments ?? ''],
   ] as Array<readonly [string, string]>).filter(([, value]) => Boolean(value));
+  const assignedWorkChangedFields = item.assigned_work_change_notice?.changed_fields
+    .map((field) => assignedWorkChangeLabels[field] ?? field.replaceAll('_', ' '))
+    .filter((field, index, fields) => fields.indexOf(field) === index)
+    ?? [];
   const outcomeRows: Array<readonly [string, string]> = [
     ['Warranty replacement device', yesNoLabel(item.warranty_device)],
     ['Monitoring installed', yesNoLabel(item.monitoring_installed)],
@@ -951,7 +985,11 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   }
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
+    <ScrollView
+      ref={scrollViewRef}
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentContainerStyle={styles.pad}
+    >
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <View style={{ flex: 1, paddingRight: 12 }}>
           <Text style={[typography.title, { color: colors.foreground }]}>{item.site_name}</Text>
@@ -970,29 +1008,43 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       </View>
       {assignedPrestartRequired ? (
         <Card
-          accessibilityRole={assignedPrestartAcknowledged ? 'summary' : 'alert'}
-          accessibilityLiveRegion={assignedPrestartAcknowledged ? 'polite' : 'assertive'}
+          accessibilityRole={item.assigned_work_change_notice ? 'summary' : assignedPrestartAcknowledged ? 'summary' : 'alert'}
+          accessibilityLiveRegion={item.assigned_work_change_notice || assignedPrestartAcknowledged ? 'polite' : 'assertive'}
           style={{
             marginTop: spacing.md,
             borderWidth: 2,
-            borderColor: assignedPrestartAcknowledged
+            borderColor: item.assigned_work_change_notice
+              ? colors.primary
+              : assignedPrestartAcknowledged
               ? colors.success
               : colors.destructive,
           }}
         >
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
             <Text style={{ color: colors.foreground, fontWeight: '800', flex: 1 }}>
-              {assignedWorkActionsLocked
+              {item.assigned_work_change_notice
+                ? 'Scheduler updated this job'
+                : assignedWorkActionsLocked
                 ? 'Work locked — assigned job review required'
                 : 'Assigned job pre-start review'}
             </Text>
             <Badge
-              label={assignedPrestartAcknowledged ? 'Acknowledged' : 'WORK LOCKED'}
-              tone={assignedPrestartAcknowledged ? 'success' : 'danger'}
+              label={item.assigned_work_change_notice
+                ? 'UPDATE READY'
+                : assignedPrestartAcknowledged
+                  ? 'Acknowledged'
+                  : 'WORK LOCKED'}
+              tone={item.assigned_work_change_notice
+                ? 'default'
+                : assignedPrestartAcknowledged
+                  ? 'success'
+                  : 'danger'}
             />
           </View>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
-            {assignedPrestartAcknowledged
+            {item.assigned_work_change_notice
+              ? `The latest Scheduler details are synced to this device. Updated: ${assignedWorkChangedFields.join(', ') || 'job details'}. Review and acknowledge them before continuing.`
+              : assignedPrestartAcknowledged
               ? 'The current pulled job summary has been acknowledged for this technician.'
               : 'All work controls and app-active tracking are locked until you review and acknowledge the current pulled job summary.'}
           </Text>
@@ -1000,8 +1052,12 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             This is not the full Job Safety Analysis (JSA) and does not replace on-site safety checks.
           </Text>
           <Button
-            title={assignedPrestartAcknowledged ? 'Review acknowledged details' : 'Review job details'}
-            variant={assignedPrestartAcknowledged ? 'secondary' : 'danger'}
+            title={item.assigned_work_change_notice
+              ? 'Review updated job details'
+              : assignedPrestartAcknowledged
+                ? 'Review acknowledged details'
+                : 'Review job details'}
+            variant={item.assigned_work_change_notice || assignedPrestartAcknowledged ? 'secondary' : 'danger'}
             style={{ marginTop: spacing.md }}
             onPress={() => setPrestartModal(true)}
           />
@@ -1040,6 +1096,66 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           ))}
         </Card>
       ) : null}
+      <SectionHeader title="Installation workspace" />
+      <Card accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '800' }}>
+          Field work
+        </Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+          All core installation tools are available here without opening the secondary tools drawer.
+        </Text>
+        <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+          <Button
+            title={`Zones & assets · ${zones.length} zone${zones.length === 1 ? '' : 's'}`}
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              scrollViewRef.current?.scrollTo({ y: zonesSectionY.current, animated: true });
+            })}
+          />
+          <Button
+            title="Electrical map & reconciliation"
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('DataView', { installationId });
+            })}
+          />
+          <Button
+            title="Field forms & PDFs"
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('FormsList', { installationId });
+            })}
+          />
+          <Button
+            title="Metering table"
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('MeteringTable', { installationId });
+            })}
+          />
+          <Button
+            title={`Find devices · ${meterDevices.length}`}
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('DeviceSearch', { installationId });
+            })}
+          />
+          <Button
+            title="Photo gallery"
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('PhotoPreview', { installationId });
+            })}
+          />
+          <Button
+            title="Installation report pack"
+            variant="secondary"
+            onPress={() => requestAssignedWorkAction(() => {
+              navigation.navigate('InstallationReport', { installationId });
+            })}
+          />
+        </View>
+      </Card>
       <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
         <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
           Installation outcome
@@ -1163,11 +1279,26 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         <Card
           accessibilityRole="alert"
           accessibilityLiveRegion="assertive"
-          accessibilityLabel="Assigned work changed on the server. Cloud Backup is paused."
-          style={{ marginTop: spacing.md }}
+          accessibilityLabel={item.assigned_work_refresh_conflict.remote_tree_changed
+            ? 'Assigned work tree changed on the server. Cloud Backup is paused.'
+            : 'Scheduler and device job details both changed. Review is required.'}
+          style={{
+            marginTop: spacing.md,
+            borderWidth: 2,
+            borderColor: item.assigned_work_refresh_conflict.remote_tree_changed
+              ? colors.destructive
+              : colors.tbc,
+          }}
         >
-          <Text style={{ color: colors.destructive, fontWeight: '700' }}>
-            Assigned work changed on the server
+          <Text style={{
+            color: item.assigned_work_refresh_conflict.remote_tree_changed
+              ? colors.destructive
+              : colors.foreground,
+            fontWeight: '700',
+          }}>
+            {item.assigned_work_refresh_conflict.remote_tree_changed
+              ? 'Assigned work needs reconciliation'
+              : 'Review Scheduler job changes'}
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
             {item.assigned_work_refresh_conflict.remote_tree_changed
@@ -1301,14 +1432,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           disabled={readOnly}
           onPress={() => requestAssignedWorkAction(() => {
             navigation.navigate('InstallationForm', { installationId });
-          })}
-          style={{ flexGrow: 1 }}
-        />
-        <Button
-          title={assignedWorkActionsLocked ? 'Search devices (locked)' : 'Search devices'}
-          variant="secondary"
-          onPress={() => requestAssignedWorkAction(() => {
-            navigation.navigate('DeviceSearch', { installationId });
           })}
           style={{ flexGrow: 1 }}
         />
@@ -1501,32 +1624,34 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         </View>
       )}
 
-      <SectionHeader
-        title="Zones"
-        actionLabel={readOnly ? undefined : '+ Add'}
-        onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
-          setZoneName('');
-          setZoneCode('');
-          setZoneDesc('');
-          zoneCodeEdited.current = false;
-          setZoneModal(true);
-        })}
-      />
-      {zones.length === 0 ? (
-        <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
-      ) : (
-        zones.map((z) => (
-          <ZoneCard
-            key={z.id}
-            item={z}
-            boardCount={boardCount(z.id)}
-            assetCount={assetCount(z.id)}
-            onPress={() => requestAssignedWorkAction(() => {
-              navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
-            })}
-          />
-        ))
-      )}
+      <View onLayout={(event) => { zonesSectionY.current = event.nativeEvent.layout.y; }}>
+        <SectionHeader
+          title="Zones"
+          actionLabel={readOnly ? undefined : '+ Add'}
+          onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
+            setZoneName('');
+            setZoneCode('');
+            setZoneDesc('');
+            zoneCodeEdited.current = false;
+            setZoneModal(true);
+          })}
+        />
+        {zones.length === 0 ? (
+          <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
+        ) : (
+          zones.map((z) => (
+            <ZoneCard
+              key={z.id}
+              item={z}
+              boardCount={boardCount(z.id)}
+              assetCount={assetCount(z.id)}
+              onPress={() => requestAssignedWorkAction(() => {
+                navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
+              })}
+            />
+          ))
+        )}
+      </View>
 
       <FormModal
         visible={prestartModal}

@@ -175,6 +175,14 @@ export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
   'additional_monitoring_hardware',
 ] as const satisfies ReadonlyArray<keyof AssignedWorkServerMetadataSnapshot>;
 
+const ASSIGNED_WORK_SCHEDULER_METADATA_FIELDS = new Set<
+  keyof AssignedWorkServerMetadataSnapshot
+>([
+  'inspector_name',
+  'audit_date',
+  'job_comments',
+]);
+
 export function assignedWorkServerMetadataFromInstallation(
   installation: Installation,
 ): AssignedWorkServerMetadataSnapshot {
@@ -588,6 +596,7 @@ export type AssignedInstallationServerState = {
   serverTreeRevision?: number;
   pendingCompletionResolvedAsDraft?: boolean;
   metadataPatch?: Partial<AssignedWorkServerMetadataSnapshot>;
+  serverChangedFields?: Array<keyof AssignedWorkServerMetadataSnapshot>;
   serverMetadataBase?: AssignedWorkServerMetadataSnapshot;
   serverTreeFingerprint?: string;
   refreshConflict?: AssignedWorkRefreshConflict | null;
@@ -708,6 +717,7 @@ export function mergeAssignedInstallationServerState(
   let metadataState: Pick<
     AssignedInstallationServerState,
     | 'metadataPatch'
+    | 'serverChangedFields'
     | 'serverMetadataBase'
     | 'serverTreeRevision'
     | 'serverTreeFingerprint'
@@ -762,16 +772,30 @@ export function mergeAssignedInstallationServerState(
       ) {
         throw new Error('Assigned-work server tree changed without advancing its revision.');
       }
+      const sameRevisionChangedFields = storedBase
+        ? ASSIGNED_WORK_SERVER_METADATA_FIELDS.filter(
+            (field) => !sameMetadataValue(storedBase[field], incoming[field]),
+          )
+        : [];
       if (
-        storedBase
-        && ASSIGNED_WORK_SERVER_METADATA_FIELDS.some(
-          (field) => !sameMetadataValue(storedBase[field], incoming[field]),
+        sameRevisionChangedFields.some(
+          (field) => !ASSIGNED_WORK_SCHEDULER_METADATA_FIELDS.has(field),
         )
       ) {
         throw new Error('Assigned-work server metadata changed without advancing its revision.');
       }
+      const metadataPatch: Partial<AssignedWorkServerMetadataSnapshot> = {};
+      for (const field of sameRevisionChangedFields) {
+        if (!sameMetadataValue(current[field], incoming[field])) {
+          Object.assign(metadataPatch, { [field]: incoming[field] });
+        }
+      }
       metadataState = {
-        serverMetadataBase: storedBase ?? incoming,
+        ...(Object.keys(metadataPatch).length ? { metadataPatch } : {}),
+        ...(sameRevisionChangedFields.length
+          ? { serverChangedFields: sameRevisionChangedFields }
+          : {}),
+        serverMetadataBase: sameRevisionChangedFields.length ? incoming : storedBase ?? incoming,
         serverTreeRevision: incomingTreeRevision,
         serverTreeFingerprint: storedTreeFingerprint ?? incomingTreeFingerprint,
         refreshConflict: null,
@@ -830,6 +854,7 @@ export function mergeAssignedInstallationServerState(
         }
         metadataState = {
           ...(Object.keys(metadataPatch).length ? { metadataPatch } : {}),
+          ...(remoteChangedFields.length ? { serverChangedFields: remoteChangedFields } : {}),
           serverMetadataBase: incoming,
           serverTreeRevision: incomingTreeRevision,
           serverTreeFingerprint: incomingTreeFingerprint,

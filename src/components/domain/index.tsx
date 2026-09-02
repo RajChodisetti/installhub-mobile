@@ -1,10 +1,11 @@
 import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import type { ElectricalAsset, Installation, SiteAsset, Zone } from '../../types';
-import { formatDate } from '../../utils';
+import { formatDateTime } from '../../utils';
 import { useTheme } from '../../context/AppProviders';
 import { Badge, Card, ListRow } from '../ui';
 import { typography } from '../../theme';
+import { dashboardJobTiming } from '../../domain/jobDashboard';
 
 export function InstallationCard({
   item,
@@ -18,13 +19,32 @@ export function InstallationCard({
   deleteDisabled?: boolean;
 }) {
   const { colors } = useTheme();
+  const timing = dashboardJobTiming(item);
+  const timingSummary = timing.group === 'scheduled'
+    ? [
+        timing.scheduledStartAt
+          ? `Scheduled · ${formatDateTime(timing.scheduledStartAt)}`
+          : null,
+        timing.deadlineAt
+          ? `Deadline · ${formatDateTime(timing.deadlineAt)}`
+          : null,
+      ].filter(Boolean).join('\n')
+    : timing.group === 'unscheduled'
+      ? 'Unscheduled · shown after scheduled work'
+      : `Completed · ${formatDateTime(item.completed_at ?? item.updated_at)}`;
   return (
     <ListRow
       title={item.site_name}
-      subtitle={`${item.client_name} · ${formatDate(item.audit_date)}`}
+      subtitle={`${item.client_name} · ${item.site_address}\n${timingSummary}`}
       onPress={onPress}
       right={(
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          {timing.group !== 'completed' ? (
+            <Badge
+              label={timing.group === 'scheduled' ? 'Scheduled' : 'Unscheduled'}
+              tone={timing.group === 'scheduled' ? 'success' : 'tbc'}
+            />
+          ) : null}
           {item.assigned_work_state === 'active' ? <Badge label="Assigned" tone="default" /> : null}
           <Badge label={item.status} tone={item.status === 'Completed' ? 'success' : 'default'} />
           {onDelete ? (

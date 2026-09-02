@@ -411,6 +411,18 @@ export interface AssignedWorkJobSummarySnapshot {
   quote_number?: string;
   job_comments?: string;
   access_information?: string;
+  schedule_event_id?: string;
+  scheduled_start_at?: string;
+  scheduled_end_at?: string | null;
+  deadline_at?: string;
+  schedule_status?: 'planned' | 'in_progress';
+  pulled_at: string;
+}
+
+/** Local informational notice for an accepted Scheduler-owned job update. */
+export interface AssignedWorkChangeNotice {
+  changed_fields: string[];
+  server_tree_revision: number;
   pulled_at: string;
 }
 
@@ -490,6 +502,8 @@ export interface Installation {
   assigned_work_server_tree_fingerprint?: string;
   /** Pauses backup until overlapping or unknown remote edits are explicitly resolved. */
   assigned_work_refresh_conflict?: AssignedWorkRefreshConflict;
+  /** Accepted Scheduler changes awaiting technician review; never synced back to the API. */
+  assigned_work_change_notice?: AssignedWorkChangeNotice;
   /** Canonical shared-directory identities returned by the unified API. */
   client_id?: string | null;
   client_site_id?: string | null;

@@ -72,6 +72,7 @@ import {
 } from '../services/assignedWorkPolicy';
 import { quarantineAssignedWorkCheckout } from '../services/assignedWorkRecovery';
 import {
+  assignedWorkScheduleChangedFields,
   createAssignedWorkJobSummarySnapshot,
   reconcileAssignedWorkPrestartAcknowledgement,
 } from '../services/assignedWorkPrestart';
@@ -188,6 +189,11 @@ function assignedWorkJobSummaryFromPull(
   if (!assignedInspectorUserId) {
     throw new Error('Assigned installation is missing its assignee identity.');
   }
+  const scheduleEventId = optionalText(source, 'scheduleEventId', 'schedule_event_id');
+  const scheduledStartAt = optionalText(source, 'scheduledStartAt', 'scheduled_start_at');
+  const scheduledEndAt = optionalText(source, 'scheduledEndAt', 'scheduled_end_at');
+  const deadlineAt = optionalText(source, 'deadlineAt', 'deadline_at');
+  const scheduleStatus = optionalText(source, 'scheduleStatus', 'schedule_status');
   return createAssignedWorkJobSummarySnapshot({
     actor_user_id: actorUserId,
     assigned_inspector_user_id: assignedInspectorUserId,
@@ -212,6 +218,13 @@ function assignedWorkJobSummaryFromPull(
     quote_number: text(source, 'quoteNumber', 'quote_number'),
     job_comments: text(source, 'jobComments', 'job_comments'),
     access_information: text(source, 'accessInformation', 'access_information'),
+    ...(scheduleEventId ? { schedule_event_id: scheduleEventId } : {}),
+    ...(scheduledStartAt ? { scheduled_start_at: scheduledStartAt } : {}),
+    ...(scheduledEndAt ? { scheduled_end_at: scheduledEndAt } : {}),
+    ...(deadlineAt ? { deadline_at: deadlineAt } : {}),
+    ...(scheduleStatus === 'planned' || scheduleStatus === 'in_progress'
+      ? { schedule_status: scheduleStatus }
+      : {}),
   }, pulledAt);
 }
 
@@ -1319,6 +1332,7 @@ export async function syncAssignedInstallations(
         ) {
           const previous = { ...installation };
           installation.assigned_work_state = 'inactive';
+          installation.assigned_work_change_notice = undefined;
           installation.assigned_work_prestart_acknowledgement =
             reconcileAssignedWorkPrestartAcknowledgement(previous, installation);
         }
@@ -1346,9 +1360,14 @@ export async function syncAssignedInstallations(
         local.assigned_inspector_user_id = serverState.assignedInspectorUserId ?? undefined;
         local.assigned_work_state = isAssigned ? 'active' : 'none';
         local.assigned_work_actor_user_id = isAssigned ? actorUserId : undefined;
-        local.assigned_work_job_summary = isAssigned
+        const nextAssignedJobSummary = isAssigned
           ? assignedWorkJobSummaryFromPull(remote, actorUserId, response.pulledAt)
           : undefined;
+        const scheduleChangedFields = assignedWorkScheduleChangedFields(
+          previous.assigned_work_job_summary,
+          nextAssignedJobSummary,
+        );
+        local.assigned_work_job_summary = nextAssignedJobSummary;
         local.cloud_backup_enabled = true;
         const hasPendingCompletion = Boolean(
           local.pending_completion
@@ -1377,6 +1396,29 @@ export async function syncAssignedInstallations(
           if (serverState.refreshConflict !== undefined) {
             local.assigned_work_refresh_conflict =
               serverState.refreshConflict ?? undefined;
+          }
+          const acceptedChangedFields = [
+            ...(serverState.serverChangedFields ?? []),
+            ...scheduleChangedFields,
+          ].filter((field, index, fields) => fields.indexOf(field) === index);
+          if (
+            isAssigned
+            && previous.assigned_work_job_summary
+            && !serverState.refreshConflict
+            && acceptedChangedFields.length
+          ) {
+            local.assigned_work_change_notice = {
+              changed_fields: acceptedChangedFields,
+              server_tree_revision:
+                serverState.serverTreeRevision
+                ?? local.server_tree_revision
+                ?? 0,
+              pulled_at: response.pulledAt,
+            };
+          } else if (serverState.refreshConflict) {
+            local.assigned_work_change_notice = undefined;
+          } else if (!isAssigned) {
+            local.assigned_work_change_notice = undefined;
           }
         }
         if (serverState.recordVersionNumber !== undefined) {

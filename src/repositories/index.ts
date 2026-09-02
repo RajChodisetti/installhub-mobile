@@ -553,6 +553,7 @@ export const installationsRepo: InstallationsRepository = {
             actorUserId,
             nowIso(),
           ),
+        assigned_work_change_notice: undefined,
       };
       store.installations[index] = updated;
     });

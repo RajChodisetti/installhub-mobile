@@ -253,7 +253,7 @@ export function RootNavigator() {
             <Stack.Screen name="MeteringTable" component={MeteringTableScreen} options={{ title: 'Metering' }} />
             <Stack.Screen name="InstallationReport" component={InstallationReportScreen} options={{ title: 'Report' }} />
             <Stack.Screen name="ClientReport" component={ClientReportScreen} options={{ title: 'Client Report' }} />
-            <Stack.Screen name="PhotoPreview" component={PhotoPreviewScreen} options={{ title: 'Photos' }} />
+            <Stack.Screen name="PhotoPreview" component={PhotoPreviewScreen} options={{ title: 'Photo Gallery' }} />
             <Stack.Screen name="FormsList" component={FormsListScreen} options={{ title: 'Field Forms' }} />
             <Stack.Screen name="FormTypePicker" component={FormTypePickerScreen} options={{ title: 'New Form' }} />
             <Stack.Screen name="FormEditor" component={FormEditorScreen} options={{ title: 'Field Form' }} />

@@ -20,6 +20,7 @@ Field App Complete API login
      │  └─ site assets (HVAC, lighting, solar, EV, etc.)
      └─ views/reports
         ├─ installation-scoped device search across all zones, with Open and Replace actions
+        ├─ consolidated photo gallery across zones, switchboards, devices, assets, and forms
         ├─ six new field-form families with draft/completed/amendment lifecycle
         ├─ form-specific A4 PDFs with embedded evidence photos
         │  └─ local quality retries -> durable API job fallback
@@ -51,6 +52,12 @@ suggestion reuses its known coordinates; otherwise the API geocodes the typed ad
 server-side.
 The app displays stop order, distances, travel times, warnings and unroutable jobs;
 it does not provide maps, navigation, background tracking or persisted route history.
+
+The Dashboard groups active work into Scheduled, Unscheduled/local, and Completed
+sections. Scheduled jobs are ordered by the earliest Scheduler start or deadline and
+show both timestamps; unscheduled/local Drafts stay below scheduled work. The assigned
+work pull carries the active Scheduler event ID, start, finish, deadline, and status as
+local-only job-summary metadata rather than canonical installation fields.
 
 ## 2. Repository tree
 
@@ -236,6 +243,11 @@ form completion, and other tree changes therefore cannot commit after invalidati
 The acknowledgement write additionally compares the current summary with the exact summary hash
 displayed when the user tapped acknowledge. Server pull/reconciliation writes deliberately bypass
 this local work guard so they can invalidate access without overwriting offline tree edits.
+Accepted Scheduler-owned date, technician, scope-comment, start, deadline, and status
+changes create a local informational notice and require review of the refreshed summary.
+Legacy Scheduler projections that changed only those owned fields without advancing the
+server revision are accepted for recovery; unrelated same-revision metadata or tree
+changes remain hard reconciliation errors.
 
 The tracker checkpoints about every 15 seconds into the separate
 `installhub.mobile.active-time.v1` outbox. It never changes `Installation.updated_at`,
@@ -736,7 +748,8 @@ diagnostics tests use Node's test runner via `tsx`.
 `app.json` defines:
 
 - App name `Field App Complete`, slug `field-app-complete`, version `1.0.0`;
-  the current App Store release candidate is iOS build `13` / Android versionCode `2`.
+  the local manifest declares iOS build `14` / Android versionCode `2`. Store builds use the
+  remote EAS version source, and the TestFlight/production profiles auto-increment that authority.
 - iOS bundle identifier and Android package: `com.tuvi.installhub`.
 - Portrait orientation, automatic system appearance, tablet support on iOS.
 - Camera and photo-library usage descriptions.

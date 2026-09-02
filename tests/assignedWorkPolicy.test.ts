@@ -524,6 +524,72 @@ test('pre-address metadata bases upgrade without inventing a same-revision serve
   assert.equal(result.serverMetadataBase?.site_geocode_provider, 'geoapify');
 });
 
+test('legacy same-revision Scheduler projections are accepted as job updates', () => {
+  const baseTree = {
+    ...tree({
+      id: 'assigned',
+      status: 'Draft',
+      auditDate: '2026-08-15',
+      inspectorName: 'Inspector',
+      jobComments: 'Original scope',
+    }),
+    treeRevision: 4,
+  };
+  const original = localInstallation({
+    audit_date: '2026-08-15',
+    inspector_name: 'Inspector',
+    job_comments: 'Original scope',
+    server_tree_revision: 4,
+  });
+  const local = localInstallation({
+    ...original,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+  });
+
+  const result = mergeAssignedInstallationServerState(local, {
+    ...baseTree,
+    installation: {
+      ...baseTree.installation,
+      auditDate: '2026-08-16',
+      jobComments: 'Updated scheduler scope',
+    },
+  });
+
+  assert.deepEqual(result.metadataPatch, {
+    audit_date: '2026-08-16',
+    job_comments: 'Updated scheduler scope',
+  });
+  assert.deepEqual(result.serverChangedFields, ['audit_date', 'job_comments']);
+  assert.equal(result.serverTreeRevision, 4);
+  assert.equal(result.refreshConflict, null);
+});
+
+test('same-revision non-Scheduler metadata changes remain rejected', () => {
+  const baseTree = {
+    ...tree({ id: 'assigned', status: 'Draft', siteName: 'Site' }),
+    treeRevision: 4,
+  };
+  const original = localInstallation({ server_tree_revision: 4 });
+  const local = localInstallation({
+    ...original,
+    assigned_work_server_metadata_base:
+      assignedWorkServerMetadataFromInstallation(original),
+    assigned_work_server_tree_fingerprint:
+      remoteInstallationWorkTreeFingerprint(baseTree),
+  });
+
+  assert.throws(
+    () => mergeAssignedInstallationServerState(local, {
+      ...baseTree,
+      installation: { ...baseTree.installation, siteName: 'Unexpected server site' },
+    }),
+    /metadata changed without advancing/i,
+  );
+});
+
 test('authoritative completion can advance a proven metadata-only assigned CAS base', () => {
   const baseTree = tree({ id: 'assigned', status: 'Draft' });
   const original = localInstallation({

@@ -47,7 +47,30 @@ export function assignedWorkSummarySha256(
     quoteNumber: summary.quote_number ?? '',
     jobComments: summary.job_comments ?? '',
     accessInformation: summary.access_information ?? '',
+    scheduleEventId: summary.schedule_event_id ?? '',
+    scheduledStartAt: summary.scheduled_start_at ?? '',
+    scheduledEndAt: summary.scheduled_end_at ?? null,
+    deadlineAt: summary.deadline_at ?? '',
+    scheduleStatus: summary.schedule_status ?? '',
   }));
+}
+
+const ASSIGNED_WORK_SCHEDULE_SUMMARY_FIELDS = [
+  'schedule_event_id',
+  'scheduled_start_at',
+  'scheduled_end_at',
+  'deadline_at',
+  'schedule_status',
+] as const satisfies ReadonlyArray<keyof AssignedWorkJobSummarySnapshot>;
+
+export function assignedWorkScheduleChangedFields(
+  previous: AssignedWorkJobSummarySnapshot | undefined,
+  current: AssignedWorkJobSummarySnapshot | undefined,
+): string[] {
+  if (!previous || !current) return [];
+  return ASSIGNED_WORK_SCHEDULE_SUMMARY_FIELDS.filter(
+    (field) => (previous[field] ?? null) !== (current[field] ?? null),
+  );
 }
 
 export function isAssignedDraftForActor(

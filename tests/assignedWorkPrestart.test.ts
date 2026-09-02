@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   assignedWorkPrestartActionIsLocked,
   assignedWorkPrestartIsAcknowledged,
+  assignedWorkScheduleChangedFields,
   createAssignedWorkJobSummarySnapshot,
   createAssignedWorkPrestartAcknowledgement,
   installationAllowsActiveWorkTracking,
@@ -79,6 +80,27 @@ test('routine tree/CAS revision and pull timestamps do not invalidate an acknowl
   assert.equal(assignedWorkPrestartIsAcknowledged(next, 'technician-1'), true);
   assert.equal(assignedWorkPrestartActionIsLocked(next, 'technician-1'), false);
   assert.equal(installationAllowsActiveWorkTracking(next, 'technician-1'), true);
+});
+
+test('schedule start, deadline, and status changes are reported for the update notice', () => {
+  const previous = summary({
+    schedule_event_id: 'event-1',
+    scheduled_start_at: '2026-08-22T09:00:00.000Z',
+    deadline_at: '2026-08-22T17:00:00.000Z',
+    schedule_status: 'planned',
+  });
+  const current = summary({
+    schedule_event_id: 'event-1',
+    scheduled_start_at: '2026-08-22T10:00:00.000Z',
+    deadline_at: '2026-08-23T17:00:00.000Z',
+    schedule_status: 'in_progress',
+  });
+
+  assert.deepEqual(assignedWorkScheduleChangedFields(previous, current), [
+    'scheduled_start_at',
+    'deadline_at',
+    'schedule_status',
+  ]);
 });
 
 test('a changed pulled scheduler summary invalidates without overwriting offline tree edits', () => {

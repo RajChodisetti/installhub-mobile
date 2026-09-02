@@ -17,6 +17,19 @@ export function formatDate(iso?: string): string {
   });
 }
 
+export function formatDateTime(iso?: string): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 export function searchMatch(haystack: string, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
