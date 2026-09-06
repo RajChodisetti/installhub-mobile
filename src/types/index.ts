@@ -456,6 +456,7 @@ export interface AssignedWorkJobSummarySnapshot {
   inspector_name: string;
   maas?: boolean | null;
   service_type?: string;
+  existing_device_id?: string;
   metering_solution_type?: string;
   planned_meter_type?: string;
   custom_job_number?: string;
@@ -509,6 +510,7 @@ export interface AssignedWorkServerMetadataSnapshot {
   timezone: string | null;
   maas: boolean | null;
   service_type: string | null;
+  existing_device_id: string | null;
   metering_solution_type: string | null;
   planned_meter_type: string | null;
   custom_job_number: string | null;
@@ -586,6 +588,7 @@ export interface Installation {
   /** Scheduler-provided job classification and site-access metadata. */
   maas?: boolean | null;
   service_type?: string | null;
+  existing_device_id?: string | null;
   metering_solution_type?: string | null;
   /** Planning intent only; installed meters remain canonical MeterDevice rows. */
   planned_meter_type?: string | null;

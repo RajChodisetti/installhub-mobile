@@ -37,6 +37,7 @@ export function assignedWorkSummarySha256(
     technicianName: summary.inspector_name,
     maas: summary.maas ?? null,
     serviceType: summary.service_type ?? '',
+    existingDeviceId: summary.existing_device_id ?? '',
     meteringSolutionType: summary.metering_solution_type ?? '',
     plannedMeterType: summary.planned_meter_type ?? '',
     customJobNumber: summary.custom_job_number ?? '',

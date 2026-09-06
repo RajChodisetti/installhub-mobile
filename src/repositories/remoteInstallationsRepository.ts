@@ -221,6 +221,7 @@ function assignedWorkJobSummaryFromPull(
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     maas: nullableBool(source, 'maas') ?? null,
     service_type: text(source, 'serviceType', 'service_type'),
+    existing_device_id: text(source, 'existingDeviceId', 'existing_device_id'),
     metering_solution_type: text(source, 'meteringSolutionType', 'metering_solution_type'),
     planned_meter_type: text(source, 'plannedMeterType', 'planned_meter_type'),
     custom_job_number: text(source, 'customJobNumber', 'custom_job_number'),
@@ -733,6 +734,7 @@ export async function importRemoteInstallationAsCopy(
     audit_date: text(source, 'auditDate', 'audit_date'),
     maas: nullableBool(source, 'maas'),
     service_type: optionalText(source, 'serviceType', 'service_type'),
+    existing_device_id: optionalText(source, 'existingDeviceId', 'existing_device_id'),
     metering_solution_type: optionalText(
       source,
       'meteringSolutionType',

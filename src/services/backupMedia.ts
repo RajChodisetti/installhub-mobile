@@ -589,6 +589,9 @@ export function buildBackupPayload(
       ...(tree.installation.service_type !== undefined
         ? { serviceType: tree.installation.service_type }
         : {}),
+      ...(tree.installation.existing_device_id !== undefined
+        ? { existingDeviceId: tree.installation.existing_device_id }
+        : {}),
       ...(tree.installation.metering_solution_type !== undefined
         ? { meteringSolutionType: tree.installation.metering_solution_type }
         : {}),

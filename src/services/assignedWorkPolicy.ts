@@ -158,6 +158,7 @@ export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
   'timezone',
   'maas',
   'service_type',
+  'existing_device_id',
   'metering_solution_type',
   'planned_meter_type',
   'custom_job_number',
@@ -182,6 +183,7 @@ const ASSIGNED_WORK_SCHEDULER_METADATA_FIELDS = new Set<
   'inspector_name',
   'audit_date',
   'job_comments',
+  'existing_device_id',
 ]);
 
 export function assignedWorkServerMetadataFromInstallation(
@@ -210,6 +212,7 @@ export function assignedWorkServerMetadataFromInstallation(
     timezone: installation.timezone ?? null,
     maas: installation.maas ?? null,
     service_type: installation.service_type ?? null,
+    existing_device_id: installation.existing_device_id ?? null,
     metering_solution_type: installation.metering_solution_type ?? null,
     planned_meter_type: installation.planned_meter_type ?? null,
     custom_job_number: installation.custom_job_number ?? null,
@@ -319,6 +322,12 @@ export function assignedWorkServerMetadataFromRemote(
     timezone: nullableText(remote, 'timezone', 'timezone', fallback.timezone),
     maas: nullableBoolean(remote, 'maas', 'maas', fallback.maas),
     service_type: nullableText(remote, 'serviceType', 'service_type', fallback.service_type),
+    existing_device_id: nullableText(
+      remote,
+      'existingDeviceId',
+      'existing_device_id',
+      fallback.existing_device_id,
+    ),
     metering_solution_type: nullableText(
       remote,
       'meteringSolutionType',

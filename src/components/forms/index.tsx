@@ -357,26 +357,26 @@ export function InstallationForm({
   const [site_contact_email, setContactEmail] = useState(initial?.site_contact_email ?? '');
   const [job_comments, setJobComments] = useState(initial?.job_comments ?? '');
   const [access_information, setAccessInformation] = useState(initial?.access_information ?? '');
-  const [warranty_device, setWarrantyDevice] = useState<'unknown' | 'yes' | 'no'>(
+  const [warranty_device] = useState<'unknown' | 'yes' | 'no'>(
     initial?.warranty_device === true ? 'yes' : initial?.warranty_device === false ? 'no' : 'unknown',
   );
-  const [monitoring_installed, setMonitoringInstalled] = useState<'unknown' | 'yes' | 'no'>(
+  const [monitoring_installed] = useState<'unknown' | 'yes' | 'no'>(
     initial?.monitoring_installed === true ? 'yes' : initial?.monitoring_installed === false ? 'no' : 'unknown',
   );
-  const [hardware_installed, setHardwareInstalled] = useState<'unknown' | 'yes' | 'no'>(
+  const [hardware_installed] = useState<'unknown' | 'yes' | 'no'>(
     initial?.hardware_installed === true ? 'yes' : initial?.hardware_installed === false ? 'no' : 'unknown',
   );
-  const [solar_capacity_kw, setSolarCapacityKw] = useState(
+  const [solar_capacity_kw] = useState(
     initial?.solar_capacity_kw === null || initial?.solar_capacity_kw === undefined
       ? ''
       : String(initial.solar_capacity_kw),
   );
-  const [additional_monitoring_required, setAdditionalMonitoringRequired] = useState<'unknown' | 'yes' | 'no'>(
+  const [additional_monitoring_required] = useState<'unknown' | 'yes' | 'no'>(
     initial?.additional_monitoring_required === true
       ? 'yes'
       : initial?.additional_monitoring_required === false ? 'no' : 'unknown',
   );
-  const [additional_monitoring_hardware, setAdditionalMonitoringHardware] = useState(
+  const [additional_monitoring_hardware] = useState(
     initial?.additional_monitoring_hardware ?? '',
   );
   const [busy, setBusy] = useState(false);
@@ -535,52 +535,6 @@ export function InstallationForm({
       <SectionHeader title="Job notes" />
       <TextArea label="Job comments / scope notes" value={job_comments} maxLength={5000} onChangeText={setJobComments} />
 
-      {initial ? (
-        <>
-          <SectionHeader title="Installation outcome" />
-          <SelectChips
-            label="Warranty replacement device"
-            value={warranty_device}
-            options={['unknown', 'yes', 'no']}
-            onChange={setWarrantyDevice}
-            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-          />
-          <SelectChips
-            label="Monitoring installed"
-            value={monitoring_installed}
-            options={['unknown', 'yes', 'no']}
-            onChange={setMonitoringInstalled}
-            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-          />
-          <SelectChips
-            label="Hardware installed"
-            value={hardware_installed}
-            options={['unknown', 'yes', 'no']}
-            onChange={setHardwareInstalled}
-            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-          />
-          <TextField
-            label="Solar capacity (kW)"
-            value={solar_capacity_kw}
-            keyboardType="decimal-pad"
-            maxLength={12}
-            onChangeText={setSolarCapacityKw}
-          />
-          <SelectChips
-            label="Additional monitoring required"
-            value={additional_monitoring_required}
-            options={['unknown', 'yes', 'no']}
-            onChange={setAdditionalMonitoringRequired}
-            getLabel={(value) => value === 'unknown' ? 'Not confirmed' : value === 'yes' ? 'Yes' : 'No'}
-          />
-          <TextArea
-            label="Additional monitoring hardware"
-            value={additional_monitoring_hardware}
-            maxLength={5000}
-            onChangeText={setAdditionalMonitoringHardware}
-          />
-        </>
-      ) : null}
       {validationErrors.length ? (
         <Text
           accessibilityRole="alert"

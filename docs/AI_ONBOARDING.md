@@ -289,7 +289,8 @@ foregrounding, and Cloud Backup; the API update does not mutate the installation
 
 ### Canonical installation v2
 
-Installation metadata carries nullable customer/MaaS/scope/metering-type fields, structured
+Installation metadata carries nullable customer/MaaS/scope/metering-type fields, a COMMS-fault
+`existing_device_id`, structured
 Australian address parts, site contact and access details, a custom job number, job scope comments,
 and job-level installation-outcome summaries. New authoring uses M1-M5 scope values and controlled
 NEM/revenue/monitoring/water metering choices with free-text Other. Planned-meter, Fergus, and quote
@@ -307,9 +308,9 @@ projections only. Every board and site asset has an explicit `GRID`, `BOARD`, or
 source; absence never means Grid. Site-asset coverage is exactly `METERED`, `UNMETERED`, or `TBC`,
 and only the atomic reconciliation action may change it.
 
-New-installation entry collects identity, planning, contact, access, and job-reference data. The
-job-level outcome summaries are intentionally shown only after an installation exists, so creation
-does not ask installers to predict completed hardware or monitoring results. New field forms prefer
+New-installation entry collects identity, planning, contact, access, and job-reference data. Stored
+legacy job-level outcome summaries remain sync-compatible but are no longer shown or edited in the
+iOS app. New field forms prefer
 the end-customer name and fall back to the contracting client and then the site name.
 
 A3RM/A6M devices have exact 3/6 positive channel ordinals. Other meters expose optional

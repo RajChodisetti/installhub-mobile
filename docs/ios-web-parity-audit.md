@@ -108,6 +108,35 @@ Both source checkouts were clean at the start. Mobile was on `master`, two commi
 ahead of its tracking branch; API/portal was on `main`. Existing commits are retained.
 Implementation work is separated into non-overlapping worktrees and reviewed here.
 
+## Documented Scheduler and job-detail bug recheck
+
+Current-source review found five live defects and one already-fixed zone issue.
+The local repair makes the Scheduler calendar span 00:00–24:00, preserves the
+created Field job title in the job pool and assigned calendar event, and lets an
+administrator edit the title in both creation and assignment. Field creation now
+captures job notes and shows a required Existing device ID only for
+`M2 - Faults / COMMS fault`. The additive API field round-trips through canonical
+and legacy sync, while Electricity NMI remains on the default grid supply. The
+iOS Job details and assigned-work review show notes, NMI, and existing device ID.
+The Installation outcome card and edit section are removed from iOS while their
+stored fields remain compatible with older clients.
+
+The reported zone issue was already fixed before this recheck: new zone names
+generate a unique short code, and the optional description is saved from its own
+input rather than copied from the name. Regression coverage now records both
+behaviors. Source verification passed 410 portal tests, 755 API tests with 28
+environment-gated skips, 936 iOS tests, strict typechecks, and the complete
+API/portal verification build. A QA-targeted Release build then installed on the
+paired iPad, authenticated, refreshed the exact `QA Parity Web 20260905` fixture,
+displayed its saved Job comments / scope, and passed an accessibility assertion
+that Installation outcome is absent. The retained screenshots are
+`../tmp/FieldAppParityHarness/qa-20260906-authenticated-dashboard.png` and
+`../tmp/FieldAppParityHarness/qa-20260906-job-details-without-outcome.png`.
+NMI and Existing device ID remain `RETEST` on hardware because the retained QA
+fixtures have no values for those fields and this batch's additive migration/API
+has not been deployed. Scheduler portal interaction also remains `RETEST` until
+the new portal/API release is installed in the lower lane.
+
 ## Architecture
 
 | Client | UI / state | Transport | Data authority |

@@ -21,6 +21,7 @@ export const ADDITIVE_INSTALLATION_FORM_FIELDS = [
   'site_address_fingerprint',
   'maas',
   'service_type',
+  'existing_device_id',
   'metering_solution_type',
   'planned_meter_type',
   'custom_job_number',

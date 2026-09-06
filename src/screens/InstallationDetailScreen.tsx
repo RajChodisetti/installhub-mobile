@@ -89,6 +89,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 const assignedWorkChangeLabels: Record<string, string> = {
   inspector_name: 'assigned technician',
   audit_date: 'scheduled date',
+  existing_device_id: 'existing device ID',
   job_comments: 'job comments',
   schedule_event_id: 'Scheduler assignment',
   scheduled_start_at: 'scheduled start',
@@ -260,6 +261,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     assignedJobSummary?.metering_solution_type,
     assignedJobSummary?.job_comments,
   ].filter(Boolean).join(' · ');
+  const electricityNmi = (
+    gridSupplies.find((supply) => supply.isDefault) ?? gridSupplies[0]
+  )?.nmi ?? '';
   const assignedJobDetailRows = [
     ['Scheduled start', assignedJobSummary?.scheduled_start_at
       ? formatDateTime(assignedJobSummary.scheduled_start_at)
@@ -281,6 +285,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       : 'Assigned job summary unavailable — refresh assigned work'],
     ['Technician', assignedJobSummary?.inspector_name ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['MaaS', yesNoLabel(assignedJobSummary?.maas)],
+    ['Electricity NMI', electricityNmi],
+    ['Existing device ID', assignedJobSummary?.existing_device_id ?? ''],
     ['Contact', contactSummary],
     ['Scope', scopeSummary],
     ['Custom job number', assignedJobSummary?.custom_job_number ?? ''],
@@ -297,6 +303,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['Scope categorization', item.service_type ?? ''],
     ['Metering type', item.metering_solution_type ?? ''],
     ['MaaS', yesNoLabel(item.maas)],
+    ['Electricity NMI', electricityNmi],
+    ['Existing device ID', item.existing_device_id ?? ''],
     ['Site contact', [item.site_contact_name, item.site_contact_phone, item.site_contact_email]
       .filter(Boolean).join(' · ')],
     ['Custom job number', item.custom_job_number ?? ''],
@@ -307,16 +315,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     .map((field) => assignedWorkChangeLabels[field] ?? field.replaceAll('_', ' '))
     .filter((field, index, fields) => fields.indexOf(field) === index)
     ?? [];
-  const outcomeRows: Array<readonly [string, string]> = [
-    ['Warranty replacement device', yesNoLabel(item.warranty_device)],
-    ['Monitoring installed', yesNoLabel(item.monitoring_installed)],
-    ['Hardware installed', yesNoLabel(item.hardware_installed)],
-    ['Solar capacity', item.solar_capacity_kw === null || item.solar_capacity_kw === undefined
-      ? 'Not confirmed'
-      : `${item.solar_capacity_kw} kW`],
-    ['Additional monitoring required', yesNoLabel(item.additional_monitoring_required)],
-    ['Additional monitoring hardware', item.additional_monitoring_hardware ?? 'Not confirmed'],
-  ];
   const readinessSummary = summarizeReadinessIssues(readiness?.issues ?? []);
   const readinessIssueCount = readinessSummary.reduce((count, group) => count + group.count, 0);
   const readinessPartition = partitionReadinessIssues(readiness?.issues ?? [], {
@@ -1187,19 +1185,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             })}
           />
         </View>
-      </Card>
-      <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
-        <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
-          Installation outcome
-        </Text>
-        {outcomeRows.map(([label, value]) => (
-          <View key={label} style={{ marginTop: spacing.xs }}>
-            <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
-              {label}
-            </Text>
-            <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
-          </View>
-        ))}
       </Card>
       {item.status === 'Draft' && readiness && !readiness.readyToComplete ? (
         <View
