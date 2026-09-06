@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FormScrollView } from '../components/ui';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { usePreventRemove } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
 import {
@@ -14,7 +16,7 @@ import {
   type ElectricalTreeRow,
 } from '../domain/installationV2';
 import { buildElectricalDiagramModel } from '../domain/electricalDiagram';
-import { ElectricalSingleLineDiagram } from '../components/domain/ElectricalSingleLineDiagram';
+import { ElectricalSingleLineDiagram, type ElectricalMapDraft } from '../components/domain/ElectricalSingleLineDiagram';
 import type {
   ElectricalAsset,
   MeasurementAssignment,
@@ -32,7 +34,13 @@ import {
   SearchBar,
 } from '../components/ui';
 import { FormModal, SelectChips } from '../components/forms';
-import { useTheme } from '../context/AppProviders';
+import { loadElectricalMapLayout, prepareElectricalMapLayoutAttempt, executeElectricalMapLayoutAttempt, type ElectricalMapLayoutAttempt, type ElectricalMapLayoutSession } from '../repositories/electricalMapLayoutRepository';
+import { pinnedMappingCanonicalJson } from '../services/pinnedInstallationMapping';
+import type { ElectricalMapLayoutDocument } from '../domain/electricalMapLayout';
+import { sharePinnedInstallationMapping } from '../services/installationMappingFiles';
+import { RecordLoadState } from '../components/RecordLoadState';
+import { useAuth, useTheme } from '../context/AppProviders';
+import { assignedWorkActionIsLocked } from '../services/assignedWorkMutationGuard';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { searchEligibleMeters } from '../domain/meterSearch';
@@ -64,6 +72,7 @@ export function DataViewScreen({ navigation, route }: Props) {
   const { installationId, initialMode } = route.params;
   const resumeState = dataViewResumeByInstallation.get(installationId);
   const { colors } = useTheme();
+  const { user } = useAuth();
   const {
     item,
     zones,
@@ -75,8 +84,39 @@ export function DataViewScreen({ navigation, route }: Props) {
     virtualMeters,
     readiness,
     loading,
+    error,
     refresh,
   } = useInstallation(installationId);
+  const [layoutSession, setLayoutSession] = useState<ElectricalMapLayoutSession | null>(null);
+  const [layoutLoadError, setLayoutLoadError] = useState('');
+  const [layoutLoading, setLayoutLoading] = useState(false);
+  const [retainedLayoutDraft, setRetainedLayoutDraft] = useState<ElectricalMapDraft | null>(null);
+  const [layoutDirty, setLayoutDirty] = useState(false);
+  const [layoutEditsLocked, setLayoutEditsLocked] = useState(false);
+  const [layoutReload, setLayoutReload] = useState(0);
+  const layoutAttempt = useRef<ElectricalMapLayoutAttempt | null>(null);
+  const layoutNamespace = useRef(0);
+  const layoutRequest = useRef(0);
+  useEffect(() => () => { layoutNamespace.current += 1; }, [installationId]);
+  let layoutActorCurrent = false;
+  if (item?.id === installationId && user?.id && item.local_owner_user_id === user.id
+    && layoutSession?.lease.actorUserId === user.id && !assignedWorkActionIsLocked(item, user.id)) {
+    try { layoutSession.lease.assertCurrent(); layoutActorCurrent = true; } catch { /* Expired authority must not block logout or access withdrawal. */ }
+  }
+  usePreventRemove(layoutDirty && layoutActorCurrent && Boolean(readiness), () => Alert.alert('Unsaved electrical arrangement', 'Save or discard the arrangement before leaving this screen.'));
+  const blockWhileArranging = () => {
+    if (!layoutDirty) return false;
+    Alert.alert('Unsaved electrical arrangement', 'Save or discard the arrangement before changing the view or search.');
+    return true;
+  };
+  const [mappingExportBusy, setMappingExportBusy] = useState(false);
+  const exportGeneration = useRef(0);
+  useEffect(() => {
+    setMappingExportBusy(false);
+    return () => { exportGeneration.current += 1; };
+  }, [installationId]);
+  const [rowsError, setRowsError] = useState<string | null>(null);
+  const [rowsRetry, setRowsRetry] = useState(0);
   const [mode, setMode] = useState<ViewMode>(
     initialMode ?? resumeState?.mode ?? 'RECONCILIATION',
   );
@@ -125,16 +165,58 @@ export function DataViewScreen({ navigation, route }: Props) {
     ],
   );
 
+  const mapNodeKey = electricalDiagram?.nodes.map((node) => node.id).sort().join('|') ?? '';
+  useEffect(() => {
+    if (!item || item.id !== installationId || !electricalDiagram || layoutDirty || mode !== 'ELECTRICAL') return;
+    let active = true;
+    const namespace = layoutNamespace.current;
+    const request = ++layoutRequest.current;
+    setLayoutLoading(true); setLayoutLoadError(''); setLayoutSession(null);
+    void loadElectricalMapLayout(installationId, electricalDiagram.nodes.map((node) => node.id), () => {
+      if (layoutNamespace.current !== namespace || layoutRequest.current !== request) throw new Error('The electrical map screen changed.');
+    }).then((session) => { if (active) setLayoutSession(session); })
+      .catch((caught) => { if (active) setLayoutLoadError(caught instanceof Error ? caught.message : 'The saved arrangement could not be loaded.'); })
+      .finally(() => { if (active) setLayoutLoading(false); });
+    return () => { active = false; };
+  }, [installationId, item?.id, item?.tree_revision, item?.server_tree_revision, item?.record_version_number, mapNodeKey, layoutDirty, layoutReload, mode]);
+
+  const layoutDirtyChanged = (dirty: boolean) => {
+    setLayoutDirty(dirty);
+    if (!dirty) { layoutAttempt.current = null; setLayoutEditsLocked(false); setRetainedLayoutDraft(null); }
+  };
+  const saveMapLayout = async (layout: ElectricalMapLayoutDocument) => {
+    if (!layoutSession) throw new Error('Reload the saved arrangement before saving.');
+    if (!layoutAttempt.current) {
+      layoutAttempt.current = await prepareElectricalMapLayoutAttempt(layoutSession, layout);
+      setLayoutEditsLocked(true);
+    } else if (pinnedMappingCanonicalJson(layoutAttempt.current.layout) !== pinnedMappingCanonicalJson(layout)) {
+      throw new Error('Retry must keep the original arrangement. Discard it before making different changes.');
+    }
+    await executeElectricalMapLayoutAttempt(layoutAttempt.current);
+    // The receipt is persisted already. A presentation refresh failure must not
+    // turn a confirmed save into a second mutation on retry.
+    layoutAttempt.current = null;
+    setLayoutEditsLocked(false);
+    await refresh().catch(() => undefined);
+    setLayoutReload((current) => current + 1);
+  };
+
   useEffect(() => {
     if (!item) return;
+    let active = true;
+    setRowsError(null);
     void Promise.all([
       canonicalInstallationRepo.electricalTree(installationId),
       canonicalInstallationRepo.allAssetMetering(installationId),
     ]).then(([tree, rows]) => {
+      if (!active) return;
       setTreeRows(tree);
       setMeteringRows(rows);
+    }).catch((caught) => {
+      if (active) setRowsError(caught instanceof Error ? caught.message : 'The electrical and metering tables could not be loaded.');
     });
-  }, [installationId, item?.tree_revision]);
+    return () => { active = false; };
+  }, [installationId, item?.tree_revision, rowsRetry]);
 
   const issuePartition = useMemo(
     () => partitionReadinessIssues(readiness?.issues ?? [], {
@@ -330,27 +412,63 @@ export function DataViewScreen({ navigation, route }: Props) {
     );
   }, [mappingAsset, measurementAssignments]);
 
-  if (loading || !item || !readiness) {
-    return (
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <LoadingState />
-      </View>
-    );
-  }
+  const retry = () => {
+    setRowsRetry((current) => current + 1);
+    void refresh().catch(() => undefined);
+  };
+  const discardUnavailableDraft = () => Alert.alert('Discard pending arrangement?',
+    'The installation is unavailable. Discard the retained symbol positions and go back?', [
+      { text: 'Keep pending positions', style: 'cancel' },
+      { text: 'Discard and go back', style: 'destructive', onPress: () => {
+        layoutDirtyChanged(false);
+        navigation.goBack();
+      } },
+    ]);
+  if (loading && (!item || !readiness) && !layoutDirty) return <LoadingState />;
+  if (!item || item.id !== installationId || !readiness) return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <RecordLoadState title="Installation data unavailable"
+        message={error ?? 'The installation or its readiness data is no longer available.'}
+        onRetry={retry} onBack={layoutDirty ? discardUnavailableDraft : () => navigation.goBack()} />
+      {layoutDirty ? <Card style={{ margin: spacing.lg }}>
+        <Text style={{ color: colors.foreground }}>Your pending arrangement is retained while you retry this installation.</Text>
+        <Button title="Discard arrangement and go back" variant="secondary" onPress={discardUnavailableDraft} />
+      </Card> : null}
+    </View>
+  );
+
+  const downloadPinnedMapping = async () => {
+    if (mappingExportBusy || !item.record_version_number) return;
+    const generation = ++exportGeneration.current;
+    setMappingExportBusy(true);
+    try {
+      await sharePinnedInstallationMapping(installationId, item.record_version_number, () => {
+        if (exportGeneration.current !== generation) throw new Error('The mapping screen changed. Download cancelled.');
+      });
+    } catch (caught) {
+      if (exportGeneration.current === generation) Alert.alert('Mapping download unavailable', caught instanceof Error ? caught.message : 'The pinned mapping could not be downloaded.');
+    } finally {
+      if (exportGeneration.current === generation) setMappingExportBusy(false);
+    }
+  };
 
   const header = (
     <View>
-      <Text style={[typography.title, { color: colors.foreground }]}>Installation data</Text>
+      <Text testID={`electrical-map-installation:${installationId}`} style={[typography.title, { color: colors.foreground }]}>Installation data</Text>
       <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
         {item.site_name} · revision {readiness.treeRevision}
       </Text>
+      <Button title={mappingExportBusy ? 'Downloading pinned mapping…' : 'Download pinned mapping'} variant="secondary"
+        disabled={mappingExportBusy || !readiness.eligibility.mappingExport || !item.record_version_number || Boolean(item.is_imported_copy)}
+        onPress={() => void downloadPinnedMapping()} style={{ marginTop: spacing.md }} />
+      {!readiness.eligibility.mappingExport ? <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>A completed, eligible cloud version is required for the pinned mapping JSON.</Text> : null}
       <View style={styles.modeRow} accessibilityRole="tablist">
         {(['RECONCILIATION', 'VALIDATION', 'COVERAGE', 'ELECTRICAL', 'PHYSICAL'] as const).map((value) => (
           <Pressable
             key={value}
             accessibilityRole="tab"
             accessibilityState={{ selected: mode === value }}
-            onPress={() => setMode(value)}
+            onPress={() => { if (!blockWhileArranging()) setMode(value); }}
             style={[
               styles.modeButton,
               { backgroundColor: mode === value ? colors.primary : colors.muted },
@@ -370,7 +488,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           </Pressable>
         ))}
       </View>
-      <SearchBar value={search} onChangeText={setSearch} placeholder={`Search ${mode.toLocaleLowerCase()}…`} />
+      <SearchBar value={search} onChangeText={(value) => { if (!blockWhileArranging()) setSearch(value); }} placeholder={`Search ${mode.toLocaleLowerCase()}…`} />
       {mode === 'RECONCILIATION' ? (
         <>
           <SelectChips
@@ -443,7 +561,7 @@ export function DataViewScreen({ navigation, route }: Props) {
                 style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}
               >
                 {issuePartition.validation.length
-                  ? `${issuePartition.validation.filter((issue) => issue.severity === 'ERROR').length} blocking · ${issuePartition.validation.filter((issue) => issue.severity === 'WARNING').length} warning · showing ${visibleValidationIssues.length}. These checks still affect readiness but are not TBC reconciliation.`
+                  ? `${issuePartition.validation.filter((issue) => issue.severity === 'ERROR').length} blocking · ${issuePartition.validation.filter((issue) => issue.severity === 'WARNING').length} warning · showing ${visibleValidationIssues.length}. Only explicit TBC relationships block completion.`
                   : 'No additional local completion checks need attention.'}
               </Text>
             </View>
@@ -466,12 +584,18 @@ export function DataViewScreen({ navigation, route }: Props) {
             <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Supply and measurement stay separate</Text>
             <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>FED_FROM builds the electrical supply hierarchy. MEASURES shows which installed device channels measure a target and never changes that target's supply parent.</Text>
           </Card>
+          {layoutLoading ? <Text testID="electrical-map-layout-loading" style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>Loading saved electrical arrangement…</Text> : null}
+          {layoutLoadError ? <Card style={{ marginBottom: spacing.sm }}>
+            <Text testID="electrical-map-layout-load-error" accessibilityRole="alert" style={{ color: colors.destructive }}>Saved arrangement unavailable: {layoutLoadError}</Text>
+            <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>The local automatic diagram remains available.</Text>
+            <Button title="Reload saved arrangement" variant="secondary" onPress={() => setLayoutReload((current) => current + 1)} />
+          </Card> : null}
           <SelectChips
             label="Electrical map view"
             value={electricalViewMode}
             options={['DIAGRAM', 'RELATIONSHIPS']}
             getLabel={(value) => value === 'DIAGRAM' ? 'Single-line diagram' : 'Relationship details'}
-            onChange={setElectricalViewMode}
+            onChange={(value) => { if (!blockWhileArranging()) setElectricalViewMode(value); }}
           />
         </>
       ) : null}
@@ -614,6 +738,8 @@ export function DataViewScreen({ navigation, route }: Props) {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {error || rowsError ? <RecordLoadState inline title="Could not refresh installation data"
+        message={error ?? rowsError!} onRetry={retry} onBack={() => navigation.goBack()} /> : null}
       {mode === 'RECONCILIATION' ? (
         <FlatList
           data={visibleIssues}
@@ -624,7 +750,7 @@ export function DataViewScreen({ navigation, route }: Props) {
             <EmptyState
               title="Nothing left to confirm"
               subtitle={issuePartition.validation.length
-                ? 'Explicit TBC choices are resolved. Open Checks for other completion issues.'
+                ? 'Explicit TBC choices are resolved. Optional capture does not block completion.'
                 : 'All local choices are confirmed.'}
             />
           )}
@@ -640,7 +766,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           ListEmptyComponent={(
             <EmptyState
               title="No completion checks"
-              subtitle="No non-TBC local validation issues need attention."
+              subtitle="No other completion checks need attention."
             />
           )}
           contentContainerStyle={styles.pad}
@@ -665,7 +791,7 @@ export function DataViewScreen({ navigation, route }: Props) {
               {row.state === 'UNMETERED' ? (
                 <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>No direct device/channel connection; this metering state alone is non-blocking.</Text>
               ) : row.state === 'MAPPING_ISSUE' ? (
-                <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: 4 }}>Declared metering and exact assignments disagree. Resolve before completion.</Text>
+                <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: 4 }}>Declared metering and exact assignments disagree. Optional follow-up; excluded from confirmed topology.</Text>
               ) : null}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                 <Button title="Map meter/channels" variant="secondary" onPress={() => { void openMapping(row.id); }} />
@@ -678,13 +804,21 @@ export function DataViewScreen({ navigation, route }: Props) {
           contentContainerStyle={styles.pad}
         />
       ) : mode === 'ELECTRICAL' && electricalViewMode === 'DIAGRAM' ? (
-        <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+        <FormScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
           {header}
           {electricalDiagram ? (
             <ElectricalSingleLineDiagram
               model={electricalDiagram}
               search={search}
+              savedLayout={layoutSession?.savedLayout}
+              retainedDraft={retainedLayoutDraft}
+              onDraftChange={setRetainedLayoutDraft}
+              canArrange={item.status === 'Draft' && Boolean(layoutSession) && !layoutLoading}
+              layoutEditsLocked={layoutEditsLocked}
+              onSaveLayout={saveMapLayout}
+              onLayoutDirtyChange={layoutDirtyChanged}
               onOpenNode={(node) => {
+                if (blockWhileArranging()) return;
                 if (node.kind === 'BOARD') {
                   const board = boards.find((candidate) => candidate.id === node.id);
                   if (board) navigation.navigate('BoardDetail', {
@@ -705,7 +839,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           ) : (
             <EmptyState title="No confirmed electrical map" />
           )}
-        </ScrollView>
+        </FormScrollView>
       ) : mode === 'ELECTRICAL' ? (
         <FlatList
           data={visibleTree}
@@ -942,7 +1076,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           keyExtractor={(meter) => meter.id}
           keyboardShouldPersistTaps="handled"
           accessibilityRole="radiogroup"
-          accessibilityLabel="Eligible upstream meters"
+          accessibilityLabel="Eligible meters on the supplying board"
           contentContainerStyle={styles.mappingList}
           ListHeaderComponent={(
             <View>
@@ -950,7 +1084,7 @@ export function DataViewScreen({ navigation, route }: Props) {
                 {mappingAsset?.display_code} · {mappingAsset?.asset_name}
               </Text>
               <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-                Record which non-spare meter channels directly measure this asset. Only meters installed on its validated upstream electrical path are shown.
+                Record which non-spare meter channels directly measure this asset. Only meters installed on the asset’s immediate supplying electrical board are shown.
               </Text>
               <SearchBar
                 value={meterSearch}
@@ -985,7 +1119,7 @@ export function DataViewScreen({ navigation, route }: Props) {
             <Text style={{ color: colors.mutedForeground }}>
               {eligibleMeters.length
                 ? 'No meters match this search. Refine or clear the search.'
-                : 'No eligible upstream meter is available. Resolve the supply path or install a meter first.'}
+                : 'No eligible meter is available on the supplying board. Confirm the asset’s supplying board or install a meter on that board first.'}
             </Text>
           )}
           ListFooterComponent={selectedMeter ? (

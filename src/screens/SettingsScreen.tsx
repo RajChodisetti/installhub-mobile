@@ -1,3 +1,5 @@
+import { RecoveryCopyViewer } from '../components/RecoveryCopyViewer';
+import type { AssignedWorkRecoveryCheckout } from '../types';
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
@@ -17,6 +19,7 @@ import { getCloudBackupStats } from '../repositories';
 import { spacing, typography, type ThemeMode } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { useSyncStatus } from '../services/SyncStatusContext';
+import { backupOutcomeMessage } from '../services/backupOutcome';
 import {
   clearGeneratedReportCache,
   clearImportedThumbnailCache,
@@ -35,6 +38,7 @@ import {
 import {
   ASSIGNED_WORK_RECOVERY_MANIFEST_WARNING,
   listAssignedWorkRecoverySummaries,
+  readAssignedWorkRecoveryCheckout,
   shareAssignedWorkRecoveryManifest,
   type AssignedWorkRecoverySummary,
 } from '../services/assignedWorkRecovery';
@@ -51,10 +55,12 @@ const emptyBackupStats = {
 export function SettingsScreen({ navigation }: Props) {
   const { user, logout } = useAuth();
   const { colors, mode, resolvedMode, setMode } = useTheme();
-  const { syncing, progress, lastSyncedAt, triggerSync, retrySync } = useSyncStatus();
+  const { syncing, progress, lastSyncedAt, lastConfirmedBackupAt, retrySync } = useSyncStatus();
+  const backupOutcome = progress.phase === 'done' ? backupOutcomeMessage(progress.installationOutcome) : null;
   const [backupStats, setBackupStats] = useState(emptyBackupStats);
   const [storage, setStorage] = useState<StorageDiagnostics>();
   const [recoveryManifests, setRecoveryManifests] = useState<AssignedWorkRecoverySummary[]>([]);
+  const [recoveryCopy, setRecoveryCopy] = useState<AssignedWorkRecoveryCheckout | null>(null);
   const [clearing, setClearing] = useState<'reports' | 'previews'>();
   const sourceManaged = user?.source_managed === true;
   const sourceUnavailable = user?.source_state === 'orphaned';
@@ -160,6 +166,8 @@ export function SettingsScreen({ navigation }: Props) {
   );
 
   return (
+    <>
+    <RecoveryCopyViewer copy={recoveryCopy?.actor_user_id === user?.id ? recoveryCopy : null} onClose={() => setRecoveryCopy(null)} />
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
@@ -219,8 +227,8 @@ export function SettingsScreen({ navigation }: Props) {
         <Card style={{ marginTop: spacing.md }}>
           <SectionHeader title="Recovery support manifests" />
           <Text style={[styles.note, { color: colors.mutedForeground }]}>
-            These actor-owned snapshots preserve unsent work that was on this
-            device when a canonical assignment moved to another account. They
+            These actor-owned snapshots preserve device work before reassignment
+            or an explicit choice to use the server version. They
             are excluded from normal jobs and automatic Cloud Backup. A support
             manifest lists the retained records and pending active-time sessions.
           </Text>
@@ -239,8 +247,10 @@ export function SettingsScreen({ navigation }: Props) {
               <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
                 {recovery.zones} zone(s) · {recovery.forms} form(s) ·{' '}
                 {recovery.pendingUploads} pending upload(s) ·{' '}
-                {recovery.pendingActiveTimeSessions} pending time session(s)
+                {recovery.pendingActiveTimeSessions} time session(s){recovery.reason === 'same_actor_reconciliation' ? ' pending when preserved' : ' pending for support'}
               </Text>
+              <Button title="Inspect recovery copy" variant="secondary" style={{ marginTop: spacing.sm }}
+                onPress={() => { void readAssignedWorkRecoveryCheckout(recovery.id).then(setRecoveryCopy).catch((error) => Alert.alert('Recovery copy unavailable', error instanceof Error ? error.message : String(error))); }} />
               <Button
                 title="Share support manifest"
                 variant="secondary"
@@ -265,13 +275,21 @@ export function SettingsScreen({ navigation }: Props) {
           Server: {SYNC_API_URL}
         </Text>
         <Text style={{ color: colors.mutedForeground, marginBottom: 4 }}>
-          Last successful backup:{' '}
+          Last backup check:{' '}
           {lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'Not yet'}
         </Text>
-        <Text style={{ color: colors.mutedForeground, marginBottom: 12 }}>
-          Pending {backupStats.pending + backupStats.uploading} · Failed{' '}
-          {backupStats.failed} · Evidence backed up {backupStats.backedUp}
+        <Text style={{ color: colors.mutedForeground, marginBottom: 4 }}>
+          Last confirmed installation backup:{' '}
+          {lastConfirmedBackupAt ? new Date(lastConfirmedBackupAt).toLocaleString() : 'Not yet'}
         </Text>
+        <Text style={{ color: colors.mutedForeground, marginBottom: 12 }}>
+          Evidence uploads: Pending {backupStats.pending + backupStats.uploading} · Failed{' '}
+          {backupStats.failed} · Backed up {backupStats.backedUp}
+        </Text>
+        {backupOutcome ? <Text accessibilityRole={backupOutcome.needsAttention ? 'alert' : undefined}
+          style={{ color: backupOutcome.needsAttention ? colors.destructive : colors.mutedForeground, marginBottom: 12 }}>
+          {backupOutcome.message}
+        </Text> : null}
         <Text style={[styles.note, { color: colors.mutedForeground }]}>
           Backup is opt-in for each installation. Cloud forms shared with you
           stay separate until you import a local cp1, cp2, … copy.
@@ -284,7 +302,7 @@ export function SettingsScreen({ navigation }: Props) {
         <Button
           title={syncing ? 'Backing up…' : 'Back up opted-in installations'}
           disabled={syncing}
-          onPress={() => void (backupStats.failed ? retrySync() : triggerSync())}
+          onPress={() => void retrySync()}
         />
         <Button
           title="Browse cloud backups"
@@ -362,6 +380,18 @@ export function SettingsScreen({ navigation }: Props) {
         />
       </Card>
 
+      <Card style={{ marginTop: spacing.md }}>
+        <SectionHeader title="Diagnostics" />
+        <Text style={[styles.note, { color: colors.mutedForeground }]}>
+          Inspect the API connection, local records, backup queues, and storage.
+        </Text>
+        <Button
+          title="Open diagnostics"
+          variant="secondary"
+          onPress={() => navigation.navigate('Diagnostics')}
+        />
+      </Card>
+
       {user?.role === 'admin' ? (
         <>
           <Card style={{ marginTop: spacing.md }}>
@@ -373,12 +403,6 @@ export function SettingsScreen({ navigation }: Props) {
             <Button
               title="Manage users"
               onPress={() => navigation.navigate('UserManagement')}
-            />
-            <Button
-              title="Diagnostics"
-              variant="secondary"
-              style={{ marginTop: spacing.sm }}
-              onPress={() => navigation.navigate('Diagnostics')}
             />
           </Card>
 
@@ -417,6 +441,7 @@ export function SettingsScreen({ navigation }: Props) {
         <Button title="Log out" variant="danger" onPress={() => void logout()} />
       </View>
     </ScrollView>
+    </>
   );
 }
 

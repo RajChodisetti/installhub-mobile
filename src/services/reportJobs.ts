@@ -4,6 +4,7 @@ import {
   apiClient,
   runWithCloudAccessToken,
   type ExportJobStatus,
+  type CloudSessionAuthority,
 } from '../api/apiClient';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import type { ReportJobPin } from './reportVersioning';
@@ -112,13 +113,21 @@ function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+export type ReportJobActionContext = {
+  authority?: CloudSessionAuthority;
+  assertCurrent(): void;
+};
+
 export async function waitForReportJob(
   jobId: string,
   onStatus: (status: ExportJobStatus) => void = () => {},
   signal?: AbortSignal,
+  context?: ReportJobActionContext,
 ): Promise<ExportJobStatus> {
   while (!signal?.aborted) {
-    const status = await apiClient.getExportJobStatus(jobId);
+    context?.assertCurrent();
+    const status = await apiClient.getExportJobStatus(jobId, context?.authority, signal);
+    context?.assertCurrent();
     onStatus(status);
     if (status.status === 'complete') return status;
     if (status.status === 'failed') {
@@ -132,7 +141,9 @@ export async function waitForReportJob(
 export async function downloadReportJob(
   jobId: string,
   filename: string,
+  context?: ReportJobActionContext,
 ): Promise<string> {
+  context?.assertCurrent();
   const directory = new Directory(Paths.cache, 'form-reports');
   directory.create({ idempotent: true, intermediates: true });
   const destination = new File(
@@ -142,13 +153,13 @@ export async function downloadReportJob(
   const url =
     `${SYNC_API_URL}/v1/export/jobs/${encodeURIComponent(jobId)}/download`;
   const downloaded = await runWithCloudAccessToken(
-    (token) => authenticatedFileDownload({
-      url,
-      destination,
-      token,
-      expectedContentType: 'application/pdf',
-    }),
+    (token) => {
+      context?.assertCurrent();
+      return authenticatedFileDownload({ url, destination, token, expectedContentType: 'application/pdf' });
+    },
+    context?.authority,
   );
+  context?.assertCurrent();
   return downloaded.uri;
 }
 

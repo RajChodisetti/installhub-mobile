@@ -4,6 +4,7 @@ import {
   Image,
   Pressable,
   ScrollView,
+  type ScrollViewProps,
   StyleSheet,
   Text,
   TextInput,
@@ -18,7 +19,15 @@ import { radii, spacing, typography } from '../../theme';
 import { useTheme } from '../../context/AppProviders';
 import { cachedThumbnailUri } from '../../repositories/cloudSyncRepository';
 
+/** Keeps focused iOS form inputs above the keyboard, including modal forms. */
+export const FormScrollView = React.forwardRef<ScrollView, ScrollViewProps>(
+  function FormScrollView(props, ref) {
+    return <ScrollView ref={ref} automaticallyAdjustKeyboardInsets keyboardShouldPersistTaps="handled" {...props} />;
+  },
+);
+
 export function Button({
+  testID,
   title,
   onPress,
   variant = 'primary',
@@ -29,6 +38,7 @@ export function Button({
   accessibilityState,
   accessibilityRole = 'button',
 }: {
+  testID?: string;
   title: string;
   onPress?: () => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
@@ -59,6 +69,7 @@ export function Button({
 
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole={accessibilityRole}

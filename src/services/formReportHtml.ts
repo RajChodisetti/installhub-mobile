@@ -192,12 +192,12 @@ export function buildFormReportHtml(
     .section-bar { background: ${theme.navy}; color: ${theme.white}; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; padding: 7px 12px; margin-top: 14px; break-after: avoid; page-break-after: avoid; }
     .section-number { display: inline-block; width: 19px; height: 19px; margin-right: 8px; border-radius: 50%; background: rgba(255,255,255,.18); text-align: center; line-height: 19px; letter-spacing: 0; }
     h3 { color: ${theme.navy}; background: ${theme.surface}; border-left: 4px solid ${theme.navy}; font-size: 9.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 5px; padding: 7px 10px; break-after: avoid; page-break-after: avoid; }
-    .fields { display: table; width: 100%; border: 1px solid ${theme.border}; border-top: 0; border-collapse: collapse; }
-    .field-row { display: table-row; break-inside: avoid; page-break-inside: avoid; }
+    .fields { width: 100%; border: 1px solid ${theme.border}; border-top: 0; }
+    .field-row { display: table; table-layout: fixed; width: 100%; break-inside: avoid; page-break-inside: avoid; }
     .field-label, .field-value { display: table-cell; border-top: 1px solid ${theme.border}; vertical-align: top; }
     .field-row:first-child .field-label, .field-row:first-child .field-value { border-top: 0; }
-    .field-label { width: 40%; padding: 6px 10px 6px 12px; color: ${theme.slate}; background: ${theme.surfaceMuted}; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-    .field-value { width: 60%; padding: 6px 12px; color: ${theme.ink}; font-size: 9pt; white-space: pre-wrap; }
+    .field-label { width: 40%; padding: 6px 10px 6px 12px; color: ${theme.slate}; background: ${theme.surfaceMuted}; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; overflow-wrap: anywhere; word-wrap: break-word; }
+    .field-value { width: 60%; padding: 6px 12px; color: ${theme.ink}; font-size: 9pt; white-space: pre-wrap; overflow-wrap: anywhere; word-wrap: break-word; }
     .not-provided { color: ${theme.muted}; font-style: italic; }
     .badge { display: inline-block; padding: 2px 8px; border: 1px solid; border-radius: 999px; font-size: 7.5pt; font-weight: 800; }
     .badge-yes { color: ${theme.successText}; background: ${theme.successBackground}; border-color: ${theme.successBorder}; }

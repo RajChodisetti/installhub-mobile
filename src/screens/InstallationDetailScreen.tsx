@@ -1,5 +1,7 @@
+import type { ScrollView } from 'react-native';
+import { FormScrollView } from '../components/ui';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
 import {
@@ -110,6 +112,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     measurementAssignments,
     readiness,
     loading,
+    error: loadError,
     refresh,
   } = useInstallation(installationId);
   const [zoneModal, setZoneModal] = useState(false);
@@ -119,6 +122,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [zoneCode, setZoneCode] = useState('');
   const zoneCodeEdited = useRef(false);
   const [zoneDesc, setZoneDesc] = useState('');
+  const [zoneBusy, setZoneBusy] = useState(false);
+  const zoneCreating = useRef(false);
   const [backupChanging, setBackupChanging] = useState(false);
   const [completionBusy, setCompletionBusy] = useState(false);
   const [completionNotes, setCompletionNotes] = useState('');
@@ -134,6 +139,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [gridNmi, setGridNmi] = useState('');
   const [gridExternalKey, setGridExternalKey] = useState('');
   const [gridDefault, setGridDefault] = useState(false);
+  const [gridBusy, setGridBusy] = useState(false);
   const [secondaryOpen, setSecondaryOpen] = useState(false);
   const [finalizedNamesOpen, setFinalizedNamesOpen] = useState(false);
 
@@ -183,6 +189,24 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <LoadingState />
+      </View>
+    );
+  }
+  if (loadError) {
+    return (
+      <View style={{ flex: 1, padding: spacing.lg, backgroundColor: colors.background }}>
+        <EmptyState title="Could not load installation" subtitle={loadError} />
+        <Button
+          title="Try again"
+          style={{ marginTop: spacing.md }}
+          onPress={() => { void refresh().catch(() => undefined); }}
+        />
+        <Button
+          title="Return to installations"
+          variant="secondary"
+          style={{ marginTop: spacing.sm }}
+          onPress={() => navigation.popToTop()}
+        />
       </View>
     );
   }
@@ -945,9 +969,17 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
   function handleBackupPreference() {
     if (!item?.cloud_backup_enabled) {
+      if (backupChanging) return;
+      setBackupChanging(true);
       void (async () => {
-        await installationsRepo.setCloudBackupEnabled(installationId, true);
-        await refresh();
+        try {
+          await installationsRepo.setCloudBackupEnabled(installationId, true);
+          await refresh();
+        } catch (error) {
+          Alert.alert('Could not enable Cloud Backup', cloudConnectionErrorMessage(error));
+        } finally {
+          setBackupChanging(false);
+        }
       })();
       return;
     }
@@ -985,7 +1017,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   }
 
   return (
-    <ScrollView
+    <FormScrollView
       ref={scrollViewRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
@@ -1224,13 +1256,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           {brokenAssetMappings ? <Badge label={`${brokenAssetMappings} mapping issue${brokenAssetMappings === 1 ? '' : 's'}`} tone="danger" /> : null}
         </View>
         {unassignedActiveChannels ? (
-          <Text style={{ color: colors.destructive, fontWeight: '700', marginTop: spacing.sm }}>
-            {unassignedActiveChannels} active meter channel{unassignedActiveChannels === 1 ? ' is' : 's are'} still unassigned and must be mapped or marked Spare / unused.
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm }}>
+            {unassignedActiveChannels} active meter channel{unassignedActiveChannels === 1 ? ' is' : 's are'} unassigned. Review channel measurements when available; unassigned channels do not block completion.
           </Text>
         ) : null}
         {meteringCounts.tbc || brokenAssetMappings || unassignedActiveChannels ? (
           <Button
-            title="Resolve metering issues"
+            title={meteringCounts.tbc || brokenAssetMappings ? 'Resolve metering issues' : 'Review channel measurements'}
             variant="ghost"
             style={{ marginTop: spacing.sm }}
             onPress={() => requestAssignedWorkAction(() => {
@@ -1519,15 +1551,31 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             onPress={() => requestAssignedWorkAction(confirmRemoveCloudCopy)}
           />
         ) : null}
-        {user?.role === 'admin' && item.cloud_backup_enabled ? (
+        {item.cloud_backup_enabled ? (
           <Button
-            title="Manage shared access"
+            title={user?.role === 'admin' ? 'Manage shared access' : 'View shared access'}
             variant="secondary"
             style={{ marginTop: spacing.sm }}
             onPress={() => requestAssignedWorkAction(() => {
               navigation.navigate('InstallationAccess', { installationId });
             })}
           />
+        ) : null}
+        {user?.role === 'admin' && item.server_tree_revision !== undefined && (item.cloud_backup_enabled || item.cloud_backup_retained) ? (
+          <>
+            <Button
+              title="Financial summary"
+              variant="secondary"
+              style={{ marginTop: spacing.sm }}
+              onPress={() => requestAssignedWorkAction(() => navigation.navigate('FinancialSummary', { installationId }))}
+            />
+            <Button
+              title="Invoices"
+              variant="secondary"
+              style={{ marginTop: spacing.sm }}
+              onPress={() => requestAssignedWorkAction(() => navigation.navigate('Invoices', { installationId }))}
+            />
+          </>
         ) : null}
         {item.cloud_backup_enabled ||
         item.cloud_backup_retained ||
@@ -1585,7 +1633,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
                   })(); })}
                 />
               ) : null}
-              {!grid.isDefault && gridSupplies.length > 1 ? (
+              {gridSupplies.length > 1 ? (
                 <Button
                   title="Remove"
                   variant="danger"
@@ -1593,11 +1641,13 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
                   const impact = await gridSuppliesRepo.previewRemove(grid.id);
                   Alert.alert(
                     'Remove Grid supply?',
-                    `This converts ${impact.boards} board source(s), ${impact.siteAssets} asset source(s), and ${impact.assignments} boundary assignment(s) to TBC. Historical versions are preserved.`,
+                    impact.boards + impact.siteAssets + impact.assignments
+                      ? `This converts ${impact.boards} board source(s), ${impact.siteAssets} asset source(s), and ${impact.assignments} boundary assignment(s) to TBC. Historical versions are preserved.`
+                      : `This connection has no references.${grid.isDefault ? ' A remaining connection will become the default.' : ''} Historical versions are preserved.`,
                     [
                       { text: 'Cancel', style: 'cancel' },
                       {
-                        text: 'Convert to TBC and remove',
+                        text: impact.boards + impact.siteAssets + impact.assignments ? 'Convert to TBC and remove' : 'Remove connection',
                         style: 'destructive',
                         onPress: () => { void requestAssignedWorkAction(async () => {
                           await gridSuppliesRepo.remove(grid.id, true);
@@ -1722,14 +1772,15 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         ) : null}
       </FormModal>
 
-      <FormModal visible={zoneModal} title="New zone" onClose={() => setZoneModal(false)}>
-        <TextField label="Zone name" value={zoneName} onChangeText={(value) => {
+      <FormModal visible={zoneModal} title="New zone" onClose={() => { if (!zoneBusy) setZoneModal(false); }}>
+        <TextField label="Zone name" value={zoneName} editable={!zoneBusy} onChangeText={(value) => {
           setZoneName(value);
           if (!zoneCodeEdited.current) setZoneCode(availableZoneCode(zones, value));
         }} />
         <TextField
           label="Zone short code"
           value={zoneCode}
+          editable={!zoneBusy}
           autoCapitalize="characters"
           maxLength={ZONE_CODE_MAX_LENGTH}
           onChangeText={(value) => {
@@ -1738,23 +1789,45 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           }}
           error={zoneCode && !isValidZoneCode(zoneCode) ? 'Use uppercase letters/numbers with single internal hyphens.' : undefined}
         />
-        <TextField label="Description" value={zoneDesc} onChangeText={setZoneDesc} />
+        <TextField label="Description" value={zoneDesc} editable={!zoneBusy} onChangeText={setZoneDesc} />
         <Button
-          title="Create zone"
-          disabled={!zoneName.trim() || !isValidZoneCode(zoneCode)}
-          onPress={() => { void requestAssignedWorkAction(async () => {
-            await zonesRepo.create({
-              audit_id: installationId,
-              zone_code: zoneCode,
-              zone_name: zoneName.trim(),
-              zone_description: zoneDesc.trim(),
+          title={zoneBusy ? 'Creating zone…' : 'Create zone'}
+          disabled={zoneBusy || Boolean(zoneCode.trim() && !isValidZoneCode(zoneCode.trim()))}
+          onPress={() => {
+            if (zoneCreating.current) return;
+            const normalizedName = zoneName.trim() || 'Zone';
+            const normalizedCode = zoneCode.trim().toUpperCase()
+              || availableZoneCode(zones, normalizedName);
+            const normalizedDescription = zoneDesc.trim();
+            if (!isValidZoneCode(normalizedCode)) {
+              Alert.alert('Invalid zone short code', 'Use uppercase letters/numbers with single internal hyphens.');
+              return;
+            }
+            if (availableZoneCode(zones, normalizedCode) !== normalizedCode) {
+              Alert.alert('Zone short code already used', 'Choose a unique short code or leave it blank to generate one.');
+              return;
+            }
+            zoneCreating.current = true;
+            setZoneBusy(true);
+            void requestAssignedWorkAction(async () => {
+              await zonesRepo.create({
+                audit_id: installationId,
+                zone_code: normalizedCode,
+                zone_name: normalizedName,
+                zone_description: normalizedDescription,
+              });
+              setZoneModal(false);
+              setZoneName('');
+              setZoneCode('');
+              setZoneDesc('');
+              await refresh().catch(() => undefined);
+            }).catch((error) => {
+              Alert.alert('Could not create zone', cloudConnectionErrorMessage(error));
+            }).finally(() => {
+              zoneCreating.current = false;
+              setZoneBusy(false);
             });
-            setZoneModal(false);
-            setZoneName('');
-            setZoneCode('');
-            setZoneDesc('');
-            await refresh();
-          }); }}
+          }}
         />
       </FormModal>
 
@@ -1831,7 +1904,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       </FormModal>
 
       <FormModal visible={gridModal} title={editingGridId ? 'Edit incoming grid connection' : 'Add incoming grid connection'} onClose={() => setGridModal(false)}>
-        <TextField label="Supply name" value={gridName} onChangeText={setGridName} />
+        <TextField label="Connection name" placeholder="Defaults to Incoming grid connection" value={gridName} onChangeText={setGridName} />
         <TextField label="NMI (optional)" value={gridNmi} maxLength={100} onChangeText={setGridNmi} />
         <TextField label="External key (optional)" value={gridExternalKey} onChangeText={setGridExternalKey} />
         <Button
@@ -1839,19 +1912,21 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           variant={gridDefault ? 'primary' : 'secondary'}
           accessibilityRole="checkbox"
           accessibilityState={{ checked: gridDefault }}
-          onPress={() => setGridDefault(true)}
+          onPress={() => setGridDefault((value) => !value)}
         />
         <Button
-          title="Save incoming grid connection"
-          disabled={!gridName.trim()}
+          title={gridBusy ? 'Saving…' : 'Save incoming grid connection'}
+          disabled={gridBusy}
           style={{ marginTop: spacing.md }}
           onPress={() => { void requestAssignedWorkAction(async () => {
+            setGridBusy(true);
+            try {
             if (editingGridId) {
               await gridSuppliesRepo.update(editingGridId, {
                 name: gridName,
                 nmi: gridNmi,
                 externalKey: gridExternalKey,
-                ...(gridDefault ? { isDefault: true } : {}),
+                isDefault: gridDefault,
               });
             } else {
               await gridSuppliesRepo.create({
@@ -1864,10 +1939,15 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             }
             setGridModal(false);
             await refresh();
+            } catch (error) {
+              Alert.alert('Connection not saved', error instanceof Error ? error.message : 'Please try again.');
+            } finally {
+              setGridBusy(false);
+            }
           }); }}
         />
       </FormModal>
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

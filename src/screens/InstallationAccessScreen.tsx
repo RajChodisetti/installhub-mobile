@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { FormScrollView } from '../components/ui';
+import { loadInstallationAccessView } from '../domain/supportCloudReads';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Alert,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -15,7 +17,7 @@ import {
   type ManagedCloudUser,
 } from '../api/apiClient';
 import { Button, Card, LoadingState, SectionHeader } from '../components/ui';
-import { useTheme } from '../context/AppProviders';
+import { useAuth, useTheme } from '../context/AppProviders';
 import type { RootStackParamList } from '../navigation/types';
 import {
   captureAuthenticatedCloudActionLease,
@@ -34,6 +36,20 @@ import {
 } from '../utils/sourceManagedUsers';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationAccess'>;
+type AccessView = {
+  key: string;
+  principal: unknown;
+  installationId: string;
+  active: boolean;
+  reading: number;
+  saving: boolean;
+};
+type AccessSnapshot = {
+  view: AccessView;
+  access: InstallationAccess;
+  users: ManagedCloudUser[];
+  lease: AuthenticatedCloudActionLease;
+};
 
 function userLabel(user: Pick<ManagedCloudUser, 'email' | 'fullName'>): string {
   return user.fullName?.trim() || sourceUserDisplayEmail(user.email);
@@ -42,36 +58,80 @@ function userLabel(user: Pick<ManagedCloudUser, 'email' | 'fullName'>): string {
 export function InstallationAccessScreen({ route }: Props) {
   const { installationId } = route.params;
   const { colors } = useTheme();
-  const [access, setAccess] = useState<InstallationAccess | null>(null);
-  const [users, setUsers] = useState<ManagedCloudUser[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [loadError, setLoadError] = useState<string>();
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
+  const key = JSON.stringify([installationId, currentUser?.id ?? null, currentUser?.role ?? null]);
+  const currentKey = useRef(key);
+  currentKey.current = key;
+  const principal = useRef(currentUser);
+  principal.current = currentUser;
+  const viewRef = useRef<AccessView | null>(null);
+  const [snapshot, setSnapshot] = useState<AccessSnapshot>();
+  const [selection, setSelection] = useState<{ view: AccessView; userId: string | null }>();
+  const [activity, setActivity] = useState<{ view: AccessView; loading: boolean; saving: boolean; error?: string }>();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(undefined);
-    try {
-      const [nextAccess, usersResponse] = await Promise.all([
-        apiClient.getInstallationAccess(installationId),
-        apiClient.listUsers(),
-      ]);
-      setAccess(nextAccess);
-      setSelectedUserId(nextAccess.assignedInspectorUserId);
-      setUsers(usersResponse.data);
-    } catch (error) {
-      const message = cloudConnectionErrorMessage(error);
-      setLoadError(message);
-      Alert.alert('Could not load access', message);
-    } finally {
-      setLoading(false);
+  const isCurrent = (view: AccessView | null): view is AccessView => Boolean(view && view.active
+    && viewRef.current === view && currentKey.current === view.key && principal.current === view.principal);
+  const bind = (view: AccessView, lease: AuthenticatedCloudActionLease): AuthenticatedCloudActionLease => ({
+    ...lease,
+    assertCurrent() {
+      if (!isCurrent(view)) throw new Error('The access screen changed. Return to the current installation and retry.');
+      lease.assertCurrent();
+      if (lease.actorUserId !== currentUser?.id) throw new Error('The signed-in account changed. Retry from the current account.');
+    },
+  });
+  const validateAccess = (value: InstallationAccess, expectedId: string) => {
+    if (!value || value.installationId !== expectedId) throw new Error('Access was returned for a different installation. Retry this installation.');
+    if (value.assignedInspector && value.assignedInspector.id !== value.assignedInspectorUserId) {
+      throw new Error('The returned assignment does not match its user. Retry this installation.');
     }
-  }, [installationId]);
+  };
+  const loadFor = useCallback(async (view: AccessView) => {
+    if (!isCurrent(view) || view.saving) return;
+    const ticket = ++view.reading;
+    setActivity({ view, loading: true, saving: false });
+    try {
+      const lease = bind(view, await captureAuthenticatedCloudActionLease());
+      const result = await runLeasedCloudActionStep(lease, () => loadInstallationAccessView(view.installationId, currentUser?.role, {
+        getInstallationAccess: (id) => runLeasedCloudActionStep(lease, () => apiClient.getInstallationAccess(id, lease.cloudAuthority)),
+        listUsers: () => runLeasedCloudActionStep(lease, () => apiClient.listUsers(lease.cloudAuthority)),
+      }));
+      validateAccess(result.access, view.installationId);
+      if (!isCurrent(view) || ticket !== view.reading) return;
+      setSnapshot({ view, ...result, lease });
+      setSelection({ view, userId: result.access.assignedInspectorUserId });
+    } catch (error) {
+      if (isCurrent(view) && ticket === view.reading) {
+        setActivity({ view, loading: false, saving: false, error: cloudConnectionErrorMessage(error) });
+      }
+    } finally {
+      if (isCurrent(view) && ticket === view.reading) setActivity((value) => value?.view === view ? { ...value, loading: false } : value);
+    }
+  }, [key, currentUser]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useFocusEffect(useCallback(() => {
+    const view: AccessView = { key, principal: currentUser, installationId, active: true, reading: 0, saving: false };
+    viewRef.current = view;
+    if (currentUser) void loadFor(view);
+    else setActivity({ view, loading: false, saving: false, error: 'Sign in to view installation access.' });
+    return () => { view.active = false; view.reading += 1; };
+  }, [key, currentUser, installationId, loadFor]));
+
+  // Render and callbacks remain bound to this focus/record/account, including
+  // a same-account credential replacement that leaves the route mounted.
+  const view = viewRef.current;
+  let visibleSnapshot: AccessSnapshot | undefined;
+  if (snapshot && isCurrent(snapshot.view)) {
+    try { snapshot.lease.assertCurrent(); visibleSnapshot = snapshot; } catch { /* Old authority cannot display or assign access. */ }
+  }
+  const currentActivity = isCurrent(view) && activity?.view === view ? activity : undefined;
+  const loading = currentActivity?.loading ?? true;
+  const saving = currentActivity?.saving ?? false;
+  const loadError = currentActivity?.error ?? (!loading && !visibleSnapshot ? 'Installation access is unavailable. Retry with the current session.' : undefined);
+  const access = visibleSnapshot?.access;
+  const users = visibleSnapshot?.users ?? [];
+  const selectedUserId = selection?.view === view ? selection.userId : access?.assignedInspectorUserId ?? null;
+  const load = () => isCurrent(view) ? loadFor(view) : Promise.resolve();
 
   const activeUsers = useMemo(
     () =>
@@ -85,7 +145,7 @@ export function InstallationAccessScreen({ route }: Props) {
     [users],
   );
 
-  if (loading && !access) return <LoadingState />;
+  if (loading) return <LoadingState />;
 
   const currentAssignment = access?.assignedInspector;
   const currentAssignmentUser = users.find(
@@ -94,23 +154,29 @@ export function InstallationAccessScreen({ route }: Props) {
   const unchanged = selectedUserId === (access?.assignedInspectorUserId ?? null);
 
   const save = async () => {
-    const actionLeasePromise = captureAuthenticatedCloudActionLease();
+    if (!isAdmin || !isCurrent(view) || view.saving || loading || loadError || !visibleSnapshot || unchanged) return;
+    try { visibleSnapshot.lease.assertCurrent(); } catch { return; }
+    const requestedInstallationId = view.installationId;
     const requestedAssignedInspectorUserId = selectedUserId;
     let actionLease: AuthenticatedCloudActionLease | null = null;
-    setSaving(true);
+    view.saving = true;
+    view.reading += 1;
+    setActivity({ view, loading: false, saving: true });
     try {
-      actionLease = await actionLeasePromise;
+      actionLease = bind(view, await captureAuthenticatedCloudActionLease());
       const updated = await runLeasedCloudActionStep(
         actionLease,
         () => apiClient.setInstallationAccess(
-          installationId,
+          requestedInstallationId,
           requestedAssignedInspectorUserId,
           actionLease!.cloudAuthority,
         ),
       );
+      validateAccess(updated, requestedInstallationId);
+      if (updated.assignedInspectorUserId !== requestedAssignedInspectorUserId) throw new Error('The returned assignment differs from the requested user. Reload access before retrying.');
       applyLeasedCloudActionState(actionLease, () => {
-        setAccess(updated);
-        setSelectedUserId(updated.assignedInspectorUserId);
+        setSnapshot({ ...visibleSnapshot, access: updated, lease: actionLease! });
+        setSelection({ view, userId: updated.assignedInspectorUserId });
         Alert.alert(
           'Access updated',
           updated.assignedInspector
@@ -119,7 +185,7 @@ export function InstallationAccessScreen({ route }: Props) {
         );
       });
     } catch (error) {
-      let canReport = true;
+      let canReport = isCurrent(view);
       if (actionLease) {
         try {
           actionLease.assertCurrent();
@@ -128,10 +194,12 @@ export function InstallationAccessScreen({ route }: Props) {
         }
       }
       if (canReport) {
+        setActivity({ view, loading: false, saving: true, error: cloudConnectionErrorMessage(error) });
         Alert.alert('Could not update access', cloudConnectionErrorMessage(error));
       }
     } finally {
-      setSaving(false);
+      view.saving = false;
+      if (isCurrent(view)) setActivity((value) => value?.view === view ? { ...value, saving: false } : value);
     }
   };
 
@@ -148,7 +216,11 @@ export function InstallationAccessScreen({ route }: Props) {
         accessibilityLabel={`${title}. ${subtitle}`}
         accessibilityState={{ checked: selected, disabled: saving }}
         disabled={saving}
-        onPress={() => setSelectedUserId(id)}
+        onPress={() => {
+          if (isCurrent(view) && !view.saving && visibleSnapshot) {
+            try { visibleSnapshot.lease.assertCurrent(); setSelection({ view, userId: id }); } catch { /* Stale option is inert. */ }
+          }
+        }}
         style={({ pressed }) => [
           styles.option,
           {
@@ -186,7 +258,7 @@ export function InstallationAccessScreen({ route }: Props) {
   };
 
   return (
-    <ScrollView
+    <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.content}
     >
@@ -234,6 +306,7 @@ export function InstallationAccessScreen({ route }: Props) {
             </Text>
           </Card>
 
+          {isAdmin ? <>
           <SectionHeader title="Assign to" />
           <View accessibilityRole="radiogroup" accessibilityLabel="Assigned inspector">
             {option(
@@ -262,9 +335,10 @@ export function InstallationAccessScreen({ route }: Props) {
             style={{ marginTop: spacing.md }}
             onPress={() => void save()}
           />
+          </> : <Text style={{ color: colors.mutedForeground, marginTop: spacing.md }}>Only administrators can change the assigned inspector.</Text>}
         </>
       )}
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

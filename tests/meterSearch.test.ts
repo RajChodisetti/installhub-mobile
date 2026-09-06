@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { searchEligibleMeters, searchInstallationDevices } from '../src/domain/meterSearch';
+import { deviceSearchIdentity, searchEligibleMeters, searchInstallationDevices } from '../src/domain/meterSearch';
 import type {
   DeviceSearchRecord,
 } from '../src/domain/meterSearch';
@@ -126,4 +126,25 @@ test('installation device search excludes every other installation and remains d
     reversed.visible.map((record) => record.meter.id),
   );
   assert.deepEqual(first.visible.map((record) => record.installation.id), ['installation-2']);
+});
+
+test('device search matches portal token order, whitespace, distinct custom names and family', () => {
+  const record = installationRecord(7);
+  record.meter.customName = 'Recirculation Pump';
+  for (const query of ['Pump A6M', '  WATTWATCHERS\tRecirculation  ', 'SERIAL-7 Factory Boiler', '7 recirculation main']) {
+    assert.deepEqual(searchInstallationDevices([record], record.installation.id, query).visible, [record], query);
+  }
+  assert.equal(searchInstallationDevices([record], record.installation.id, 'Pump missing').total, 0);
+  assert.equal(searchInstallationDevices([record], 'foreign-installation', 'Pump A6M').total, 0);
+  record.board.asset_name = 'B1'; record.board.display_code = 'B1'; record.board.asset_type = 'PV-DB';
+  assert.equal(searchInstallationDevices([record], record.installation.id, 'Distribution PV/Solar').total, 1);
+});
+
+test('device result distinguishes human model, custom name and generated asset ID like the portal', () => {
+  const m = meter(1); m.customName = 'Pump';
+  assert.deepEqual(deviceSearchIdentity(m), { name: 'Wattwatchers A6M', customName: 'Pump', assetId: m.displayName.value });
+  m.displayName.value = 'wattwatchers   A6M'; assert.equal(deviceSearchIdentity(m).assetId, '');
+  m.deviceFamily = 'OTHER'; m.deviceModel = 'OTHER'; m.customManufacturerName = 'QA'; m.customModelName = 'Custom Model';
+  assert.equal(deviceSearchIdentity(m).name, 'QA Custom Model');
+  m.customName = ''; assert.equal(deviceSearchIdentity(m).customName, '');
 });

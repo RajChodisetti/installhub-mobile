@@ -1,3 +1,4 @@
+import { prepareAssignedWorkConflictRecovery, confirmAssignedWorkConflictRecovery, type ConflictRecoveryReview } from '../services/assignedWorkConflictRecovery';
 import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -5,7 +6,6 @@ import { useInstallations } from '../hooks';
 import { InstallationCard } from '../components/domain';
 import { Button, Card, EmptyState, LoadingState, SearchBar, SectionHeader } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
-import { searchMatch } from '../utils';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { getLocalDeletionPreview, installationsRepo } from '../repositories';
@@ -19,7 +19,8 @@ import { useSyncStatus } from '../services/SyncStatusContext';
 import {
   dashboardJobGroupLabel,
   dashboardJobTiming,
-  sortDashboardJobs,
+  filterDashboardJobs,
+  type DashboardStatusFilter,
 } from '../domain/jobDashboard';
 
 type Props = { navigation: NativeStackNavigationProp<RootStackParamList> };
@@ -27,18 +28,15 @@ type Props = { navigation: NativeStackNavigationProp<RootStackParamList> };
 export function DashboardScreen({ navigation }: Props) {
   const { colors } = useTheme();
   const { user } = useAuth();
-  const { items, loading, refresh } = useInstallations();
+  const { items, countsByInstallation, loading, refresh } = useInstallations();
   const { triggerSync } = useSyncStatus();
   const [query, setQuery] = useState('');
+  const [status, setStatus] = useState<DashboardStatusFilter>('All');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [recoveringId, setRecoveringId] = useState<string | null>(null);
   const filtered = useMemo(
-    () => sortDashboardJobs(
-      items.filter((i) =>
-        i.thumbnail_status !== 'pending' &&
-        searchMatch(`${i.site_name} ${i.client_name} ${i.site_address} ${i.inspector_name}`, query),
-      ),
-    ),
-    [items, query],
+    () => filterDashboardJobs(items, query, status),
+    [items, query, status],
   );
   const jobCounts = useMemo(() => filtered.reduce(
     (counts, installation) => {
@@ -48,8 +46,32 @@ export function DashboardScreen({ navigation }: Props) {
     { scheduled: 0, unscheduled: 0, completed: 0 },
   ), [filtered]);
 
+  const recoverInstallation = async (installationId: string) => {
+    if (recoveringId || deletingId) return;
+    setRecoveringId(installationId);
+    let review: ConflictRecoveryReview | undefined;
+    try {
+      review = await prepareAssignedWorkConflictRecovery(installationId);
+      const confirmed = await new Promise<boolean>((resolve) => Alert.alert(
+        'Preserve device copy and use server version?',
+        `Device: ${review!.localLabel}\n${review!.localCounts}\n\nServer: ${review!.serverLabel} · revision ${review!.serverTreeRevision}\n${review!.serverCounts}\n\nYour full device capture and original evidence will remain in a separate local-only recovery copy in Settings. The working job will use the reviewed server version. This does not upload recovered work or overwrite the server.`,
+        [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Preserve and use server', onPress: () => resolve(true) }],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      ));
+      if (!confirmed) return;
+      await confirmAssignedWorkConflictRecovery(review);
+      await refresh();
+      review.lease.assertCurrent();
+      Alert.alert('Device copy preserved', 'The job now uses the reviewed server version. Inspect the separate recovery copy in Settings before transferring any unsent changes manually.');
+    } catch (error) {
+      if (review) { try { review.lease.assertCurrent(); } catch { return; } }
+      Alert.alert('Recovery not completed', error instanceof Error ? error.message : 'The checkout was not replaced. Try again.');
+    } finally { setRecoveringId(null); }
+  };
+
   const deleteInstallation = async (installation: Installation) => {
-    if (deletingId) return;
+    if (deletingId || recoveringId) return;
     const actorUserId = user?.id;
     if (!actorUserId) {
       Alert.alert('Installation not deleted', 'Sign in again before deleting local work.');
@@ -119,7 +141,11 @@ export function DashboardScreen({ navigation }: Props) {
         </Text>
       </View>
       <Card style={{ marginBottom: spacing.md }} accessibilityRole="summary">
-        <Text style={{ color: colors.foreground, fontWeight: '800' }}>My jobs</Text>
+        <Text style={{ color: colors.foreground, fontWeight: '800' }}>Matching jobs on this device</Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
+          {filtered.length} installations · {filtered.length - jobCounts.completed} Draft · {jobCounts.completed} Completed ·{' '}
+          {filtered.reduce((total, item) => total + (countsByInstallation[item.id]?.forms ?? 0), 0)} field forms
+        </Text>
         <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
           {jobCounts.scheduled} scheduled · {jobCounts.unscheduled} unscheduled · {jobCounts.completed} completed
         </Text>
@@ -127,7 +153,20 @@ export function DashboardScreen({ navigation }: Props) {
           Scheduled work is ordered by the nearest scheduled start or deadline. Unscheduled work stays below it.
         </Text>
       </Card>
-      <SearchBar value={query} onChangeText={setQuery} placeholder="Search sites or clients" />
+      <SearchBar value={query} onChangeText={setQuery} placeholder="Search site, client, address, or installer" />
+      <View style={styles.statusFilters} accessibilityRole="radiogroup" accessibilityLabel="Filter installations by status">
+        {(['All', 'Draft', 'Completed'] as const).map((value) => (
+          <Button
+            key={value}
+            title={value}
+            variant={status === value ? 'primary' : 'secondary'}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: status === value }}
+            style={{ flex: 1 }}
+            onPress={() => setStatus(value)}
+          />
+        ))}
+      </View>
       <Button
         title="Start New Site Installation"
         onPress={() => navigation.navigate('InstallationForm')}
@@ -159,7 +198,10 @@ export function DashboardScreen({ navigation }: Props) {
             />
           )}
           ListEmptyComponent={
-            <EmptyState title="No installations" subtitle="Create a site installation to get started." />
+            <EmptyState
+              title={items.length ? 'No installations match' : 'No installations'}
+              subtitle={items.length ? 'Try another search or status.' : 'Create a site installation to get started.'}
+            />
           }
           renderItem={({ item, index }) => {
             const group = dashboardJobTiming(item).group;
@@ -173,10 +215,16 @@ export function DashboardScreen({ navigation }: Props) {
                 ) : null}
                 <InstallationCard
                   item={item}
-                  onPress={() => navigation.navigate('InstallationDetail', { installationId: item.id })}
+                  counts={countsByInstallation[item.id]}
+                  onPress={() => { if (!recoveringId) navigation.navigate('InstallationDetail', { installationId: item.id }); }}
                   onDelete={() => { void deleteInstallation(item); }}
-                  deleteDisabled={Boolean(deletingId)}
+                  deleteDisabled={Boolean(deletingId || recoveringId)}
                 />
+                {item.assigned_work_refresh_conflict || item.backup_conflict?.kind === 'CONFLICT' ? (
+                  <Button title={recoveringId === item.id ? 'Reviewing recovery…' : 'Review sync conflict'}
+                    variant="secondary" disabled={Boolean(recoveringId || deletingId)}
+                    onPress={() => { void recoverInstallation(item.id); }} style={{ marginBottom: spacing.md }} />
+                ) : null}
               </View>
             );
           }}
@@ -190,4 +238,5 @@ export function DashboardScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, padding: spacing.lg },
   hero: { marginBottom: spacing.lg, marginTop: spacing.sm },
+  statusFilters: { flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.md },
 });

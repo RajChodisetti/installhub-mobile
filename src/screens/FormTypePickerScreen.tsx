@@ -1,5 +1,6 @@
+import { FormScrollView } from '../components/ui';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { FORM_DEFINITIONS } from '../forms/catalog';
 import {
@@ -7,6 +8,7 @@ import {
   formsRepo,
   siteAssetsRepo,
 } from '../repositories';
+import { RecordLoadState } from '../components/RecordLoadState';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { Badge, Button, Card, LoadingState, SearchBar } from '../components/ui';
 import { spacing, typography } from '../theme';
@@ -25,6 +27,8 @@ import {
   installationFormAnswersForMeter,
 } from '../domain/formMeterPrefill';
 import { canonicalNmiForBoard } from '../domain/gridSupplyContext';
+import { defaultMeterCustomName } from '../domain/namingV2';
+import { canonicalWwSwitchboardTypeAnswer } from '../domain/meterCommissioning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FormTypePicker'>;
 
@@ -39,13 +43,14 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
     gridSupplies,
     meterDevices,
     loading,
+    error,
+    refresh,
   } = useInstallation(installationId);
   const [busy, setBusy] = useState<FormType | null>(null);
   const [selectedBoardId, setSelectedBoardId] = useState(boardId ?? '');
   const [boardSearch, setBoardSearch] = useState('');
   const [newBoardOpen, setNewBoardOpen] = useState(false);
   const [newBoardZoneId, setNewBoardZoneId] = useState(zoneId ?? '');
-  const [switchboardPickerRequested, setSwitchboardPickerRequested] = useState(false);
 
   useEffect(() => {
     if (!newBoardZoneId && zones.length) setNewBoardZoneId(zoneId ?? zones[0].id);
@@ -56,7 +61,13 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
     [boardSearch, boards, selectedBoardId, zones],
   );
 
-  if (loading || !installation || !user) return <LoadingState />;
+  const retry = () => { void refresh().catch(() => undefined); };
+  if (loading && !installation) return <LoadingState />;
+  if (!installation || !user) return (
+    <RecordLoadState title="Form workspace unavailable"
+      message={error ?? (!user ? 'Sign in to create a field form.' : 'This installation is no longer available.')}
+      onRetry={retry} onBack={() => navigation.goBack()} />
+  );
 
   const allowed = FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
@@ -68,15 +79,15 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
     ) return false;
     return isFormTypeAvailableForContext(definition.type, { boardId, meterId, siteAssetId });
   });
-  const showSwitchboardPicker = !boardId && (
-    needsWattwatchersSwitchboard(formType) || switchboardPickerRequested
-  );
+  const showSwitchboardPicker = !boardId && allowed.some((definition) => needsWattwatchersSwitchboard(definition.type));
 
   return (
-    <ScrollView
+    <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
     >
+      {error ? <RecordLoadState inline title="Could not refresh form workspace" message={error}
+        onRetry={retry} onBack={() => navigation.goBack()} /> : null}
       <Text style={[typography.title, { color: colors.foreground }]}>New field form</Text>
       <Text style={{ color: colors.mutedForeground, marginTop: 6, marginBottom: spacing.lg }}>
         Choose the work record. Site and installer details will be prefilled.
@@ -85,7 +96,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
         <Card style={{ marginBottom: spacing.lg }}>
           <Text style={[typography.subheading, { color: colors.foreground }]}>Wattwatchers switchboard</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 5, marginBottom: spacing.md, lineHeight: 20 }}>
-            A WW installation form belongs to one canonical switchboard. Select it now or add it without losing this screen.
+            Optional. Select a switchboard to prefill its details, or start the form without a board.
           </Text>
           <SearchBar
             value={boardSearch}
@@ -108,7 +119,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                   accessibilityRole="radio"
                   accessibilityState={{ checked: selected }}
                   accessibilityLabel={`${board.asset_name}, ${board.asset_type}, ${zone?.zone_name ?? 'unknown zone'}`}
-                  onPress={() => setSelectedBoardId(board.id)}
+                  onPress={() => setSelectedBoardId(selected ? '' : board.id)}
                   style={[
                     styles.boardChoice,
                     {
@@ -146,7 +157,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
         </Card>
       ) : null}
       {allowed.map((definition) => (
-        <Card key={definition.type} style={{ marginBottom: spacing.md }}>
+        <Card key={definition.type} testID={`form-type:${definition.type}`} style={{ marginBottom: spacing.md }}>
           <View style={styles.row}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[typography.subheading, { color: colors.foreground }]}>
@@ -159,30 +170,21 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
             <Badge label={`${definition.sections.length} sections`} />
           </View>
           <Button
-            title={busy === definition.type
-              ? 'Creating…'
-              : needsWattwatchersSwitchboard(definition.type) && !selectedBoardId
-                ? showSwitchboardPicker
-                  ? 'Select a switchboard to start'
-                  : 'Choose switchboard'
-                : 'Start form'}
-            disabled={!!busy || (
-              needsWattwatchersSwitchboard(definition.type)
-              && !selectedBoardId
-              && showSwitchboardPicker
-            )}
+            testID={`form-start:${definition.type}`}
+            title={busy === definition.type ? 'Creating…' : 'Start form'}
+            disabled={!!busy}
             style={{ marginTop: spacing.md }}
             onPress={async () => {
-              if (needsWattwatchersSwitchboard(definition.type) && !selectedBoardId) {
-                setSwitchboardPickerRequested(true);
-                return;
-              }
               setBusy(definition.type);
               try {
-                const formBoardId = ['ww-installation', 'ace-switchboard'].includes(definition.type)
+                const formBoardId = definition.type === 'ww-installation'
                   ? selectedBoardId || boardId
                   : boardId;
                 const answers = createInitialFormAnswers(installation, user);
+                if (definition.type === 'ww-installation') {
+                  answers['device.type'] = 'A3RM';
+                  answers['device.name'] = defaultMeterCustomName('A3RM');
+                }
                 const canonicalMeter = meterId
                   ? meterDevices.find(
                       (item) => item.id === meterId && item.installedOnBoardId === formBoardId,
@@ -194,7 +196,9 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
                     const electricityNmi = canonicalNmiForBoard(board, gridSupplies);
                     answers['auditor.switchboard_name'] = board.asset_name;
                     answers['auditor.switchboard_location'] = board.location_description ?? '';
-                    answers['auditor.switchboard_type'] = board.asset_type;
+                    answers['auditor.switchboard_type'] = definition.type === 'ww-installation'
+                      ? canonicalWwSwitchboardTypeAnswer(board)
+                      : board.asset_type;
                     answers['auditor.site_nmi'] = electricityNmi;
                     answers['existing.switchboard_location'] = board.location_description ?? '';
                     answers['existing.switchboard_type'] = board.asset_type;
@@ -278,7 +282,7 @@ export function FormTypePickerScreen({ navigation, route }: Props) {
           }}
         />
       </FormModal>
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

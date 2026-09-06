@@ -96,6 +96,44 @@ function remoteTree(assetValue = 'CUSTOM-LOAD'): RemoteInstallationTree {
   };
 }
 
+/** The sync/pull wire projection keeps the canonical object in displayCodeMeta
+ * and uses displayCode for the legacy scalar, for both boards and assets. */
+function pullWireTree(): RemoteInstallationTree {
+  const tree = remoteTree();
+  for (const row of [...tree.electricalAssets, ...tree.siteAssets]) {
+    row.displayCodeMeta = row.displayCode;
+    row.displayCode = (row.displayCodeMeta as Record<string, unknown>).value;
+  }
+  return tree;
+}
+
+test('actual sync pull scalar plus metadata codes confirm boards and assets without losing overrides', () => {
+  const store = fixture();
+  mergeResolvedDisplayCodes(store, 'installation', pullWireTree(), 5);
+  assert.equal(store.electricalAssets[0]!.display_code, 'SITE-MSB-001');
+  assert.equal(store.electricalAssets[0]!.display_code_meta?.provisional, false);
+  assert.equal(store.siteAssets[0]!.display_code, 'CUSTOM-LOAD');
+  assert.equal(store.siteAssets[0]!.display_code_meta?.generatedValue, 'SITE-HVAC-001');
+  assert.equal(store.siteAssets[0]!.display_code_meta?.isOverridden, true);
+  assert.equal(store.siteAssets[0]!.display_code_meta?.overrideReason, 'Field label');
+  assert.equal(store.installations[0]!.server_tree_revision, 5);
+});
+
+test('incomplete or contradictory sync pull display metadata never advances the accepted base', () => {
+  for (const mutate of [
+    (row: Record<string, unknown>) => { delete row.displayCodeMeta; },
+    (row: Record<string, unknown>) => { row.displayCodeMeta = 'not metadata'; },
+    (row: Record<string, unknown>) => { row.displayCode = 'DIFFERENT-SCALAR'; },
+    (row: Record<string, unknown>) => { (row.displayCodeMeta as Record<string, unknown>).ruleVersion = 0; },
+    (row: Record<string, unknown>) => { delete (row.displayCodeMeta as Record<string, unknown>).generatedValue; },
+  ]) {
+    const store = fixture(); const before = structuredClone(store); const tree = pullWireTree();
+    mutate(tree.siteAssets[0]!);
+    assert.throws(() => mergeResolvedDisplayCodes(store, 'installation', tree, 5), /displayCode/);
+    assert.deepEqual(store, before);
+  }
+});
+
 test('exact canonical tree finalizes generated board and meter codes while preserving overrides', () => {
   const store = fixture();
   const changes = mergeResolvedDisplayCodes(

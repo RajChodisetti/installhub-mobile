@@ -37,16 +37,5 @@ test('installation workspace exposes every core field workflow through a registe
   });
 });
 
-test('photo gallery consolidates field evidence instead of presenting report-selection controls', () => {
-  const gallerySource = readFileSync(
-    new URL('../src/screens/PhotoPreviewScreen.tsx', import.meta.url),
-    'utf8',
-  );
-
-  assert.match(gallerySource, /zones\.forEach/);
-  assert.match(gallerySource, /boards\.forEach/);
-  assert.match(gallerySource, /siteAssets\.forEach/);
-  assert.match(gallerySource, /meterDevices\.forEach/);
-  assert.match(gallerySource, /forms\.forEach/);
-  assert.doesNotMatch(gallerySource, /Client Report Preview/);
-});
+// Photo collection and persisted report-selection behavior are covered by
+// clientReport.test.ts. The gallery shares that model with the report screen.

@@ -66,6 +66,7 @@ export function RemoteInstallationsScreen({ navigation }: Props) {
         item.siteName,
         item.clientName,
         item.siteAddress,
+        item.inspectorName,
         item.status,
       ].some((value) => value.toLocaleLowerCase().includes(needle)),
     );
@@ -162,7 +163,7 @@ export function RemoteInstallationsScreen({ navigation }: Props) {
       <SearchBar
         value={query}
         onChangeText={setQuery}
-        placeholder="Search site, client, address, or status"
+        placeholder="Search site, client, address, installer, or status"
       />
       <FlatList
         data={filtered}

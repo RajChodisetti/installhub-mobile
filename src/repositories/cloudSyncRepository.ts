@@ -1,3 +1,5 @@
+import { resolveOwnedMediaUri } from '../services/ownedMediaPaths';
+import { installationRecoveryIsActive } from '../services/installationRecoveryFence';
 import type {
   AppDataStore,
   CloudUploadQueueItem,
@@ -215,6 +217,10 @@ export function applyPreparedCompleteBackupAttempt(
   if (!installation.cloud_backup_enabled) {
     throw new Error('Cloud backup was turned off before the final request was persisted.');
   }
+  if (store.cloudSync.pending_metadata_attempts?.[installationId]
+    || store.cloudSync.conflicted_metadata_attempts?.[installationId]) {
+    throw new Error('Resolve the metadata backup confirmation before preparing a complete backup.');
+  }
   if (!expectedTreeWatermark) throw new Error('Complete backup watermark is required.');
   if (
     !Number.isSafeInteger(expectedLocalTreeRevision)
@@ -351,25 +357,52 @@ export async function recordInstallationServerTreeRevision(
   });
 }
 
-export async function listInstallationsNeedingBackup(
-  actorUserId: string,
-): Promise<InstallationBackupTree[]> {
-  await initStore();
-  const store = getStore();
+export interface InstallationBackupSelection {
+  trees: InstallationBackupTree[];
+  visibleInstallationIds: string[];
+  optedInInstallationIds: string[];
+  alreadyCurrentInstallationIds: string[];
+  deferredInstallationIds: string[];
+}
+
+/** Account-visible reporting uses the same guards as dispatch; it never relaxes them. */
+export function buildInstallationBackupSelection(
+  store: AppDataStore, actorUserId: string,
+): InstallationBackupSelection {
   const forced = new Set(store.cloudSync.force_dirty_installation_ids);
   const pendingComplete = new Set(Object.keys(store.cloudSync.pending_complete_attempts ?? {}));
-  return store.installations
-    .filter((installation) => (
-      installationAllowsNewBackupDispatch(installation, actorUserId)
-    ))
-    .map((installation) => buildInstallationBackupTree(store, installation))
-    .filter((tree) => {
-      const syncedAt = store.cloudSync.synced_at_by_installation[tree.installation.id];
-      return pendingComplete.has(tree.installation.id)
-        || forced.has(tree.installation.id)
-        || !syncedAt
-        || tree.watermark > syncedAt;
-    });
+  const selection: InstallationBackupSelection = {
+    trees: [], visibleInstallationIds: [], optedInInstallationIds: [],
+    alreadyCurrentInstallationIds: [], deferredInstallationIds: [],
+  };
+  for (const installation of store.installations) {
+    if (!assignedWorkInstallationIsVisibleToActor(installation, actorUserId)) continue;
+    selection.visibleInstallationIds.push(installation.id);
+    if (!installation.cloud_backup_enabled) continue;
+    selection.optedInInstallationIds.push(installation.id);
+    if (installationRecoveryIsActive(installation.id)
+      || store.cloudSync.pending_metadata_attempts?.[installation.id]
+      || store.cloudSync.conflicted_metadata_attempts?.[installation.id]
+      || !installationAllowsNewBackupDispatch(installation, actorUserId)) {
+      selection.deferredInstallationIds.push(installation.id);
+      continue;
+    }
+    const tree = buildInstallationBackupTree(store, installation);
+    const syncedAt = store.cloudSync.synced_at_by_installation[installation.id];
+    if (pendingComplete.has(installation.id) || forced.has(installation.id)
+      || !syncedAt || tree.watermark > syncedAt) selection.trees.push(tree);
+    else selection.alreadyCurrentInstallationIds.push(installation.id);
+  }
+  return selection;
+}
+
+export async function getInstallationBackupSelection(actorUserId: string): Promise<InstallationBackupSelection> {
+  await initStore();
+  return buildInstallationBackupSelection(getStore(), actorUserId);
+}
+
+export async function listInstallationsNeedingBackup(actorUserId: string): Promise<InstallationBackupTree[]> {
+  return (await getInstallationBackupSelection(actorUserId)).trees;
 }
 
 export class InstallationBackupDispatchBlockedError extends Error {
@@ -415,6 +448,9 @@ export function assertInstallationAllowsNewBackupDispatch(
   );
   if (
     !installation
+    || installationRecoveryIsActive(installationId)
+    || getStore().cloudSync.pending_metadata_attempts?.[installationId]
+    || getStore().cloudSync.conflicted_metadata_attempts?.[installationId]
     || !installationAllowsNewBackupDispatch(installation, actorUserId)
   ) {
     throw new InstallationBackupDispatchBlockedError(
@@ -432,6 +468,7 @@ export function assertInstallationAllowsBackupRecovery(
   );
   if (
     !installation
+    || installationRecoveryIsActive(installationId)
     || !installationAllowsBackupRecovery(installation, actorUserId)
   ) {
     throw new InstallationBackupDispatchBlockedError(
@@ -586,39 +623,54 @@ export async function finishCompleteBackupAttempt(
   assertCurrent?.();
   await updateStore((store) => {
     assertCurrent?.();
-    const attempt = completeAttemptMap(store)[installationId];
-    if (!attempt || assertPendingCompleteAttempt(installationId, attempt).id !== attemptId) {
-      throw new Error('Complete backup attempt changed before confirmation finished.');
-    }
-    const installation = store.installations.find((item) => item.id === installationId);
-    if (
-      !installation
-      || (installation.tree_revision ?? 0) !== attempt.local_tree_revision
-      || treeWatermark(store, installationId) !== attempt.tree_watermark
-      || installation.status !== attempt.installation_status
-    ) {
-      throw new Error('Installation changed before complete backup confirmation finished.');
-    }
-    const hasProvisionalCode = [
-      ...store.electricalAssets
-        .filter((item) => item.audit_id === installationId)
-        .map((item) => item.display_code_meta),
-      ...store.siteAssets
-        .filter((item) => item.audit_id === installationId)
-        .map((item) => item.display_code_meta),
-      ...store.meterDevices
-        .filter((item) => item.installationId === installationId)
-        .map((item) => item.displayName),
-    ].some((display) => display?.provisional);
-    if (hasProvisionalCode) {
-      throw new Error('Canonical display-code reconciliation is required before backup can finish.');
-    }
-    store.cloudSync.synced_at_by_installation[installationId] = attempt.tree_watermark;
-    store.cloudSync.force_dirty_installation_ids =
-      store.cloudSync.force_dirty_installation_ids.filter((id) => id !== installationId);
-    if (installation) installation.backup_conflict = { kind: 'NONE' };
-    delete completeAttemptMap(store)[installationId];
+    applyFinishedCompleteBackupAttempt(store, installationId, attemptId);
   });
+}
+
+/** Final confirmation alone establishes the durable clean local/server pair. */
+export function applyFinishedCompleteBackupAttempt(
+  store: AppDataStore,
+  installationId: string,
+  attemptId: string,
+): void {
+  const attempt = completeAttemptMap(store)[installationId];
+  if (!attempt || assertPendingCompleteAttempt(installationId, attempt).id !== attemptId) {
+    throw new Error('Complete backup attempt changed before confirmation finished.');
+  }
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (
+    !installation
+    || (installation.tree_revision ?? 0) !== attempt.local_tree_revision
+    || treeWatermark(store, installationId) !== attempt.tree_watermark
+    || installation.status !== attempt.installation_status
+    || attempt.accepted_tree_revision === undefined
+    || installation.server_tree_revision !== attempt.accepted_tree_revision
+  ) {
+    throw new Error('Installation changed before complete backup confirmation finished.');
+  }
+  const hasProvisionalCode = [
+    ...store.electricalAssets
+      .filter((item) => item.audit_id === installationId)
+      .map((item) => item.display_code_meta),
+    ...store.siteAssets
+      .filter((item) => item.audit_id === installationId)
+      .map((item) => item.display_code_meta),
+    ...store.meterDevices
+      .filter((item) => item.installationId === installationId)
+      .map((item) => item.displayName),
+  ].some((display) => display?.provisional);
+  if (hasProvisionalCode) {
+    throw new Error('Canonical display-code reconciliation is required before backup can finish.');
+  }
+  store.cloudSync.synced_at_by_installation[installationId] = attempt.tree_watermark;
+  store.cloudSync.force_dirty_installation_ids =
+    store.cloudSync.force_dirty_installation_ids.filter((id) => id !== installationId);
+  if (installation) {
+    installation.backup_conflict = { kind: 'NONE' };
+    installation.last_synced_local_tree_revision = attempt.local_tree_revision;
+    installation.last_synced_server_tree_revision = installation.server_tree_revision;
+  }
+  delete completeAttemptMap(store)[installationId];
 }
 
 export async function discardCompleteBackupAttempt(
@@ -995,7 +1047,14 @@ export async function getNextThumbnailDownload(
   assertCurrentAssignedWorkAuthority(authority, actorUserId);
   await initStore();
   assertCurrentAssignedWorkAuthority(authority, actorUserId);
-  const job = nextThumbnailDownloadForActor(getStore(), actorUserId);
+  const current = getStore();
+  const job = nextThumbnailDownloadForActor({
+    ...current,
+    cloudSync: {
+      ...current.cloudSync,
+      thumbnail_queue: current.cloudSync.thumbnail_queue.filter((row) => !installationRecoveryIsActive(row.installation_id)),
+    },
+  }, actorUserId);
   return job ? { ...job } : null;
 }
 
@@ -1009,6 +1068,8 @@ export async function updateThumbnailDownload(
   let updated = false;
   await updateStore((store) => {
     assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    const item = store.cloudSync.thumbnail_queue.find((row) => row.id === id);
+    if (item && installationRecoveryIsActive(item.installation_id)) return;
     updated = updateThumbnailDownloadForActor(
       store,
       id,
@@ -1022,6 +1083,8 @@ export async function updateThumbnailDownload(
 }
 
 export function cachedThumbnailUri(remoteUri: string): string | undefined {
+  const ownedUri = resolveOwnedMediaUri(remoteUri);
+  if (ownedUri !== remoteUri) return ownedUri;
   const item = getStore().cloudSync.thumbnail_queue.find(
     (job) => job.remote_uri === remoteUri && job.status === 'ready',
   );

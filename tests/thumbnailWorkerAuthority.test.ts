@@ -264,7 +264,7 @@ test('thumbnail repository, worker, import, and foreground calls carry one pinne
     assert.match(method, /authority: AssignedWorkMutationAuthority/);
     assert.match(method, /assertCurrentAssignedWorkAuthority\(authority, actorUserId\)/);
   }
-  assert.match(repository, /nextThumbnailDownloadForActor\(getStore\(\), actorUserId\)/);
+  assert.match(repository, /nextThumbnailDownloadForActor\([\s\S]*?thumbnail_queue:[\s\S]*?!installationRecoveryIsActive\(row.installation_id\)[\s\S]*?}, actorUserId\)/);
   assert.match(repository, /updateStore\(\(store\) => \{[\s\S]*updateThumbnailDownloadForActor/);
   assert.match(repository, /assignedWorkInstallationIsVisibleToActor\(item, actorUserId\)/);
 

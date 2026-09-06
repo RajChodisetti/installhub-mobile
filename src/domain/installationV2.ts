@@ -1,4 +1,7 @@
+import { INSTALLATION_SITE_CODE_MAX_LENGTH, isValidInstallationSiteCode, normalizedSiteCode } from './installationSiteCode';
+export { INSTALLATION_SITE_CODE_MAX_LENGTH, INSTALLATION_SITE_CODE_PATTERN, isValidInstallationSiteCode, normalizedSiteCode } from './installationSiteCode';
 import { sha256 } from 'js-sha256';
+import { assignmentApprovalSignature, planMeterAssetTakeover, planSiteChannelTakeover, type AssignmentTakeoverApprovals } from './meterAssignmentTakeover';
 import {
   validIanaTimezone,
   validateInstallationIdentity,
@@ -187,26 +190,6 @@ export function siteAssetTypeCode(value: SiteAssetType | string): SiteAssetTypeC
 
 export function siteAssetTypeFromCode(value: SiteAssetTypeCode): SiteAssetType {
   return SITE_CODE_TO_LEGACY[value];
-}
-
-export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
-export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
-
-export function isValidInstallationSiteCode(value: string): boolean {
-  return value.length >= 1
-    && value.length <= INSTALLATION_SITE_CODE_MAX_LENGTH
-    && INSTALLATION_SITE_CODE_PATTERN.test(value);
-}
-
-export function normalizedSiteCode(siteName: string): string {
-  const words = siteName
-    .normalize('NFKD')
-    .replace(/[^a-zA-Z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (!words.length) return 'SITE';
-  return words.map((word) => word[0]).join('').toUpperCase().slice(0, 8) || 'SITE';
 }
 
 /** Project a grandfathered site code to the same bounded prefix used by the
@@ -417,6 +400,7 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
     }),
     id: device.id,
     device_name: device.displayName.value,
+    device_type: legacyModel(device.deviceModel),
     custom_name: device.customName
       ?? defaultMeterCustomName(
         device.deviceModel,
@@ -1072,10 +1056,10 @@ function addCycleIssues(
   }
 }
 
-export function installationReadiness(
+export function installationValidationIssues(
   store: AppDataStore,
   installationId: string,
-): InstallationReadiness {
+): ReadinessIssue[] {
   const installation = store.installations.find((item) => item.id === installationId);
   if (!installation) throw new Error('Installation not found');
   const issues: ReadinessIssue[] = [];
@@ -1090,7 +1074,6 @@ export function installationReadiness(
   const boardById = new Map(boards.map((item) => [item.id, item]));
   const assetById = new Map(assets.map((item) => [item.id, item]));
   const meterById = new Map(meters.map((item) => [item.id, item]));
-  const timezoneValid = validIanaTimezone(installation.timezone ?? '');
   for (const error of validateInstallationIdentity(installation)) {
     issue(issues, {
       code: error.field === 'timezone'
@@ -1511,8 +1494,38 @@ export function installationReadiness(
     a.severity.localeCompare(b.severity) ||
     a.code.localeCompare(b.code) ||
     a.entityId.localeCompare(b.entityId));
-  const readyToComplete = issues.every((item) => item.severity !== 'ERROR');
-  const pinned = installation.status === 'Completed' && Boolean(installation.record_version_number);
+  return issues;
+}
+
+/** Match the portal/API TBC-only policy. Quality diagnostics remain available
+ * for mapping presentation, but omitted capture and legacy inconsistencies do
+ * not become completion gates. Inspect the actual value: legacy diagnostics
+ * reuse TBC issue codes for invalid confirmed relationships. */
+export function installationReadiness(
+  store: AppDataStore,
+  installationId: string,
+): InstallationReadiness {
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('Installation not found');
+  const issues = installationValidationIssues(store, installationId).filter((entry) => {
+    if (entry.code === 'SUPPLY_TBC') {
+      const entity = entry.entityType === 'board'
+        ? store.electricalAssets.find((item) => item.id === entry.entityId && item.audit_id === installationId)
+        : store.siteAssets.find((item) => item.id === entry.entityId && item.audit_id === installationId);
+      return entity?.electrical_source?.kind === 'TBC';
+    }
+    if (entry.code === 'METERING_STATE_INVALID' && entry.field === 'meteringState') {
+      return store.siteAssets.some((item) => item.id === entry.entityId
+        && item.audit_id === installationId && item.metering_state?.kind === 'TBC');
+    }
+    if (entry.code === 'MEASUREMENT_TARGET_TBC' && entry.field === 'targetConfirmation') {
+      return store.measurementAssignments.some((item) => item.id === entry.entityId
+        && item.installationId === installationId && item.target.kind === 'TBC');
+    }
+    return false;
+  });
+  const readyToComplete = issues.every((entry) => entry.severity !== 'ERROR');
+  const completedAndReady = readyToComplete && installation.status === 'Completed';
   return {
     installationId,
     treeRevision: installation.tree_revision ?? 0,
@@ -1520,9 +1533,8 @@ export function installationReadiness(
     readyToComplete,
     eligibility: {
       draftDiagnosticReport: true,
-      authoritativeReport: readyToComplete && pinned,
-      mappingExport: readyToComplete && pinned && timezoneValid,
-      // The accepted neutral export exists, but external DataDome transport is gated.
+      authoritativeReport: completedAndReady,
+      mappingExport: completedAndReady,
       dataDomeDelivery: false,
     },
     issues,
@@ -1874,7 +1886,7 @@ export function allAssetMeteringRows(store: AppDataStore, installationId: string
     store.measurementAssignments.filter((item) => item.installationId === installationId).map((item) => [item.id, item]),
   );
   const readinessIssues = installation
-    ? installationReadiness(store, installationId).issues.filter((item) => item.severity === 'ERROR')
+    ? installationValidationIssues(store, installationId).filter((item) => item.severity === 'ERROR')
     : [];
   const serverDerived = installation?.server_derived;
   const serverVirtuals = serverDerived && serverDerived.treeRevision === installation?.server_tree_revision
@@ -2110,6 +2122,7 @@ export function setAssetMeteringState(
   assetId: string,
   state: MeteringState,
   assignments: MeasurementAssignment[] = [],
+  takeoverApprovals?: AssignmentTakeoverApprovals,
 ): void {
   const asset = store.siteAssets.find((item) => item.id === assetId);
   if (!asset) throw new Error('Site asset not found');
@@ -2117,6 +2130,7 @@ export function setAssetMeteringState(
     (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === assetId,
   );
   let selected: MeasurementAssignment[] = [];
+  let displacedAssetIds: string[] = [];
   if (state.kind === 'METERED') {
     const ids = new Set(state.measurementAssignmentIds);
     selected = assignments.filter((assignment) => ids.has(assignment.id));
@@ -2135,26 +2149,21 @@ export function setAssetMeteringState(
   );
   if (state.kind === 'METERED') {
     const selectedChannelIds = new Set(selected.flatMap((assignment) => assignment.channelIds));
-    next = next.flatMap((assignment) => {
-      const overlap = assignment.channelIds.filter((channelId) => selectedChannelIds.has(channelId));
-      if (!overlap.length) return [assignment];
-      if (assignment.target.kind !== 'TBC') {
-        throw new Error('A selected channel is already assigned elsewhere.');
-      }
-      const remaining = assignment.channelIds.filter((channelId) => !selectedChannelIds.has(channelId));
-      if (!remaining.length) return [];
-      return [{
-        ...assignment,
-        channelIds: remaining,
-        phaseMode: remaining.length === 1
-          ? 'SINGLE_PHASE' as const
-          : remaining.length === 3
-            ? 'THREE_PHASE' as const
-            : 'OTHER' as const,
-      }];
-    });
+    const plan = planSiteChannelTakeover(store, assetId, selectedChannelIds, takeoverApprovals);
+    next = plan.assignments;
+    displacedAssetIds = plan.displacedAssetIds;
     const occupied = new Set(next.flatMap((assignment) => assignment.channelIds));
+    const assignmentIds = new Set(next.map((assignment) => assignment.id));
     for (const assignment of selected) {
+      if (assignmentIds.has(assignment.id)) throw new Error('The selected assignment ID is already in use.');
+      assignmentIds.add(assignment.id);
+      const meter = store.meterDevices.find((item) => item.id === assignment.meterId && item.installationId === asset.audit_id);
+      if (!meter) throw new Error('Selected meter is unavailable.');
+      const directlySupplied = asset.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === meter.installedOnBoardId;
+      const unchangedHistorical = owned.some((prior) => assignmentApprovalSignature(prior) === assignmentApprovalSignature(assignment));
+      if (!directlySupplied && !unchangedHistorical) throw new Error('Choose a device on the asset’s immediate supplying switchboard.');
+      if (assignment.status !== 'CONFIRMED') throw new Error('An exact site-asset assignment must be confirmed.');
+      createMeasurementAssignment({ installationId: asset.audit_id, assetId, meter, channelIds: assignment.channelIds, phaseMode: assignment.phaseMode, direction: assignment.direction });
       for (const channelId of assignment.channelIds) {
         if (occupied.has(channelId)) throw new Error('A selected channel is already assigned elsewhere.');
         occupied.add(channelId);
@@ -2188,6 +2197,10 @@ export function setAssetMeteringState(
     }
   }
   store.measurementAssignments = next;
+  for (const displacedId of displacedAssetIds) {
+    const displaced = store.siteAssets.find((item) => item.id === displacedId);
+    if (displaced) displaced.metering_state = { kind: 'TBC' };
+  }
   asset.metering_state = state;
   projectCanonicalCompatibility(store, asset.audit_id);
 }
@@ -2208,6 +2221,7 @@ export function replaceMeterMeasurementAssignments(
   store: AppDataStore,
   meterId: string,
   incoming: MeasurementAssignment[],
+  takeoverApprovals?: AssignmentTakeoverApprovals,
 ): void {
   const meter = store.meterDevices.find((item) => item.id === meterId);
   if (!meter) throw new Error('Meter device not found.');
@@ -2228,7 +2242,7 @@ export function replaceMeterMeasurementAssignments(
       .filter((asset) => asset.audit_id === installationId)
       .map((asset) => [asset.id, asset]),
   );
-  const retained = store.measurementAssignments.filter((item) => item.meterId !== meterId);
+  const retained = planMeterAssetTakeover(store, meterId, incoming, takeoverApprovals);
   const retainedIds = new Set(retained.map((item) => item.id));
   const usedChannelIds = new Set(retained.flatMap((item) => item.channelIds));
   const incomingIds = new Set<string>();
@@ -2326,8 +2340,11 @@ export function replaceMeterMeasurementAssignments(
         throw new Error('A site asset can have only one direct measurement assignment.');
       }
       siteAssetTargets.add(assignment.target.siteAssetId);
-      if (!boardIsOnAssetSupplyPath(store, asset, meter.installedOnBoardId)) {
-        throw new Error('The meter board must be on the asset’s upstream supply path.');
+      const directlySupplied = asset.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === meter.installedOnBoardId;
+      const unchangedHistorical = store.measurementAssignments.some((prior) => prior.id === assignment.id
+        && prior.meterId === meterId && assignmentApprovalSignature(prior) === assignmentApprovalSignature(assignment));
+      if (!directlySupplied && !unchangedHistorical) {
+        throw new Error('New site-asset measurements must use a device on the immediate supplying switchboard. Existing historical mappings may be retained unchanged.');
       }
     }
     if (isMain && assignment.status === 'CONFIRMED') {
@@ -2339,11 +2356,8 @@ export function replaceMeterMeasurementAssignments(
     }
   }
 
-  for (const channel of meter.channels) {
-    if (channel.purpose !== 'SPARE' && !selectedChannelIds.has(channel.id)) {
-      throw new Error('Every non-spare meter channel must belong to exactly one measurement assignment.');
-    }
-  }
+  // Unassigned active channels are optional capture, matching the portal save
+  // contract. A deliberately TBC target remains a completion blocker.
 
   store.measurementAssignments = [...retained, ...incoming.map((item) => ({
     ...item,

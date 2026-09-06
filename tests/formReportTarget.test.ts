@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveFormReportServerTarget } from '../src/services/formReportTarget';
+import { resolveFormReportServerTarget, resolveHistoricalFormReportServerTarget } from '../src/services/formReportTarget';
 import type { FormSubmission, Installation } from '../src/types';
 
 const installation: Installation = {
@@ -27,6 +27,54 @@ const form: FormSubmission = {
   created_at: '2026-07-23T00:00:00.000Z',
   updated_at: '2026-07-23T00:00:00.000Z',
 };
+
+function retainedVersion(versionNumber: number, formIds: string[], extra: Record<string, unknown> = {}) {
+  return {
+    entityId: 'installation', versionNumber, payloadHash: `hash-${versionNumber}`,
+    snapshot: {
+      snapshotSchema: 'InstallationCanonicalSnapshotV2', payloadHash: `hash-${versionNumber}`,
+      readiness: { eligibility: { authoritativeReport: true } },
+      installationTree: {
+        installation: { id: 'installation', recordVersionNumber: versionNumber },
+        formSubmissions: formIds.map((id) => ({ id, status: 'Completed' })),
+      },
+    },
+    ...extra,
+  };
+}
+
+test('historical PDF resolves the retained canonical version containing the exact completed form', async () => {
+  const requested: number[] = [];
+  const target = await resolveHistoricalFormReportServerTarget({
+    installationId: 'installation', formId: 'historical', usesOriginalImportedRecord: false, recordVersionNumber: 4,
+  }, {
+    list: async () => ({ versions: [{ versionNumber: 2 }, { versionNumber: 4 }, { versionNumber: 3 }] }),
+    get: async (_id, version) => {
+      requested.push(version);
+      if (version === 3) throw new Error('Version unavailable');
+      return retainedVersion(version, version === 2 ? ['historical'] : ['different']);
+    },
+  });
+  assert.deepEqual(requested, [4, 3, 2]);
+  assert.equal(target.recordVersionNumber, 2);
+  assert.equal(target.recordVersionPayloadHash, 'hash-2');
+});
+
+test('historical PDF rejects foreign, tampered and unpinned report sources', async () => {
+  const target = { installationId: 'installation', formId: 'historical', usesOriginalImportedRecord: false, recordVersionNumber: 4 };
+  for (const version of [
+    retainedVersion(4, ['historical'], { entityId: 'different-installation' }),
+    retainedVersion(4, ['historical'], { payloadHash: 'tampered' }),
+    retainedVersion(4, ['historical'], { snapshot: { installationTree: {} } }),
+  ]) {
+    await assert.rejects(resolveHistoricalFormReportServerTarget(target, {
+      list: async () => ({ versions: [] }), get: async () => version,
+    }), /No retained pinned record version/);
+  }
+  await assert.rejects(resolveHistoricalFormReportServerTarget({
+    installationId: 'installation', formId: 'historical', usesOriginalImportedRecord: false, liveMode: true,
+  }, { list: async () => ({ versions: [] }), get: async () => null }), /requires a pinned record version/);
+});
 
 test('server form PDF targets the unchanged imported cloud record when available', () => {
   assert.deepEqual(

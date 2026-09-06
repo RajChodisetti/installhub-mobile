@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -37,6 +38,7 @@ import {
   buildElectricalDiagramLayout,
   electricalDiagramOrthogonalPoints,
 } from '../../domain/electricalDiagramLayout';
+import { applyElectricalMapLayout, electricalMapDocumentFromLayout, moveElectricalMapNode, type ElectricalMapLayoutDocument, type SavedElectricalMapLayout } from '../../domain/electricalMapLayout';
 import { useTheme } from '../../context/AppProviders';
 import { radii, spacing, typography } from '../../theme';
 import { Button, Card, EmptyState } from '../ui';
@@ -47,10 +49,19 @@ type DiagramIcon = React.ComponentType<{
   strokeWidth?: number;
 }>;
 
+export type ElectricalMapDraft = { document: ElectricalMapLayoutDocument; modelIdentity: string };
+
 type Props = {
   model: ElectricalDiagramModel;
   search?: string;
   onOpenNode?: (node: ElectricalDiagramNode) => void;
+  savedLayout?: SavedElectricalMapLayout;
+  retainedDraft?: ElectricalMapDraft | null;
+  onDraftChange?: (draft: ElectricalMapDraft | null) => void;
+  canArrange?: boolean;
+  layoutEditsLocked?: boolean;
+  onSaveLayout?: (layout: ElectricalMapLayoutDocument) => Promise<void>;
+  onLayoutDirtyChange?: (dirty: boolean) => void;
 };
 
 const MIN_SCALE = 0.28;
@@ -181,9 +192,18 @@ function DiagramLegendLine({
   );
 }
 
-export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode }: Props) {
+export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, savedLayout, retainedDraft, onDraftChange, canArrange = false, layoutEditsLocked = false, onSaveLayout, onLayoutDirtyChange }: Props) {
   const { colors } = useTheme();
-  const layout = useMemo(() => buildElectricalDiagramLayout(model), [model]);
+  const automaticLayout = useMemo(() => buildElectricalDiagramLayout(model), [model]);
+  const [draftLayout, setDraftLayout] = useState<ElectricalMapLayoutDocument | null>(retainedDraft?.document ?? null);
+  const [layoutBusy, setLayoutBusy] = useState(false);
+  const [layoutError, setLayoutError] = useState('');
+  const [draftModelIdentity, setDraftModelIdentity] = useState(retainedDraft?.modelIdentity ?? '');
+  const modelIdentity = `${model.installationId}:${model.treeRevision}:${model.nodes.map((node) => node.id).sort().join('|')}`;
+  const layout = useMemo(() => {
+    try { return draftLayout || savedLayout ? applyElectricalMapLayout(automaticLayout, draftLayout ?? savedLayout!) : automaticLayout; }
+    catch { return automaticLayout; }
+  }, [automaticLayout, draftLayout, savedLayout]);
   const layoutById = useMemo(
     () => new Map(layout.nodes.map((item) => [item.node.id, item])),
     [layout.nodes],
@@ -214,6 +234,26 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode }: 
     setScale(fitScale);
     setFittedSignature(fitSignature);
   }, [fitScale, fitSignature, fittedSignature, viewportWidth]);
+
+  const beginArrange = () => {
+    try {
+      const document = savedLayout ?? electricalMapDocumentFromLayout(automaticLayout);
+      const draft = { version: 1 as const, canvas: { ...document.canvas }, nodes: document.nodes.map((node) => ({ ...node })) };
+      setDraftLayout(draft);
+      setDraftModelIdentity(modelIdentity);
+      onDraftChange?.({ document: draft, modelIdentity });
+      setLayoutError('');
+      onLayoutDirtyChange?.(true);
+    } catch (caught) { setLayoutError(caught instanceof Error ? caught.message : 'This map cannot be arranged.'); }
+  };
+  const discardLayout = () => { setDraftLayout(null); setLayoutError(''); onDraftChange?.(null); onLayoutDirtyChange?.(false); };
+  const saveLayout = async () => {
+    if (!draftLayout || !onSaveLayout || layoutBusy) return;
+    setLayoutBusy(true); setLayoutError('');
+    try { await onSaveLayout(draftLayout); discardLayout(); }
+    catch (caught) { setLayoutError(caught instanceof Error ? caught.message : 'The arrangement could not be saved. Your pending positions are retained.'); }
+    finally { setLayoutBusy(false); }
+  };
 
   if (!layout.nodes.length) {
     return (
@@ -303,6 +343,27 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode }: 
             </Pressable>
           </View>
         </View>
+        <View style={{ padding: spacing.md }}>
+          <Text testID="electrical-map-arrangement-source" style={{ color: colors.mutedForeground }}>{savedLayout ? `Saved arrangement · revision ${savedLayout.layoutRevision}` : 'Automatic arrangement'}</Text>
+          {!draftLayout && canArrange && onSaveLayout ? <Button title="Arrange symbols" variant="secondary" onPress={beginArrange} /> : null}
+          {draftLayout ? <View>
+            <Text accessibilityLiveRegion="polite" style={{ color: colors.foreground, marginVertical: spacing.sm }}>Arranging {selected.displayCode || selected.name}. Select a symbol, then use the move controls.</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }} accessibilityRole="toolbar" accessibilityLabel="Move selected electrical symbol">
+              {([['Move left', -24, 0], ['Move right', 24, 0], ['Move up', 0, -24], ['Move down', 0, 24]] as const).map(([title, dx, dy]) => <Button key={title} title={title} variant="secondary" disabled={layoutBusy || layoutEditsLocked || draftModelIdentity !== modelIdentity}
+                onPress={() => {
+                  if (!draftLayout) return;
+                  const next = moveElectricalMapNode(draftLayout, selected.id, dx, dy);
+                  setDraftLayout(next);
+                  onDraftChange?.({ document: next, modelIdentity: draftModelIdentity });
+                }} />)}
+              <Button title={layoutBusy ? 'Saving arrangement…' : 'Save arrangement'} disabled={layoutBusy || !canArrange || draftModelIdentity !== modelIdentity} onPress={() => void saveLayout()} />
+              <Button title="Discard arrangement" disabled={layoutBusy} variant="ghost" onPress={() => Alert.alert('Discard arrangement?', 'Return to the last loaded arrangement. Installation records are unchanged.', [{ text: 'Keep arranging', style: 'cancel' }, { text: 'Discard', style: 'destructive', onPress: discardLayout }])} />
+            </View>
+            {layoutEditsLocked ? <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm }}>Retry keeps the original positions and revision checks. Discard to begin another arrangement.</Text> : null}
+            {draftModelIdentity !== modelIdentity ? <Text accessibilityRole="alert" style={{ color: colors.destructive, marginTop: spacing.sm }}>The installation changed while arranging. Pending positions are retained; discard and reload the saved arrangement before saving.</Text> : null}
+          </View> : null}
+          {layoutError ? <Text testID="electrical-map-layout-save-error" accessibilityRole="alert" style={{ color: colors.destructive, marginTop: spacing.sm }}>{layoutError}</Text> : null}
+        </View>
         {normalizedSearch ? (
           <Text accessibilityLiveRegion="polite" style={[styles.searchStatus, { color: colors.mutedForeground, borderBottomColor: colors.border }]}>Highlighted {matchingNodeIds.size} matching symbol{matchingNodeIds.size === 1 ? '' : 's'}; the complete supply path remains visible.</Text>
         ) : null}
@@ -383,6 +444,7 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode }: 
                     <Pressable
                       key={node.id}
                       accessibilityRole="button"
+                      testID={`electrical-map-node:${node.id}`}
                       accessibilityLabel={nodeAccessibilityLabel(node)}
                       accessibilityHint="Select for complete details below"
                       accessibilityState={{ selected: selectedNode }}

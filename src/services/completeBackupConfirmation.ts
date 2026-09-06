@@ -61,9 +61,10 @@ function completePushResponse(
 }
 
 /**
- * Replays the exact durable final request, then advances identity, codes, CAS
- * revision, and the backed-up watermark only after pulling that exact server
- * revision. Every failure intentionally leaves the attempt durable.
+ * Replays an unacknowledged durable final request, or resumes a saved receipt
+ * with a canonical read. Advances identity, codes, CAS revision, and the backed-
+ * up watermark only after pulling that exact server revision. Every failure
+ * intentionally leaves the attempt durable.
  */
 export async function confirmCompleteBackupAttempt(
   attempt: PendingCompleteBackupAttempt,
@@ -83,17 +84,22 @@ export async function confirmCompleteBackupAttempt(
   }
 
   dependencies.assertNewDispatchAllowed?.(attempt.installation_id);
-  const result = completePushResponse(
-    attempt,
-    await dependencies.push(attempt.payload),
-  );
+  const hasReceipt = attempt.accepted_tree_revision !== undefined;
+  if (hasReceipt !== Object.prototype.hasOwnProperty.call(attempt, 'accepted_record_version_number')) {
+    throw new Error('Complete backup acknowledgement is incomplete. The original request remains pending.');
+  }
+  const result = completePushResponse(attempt, hasReceipt
+    ? { installationId: attempt.installation_id, treeRevision: attempt.accepted_tree_revision!, recordVersionNumber: attempt.accepted_record_version_number! }
+    : await dependencies.push(attempt.payload));
   dependencies.assertNewDispatchAllowed?.(attempt.installation_id);
-  await dependencies.recordAccepted(
-    attempt.installation_id,
-    attempt.id,
-    result.treeRevision,
-    result.recordVersionNumber,
-  );
+  if (!hasReceipt) {
+    await dependencies.recordAccepted(
+      attempt.installation_id,
+      attempt.id,
+      result.treeRevision,
+      result.recordVersionNumber,
+    );
+  }
   // Acceptance is durable before any canonical pull. If logout/login or an
   // assignment transition wins during that local write, leave the accepted
   // attempt intact for its owning authority instead of pulling with the

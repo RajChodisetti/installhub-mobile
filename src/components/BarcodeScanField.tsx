@@ -24,6 +24,7 @@ const ONE_DIMENSIONAL_BARCODE_TYPES = [
  * Manual typing always works as fallback.
  */
 export function BarcodeScanField({
+  testID,
   label,
   value,
   onChangeText,
@@ -33,6 +34,7 @@ export function BarcodeScanField({
   autoOpenKey,
   onScanResult,
 }: {
+  testID?: string;
   label?: string;
   value: string;
   onChangeText: (v: string) => void;
@@ -78,6 +80,7 @@ export function BarcodeScanField({
   return (
     <View>
       <TextField
+        testID={testID}
         label={label}
         value={value}
         onChangeText={onChangeText}

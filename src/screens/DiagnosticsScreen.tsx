@@ -12,6 +12,7 @@ import { Badge, Button, Card, LoadingState } from '../components/ui';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { useSyncStatus } from '../services/SyncStatusContext';
+import { backupOutcomeMessage } from '../services/backupOutcome';
 import {
   clearGeneratedReportCache,
   clearImportedThumbnailCache,
@@ -54,6 +55,7 @@ export function DiagnosticsScreen() {
     syncing,
     progress,
     lastSyncedAt,
+    lastConfirmedBackupAt,
     triggerSync,
     retrySync,
   } = useSyncStatus();
@@ -111,10 +113,8 @@ export function DiagnosticsScreen() {
     try {
       const result = retry ? await retrySync() : await triggerSync();
       if (result.phase === 'done') {
-        Alert.alert(
-          'Backup complete',
-          'Field App Complete Cloud Backup is up to date.',
-        );
+        const outcome = backupOutcomeMessage(result.installationOutcome);
+        Alert.alert(outcome.title, outcome.message);
       } else if (result.phase === 'offline') {
         Alert.alert('Still offline', result.lastError || 'The API could not be reached.');
       } else if (result.phase === 'error') {
@@ -272,12 +272,18 @@ export function DiagnosticsScreen() {
           Cloud Backup
         </Text>
         {row(
-          'Last successful sync',
+          'Last backup check',
           lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'Not yet',
         )}
+        {row('Last confirmed installation backup',
+          lastConfirmedBackupAt ? new Date(lastConfirmedBackupAt).toLocaleString() : 'Not yet')}
         {row('Current phase', progress.phase)}
-        {row('Current progress', `${progress.uploaded} / ${progress.total}`)}
-        {row('Failed this run', progress.failedCount)}
+        {row('Evidence upload progress', `${progress.uploaded} / ${progress.total}`)}
+        {row('Failed evidence uploads', progress.failedCount)}
+        {progress.phase === 'done' ? <Text style={{ color: backupOutcomeMessage(progress.installationOutcome).needsAttention
+          ? colors.destructive : colors.mutedForeground, marginTop: spacing.sm }}>
+          {backupOutcomeMessage(progress.installationOutcome).message}
+        </Text> : null}
         {progress.lastError ? (
           <Text style={[styles.errorText, { color: colors.destructive }]}>
             {progress.lastError}

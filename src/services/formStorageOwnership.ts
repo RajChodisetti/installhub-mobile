@@ -1,3 +1,4 @@
+import { mediaReferenceIdentity } from './ownedMediaPaths';
 /**
  * A cloned amendment can intentionally reference evidence stored in the
  * completed form's directory. Keep that directory while any surviving form
@@ -7,8 +8,9 @@ export function evidenceDirectoryIsReferenced(
   directoryUri: string,
   protectedAttachmentUris: readonly string[],
 ): boolean {
-  const prefix = directoryUri.endsWith('/') ? directoryUri : `${directoryUri}/`;
+  const directory = mediaReferenceIdentity(directoryUri);
+  const prefix = directory.endsWith('/') ? directory : `${directory}/`;
   return protectedAttachmentUris.some(
-    (uri) => uri === directoryUri || uri.startsWith(prefix),
+    (uri) => mediaReferenceIdentity(uri) === directory || mediaReferenceIdentity(uri).startsWith(prefix),
   );
 }

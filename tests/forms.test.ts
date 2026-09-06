@@ -7,10 +7,12 @@ import {
   SENSOR_OPTIONS_BY_DEVICE,
   answersAfterChange,
   createInitialFormAnswers,
+  hiddenFormPhotoSlots,
   isFieldVisible,
   isSectionVisible,
   meterAfterCommsReplacement,
   optionsForField,
+  supportedFormAnswers,
   validateForm,
   withMirroredDeviceIdentityAnswers,
 } from '../src/forms/catalog';
@@ -45,6 +47,23 @@ test('new forms prefer the installation customer over the contracting client', (
     )['site.customer_name'],
     'Contracting Client',
   );
+});
+
+test('form write projection omits unrelated prefill and photo answers without mutating source evidence', () => {
+  const original = {
+    'site.date_time': '2026-09-05T00:00:00Z', 'site.customer_name': 'Customer',
+    'site.address': 'Address', 'installer.name': 'Technician',
+    'existing.device_id': 'EXISTING', 'device.id': 'WW',
+    'water.lcd_photo': 'file:///photo.jpg',
+  };
+  assert.deepEqual(supportedFormAnswers('ace-switchboard', original), {
+    'site.date_time': original['site.date_time'], 'installer.name': 'Technician',
+  });
+  assert.equal(supportedFormAnswers('ww-installation', original)['existing.device_id'], undefined);
+  assert.equal(supportedFormAnswers('comms-fault', original)['device.id'], undefined);
+  assert.equal(supportedFormAnswers('honeywell-q400', original)['water.lcd_photo'], undefined);
+  assert.equal(original['water.lcd_photo'], 'file:///photo.jpg');
+  assert.deepEqual(supportedFormAnswers('a3rm-installation', original, 1), original);
 });
 
 function canonicalJson(value: unknown): string {
@@ -88,7 +107,7 @@ test('optional field identity is presented as a distinct site or asset tag', () 
     .find((field) => field.key === 'device.number');
   assert.equal(
     deviceTag?.label,
-    'Site / asset tag (optional; not the Device ID / serial)',
+    'Site / asset tag (optional — not the Device ID / serial)',
   );
   assert.equal(deviceTag?.required, false);
 
@@ -97,33 +116,45 @@ test('optional field identity is presented as a distinct site or asset tag', () 
     .find((field) => field.key === 'works.new_device_number');
   assert.equal(
     replacement?.label,
-    'New site / asset tag (optional; not the Device ID / serial)',
+    'New site / asset tag (optional — not the Device ID / serial)',
   );
   assert.equal(replacement?.required, false);
 });
 
-test('the full mobile catalog matches the audited portal contract fingerprint', () => {
-  const sectionCount = FORM_DEFINITIONS.reduce(
-    (count, definition) => count + definition.sections.length,
-    0,
-  );
-  const fieldCount = FORM_DEFINITIONS.reduce(
-    (count, definition) => count + definition.sections.reduce(
-      (fields, section) => fields + section.fields.length,
-      0,
-    ),
-    0,
-  );
-  const fingerprint = createHash('sha256')
-    .update(canonicalJson(FORM_DEFINITIONS))
-    .digest('hex');
-
-  assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 391);
-  assert.equal(
-    fingerprint,
-    '37ed7096f2d4b72cac799ad99c56e646c466c141e2727395c44579b27ac3f023',
-  );
+test('every field matches the audited portal capture contract', () => {
+  // Extracted from sustainability-wise-api/apps/ecoaudit/src/modules/installhub/forms/catalog.ts
+  // on 2026-09-05. Field ordering is presentation-only; identifiers, labels,
+  // kinds, options, conditions, scanner modes and optionality are all pinned.
+  const expected: Record<string, string> = {
+    "ww-installation": "c53deff86d0b5cc3147ca630e81f4c5024d986e46a6ae4df932131e28089eeac",
+    "a3rm-installation": "65f4c78a28644ff68df3c41749901ca70d5b9e5ceedb2a88ebc9747d081b3d43",
+    "a6m-installation": "a3474aab08e77a5cade9d3c71a300bcc0548ca5d34419d248614a3e184f4cba0",
+    "comms-fault": "892fc38f5bb7b8249e93bbb3a9631133970c1dbc16ee2cfc461eb5340a0d3598",
+    "ace-switchboard": "af9961e2a4ef7b5bf47aa816592efc00d593eac97e9c209a08f091f3f663ef12",
+    "honeywell-q400": "1db113e59034d1c70fb79fd7f9f10e96b066ef288cec7a3759b109707aad54a2",
+    "captis-logger": "10b9380dbef2bc7342b81ef887619d2695a2dd6074f99824d5100f9bba01fa9d",
+    "sums-logger": "e0d57aca02b5a6fa63d9b6d147844d45aa489a92594c9fe193da95dc435da21b"
+};
+  for (const definition of FORM_DEFINITIONS) {
+    const contract = {
+      type: definition.type,
+      schemaVersion: definition.schemaVersion,
+      availableForNew: definition.availableForNew !== false,
+      sections: definition.sections.map((section) => ({
+        title: section.title,
+        showWhen: section.showWhen,
+        fields: [...section.fields].sort((a, b) => a.key.localeCompare(b.key)).map((field) => ({
+          key: field.key, label: field.label, kind: field.kind,
+          required: field.required ?? false, options: field.options,
+          showWhen: field.showWhen, optionsWhen: field.optionsWhen,
+          scanModes: field.scanModes, allowNotApplicable: field.allowNotApplicable,
+          multiple: field.multiple,
+        })),
+      })),
+    };
+    assert.equal(createHash('sha256').update(canonicalJson(contract)).digest('hex'), expected[definition.type], definition.type);
+  }
+  assert.equal(FORM_DEFINITIONS.flatMap((definition) => definition.sections.flatMap((section) => section.fields)).length, 392);
 });
 
 test('Installation form dynamically exposes exact A3RM and A6M options', () => {
@@ -167,33 +198,6 @@ test('Installation form dynamically exposes exact A3RM and A6M options', () => {
   assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, [
     'CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used',
   ]);
-});
-
-test('WW channel contract matches the API and portal parity signature', () => {
-  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
-  const channelContract = Array.from({ length: 6 }, (_, index) => {
-    const channel = index + 1;
-    const section = definition.sections.find((candidate) =>
-      candidate.fields.some((field) => field.key === `channel.${channel}.purpose`));
-    assert.ok(section, `channel ${channel} section is declared`);
-    return {
-      channel,
-      showWhen: section.showWhen,
-      fields: section.fields.map((field) => ({
-        key: field.key,
-        kind: field.kind,
-        required: field.required ?? false,
-        ...(field.options ? { options: field.options } : {}),
-        ...(field.showWhen ? { showWhen: field.showWhen } : {}),
-        ...(field.optionsWhen ? { optionsWhen: field.optionsWhen } : {}),
-      })),
-    };
-  });
-
-  assert.equal(
-    createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    'bb7094caa4216367ff11fd1083130ac46109672d05cea366a31bdeb31433f3f7',
-  );
 });
 
 test('changing device type clears stale dependent ratings and hidden channels', () => {
@@ -260,7 +264,7 @@ test('a spare WW channel clears and hides load, sensor, evidence and commissioni
   );
 });
 
-test('WW channel validation requires purpose first and load only for active purposes', () => {
+test('WW channel options depend on purpose while capture remains optional', () => {
   const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
   const channel = definition.sections.find((section) => section.title === 'Channel 1')!;
   const purpose = channel.fields.find((field) => field.key === 'channel.1.purpose')!;
@@ -312,12 +316,12 @@ test('WW channel validation requires purpose first and load only for active purp
     created_at: '2026-08-02T00:00:00.000Z',
     updated_at: '2026-08-02T00:00:00.000Z',
   };
-  assert.ok(validateForm(draft).includes('Channel 1: Load'));
+  assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
   draft.answers['channel.1.load'] = 'Mains Supply';
-  assert.ok(validateForm(draft).includes('Channel 1: Load has an invalid selection'));
+  assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
   draft.answers['channel.1.load'] = 'Other';
   draft.answers['channel.1.rating'] = '3000A - 9cm';
-  assert.ok(validateForm(draft).includes('Channel 1: Custom load type'));
+  assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
   draft.answers['channel.1.custom_load_type'] = 'Refrigeration';
   assert.equal(validateForm(draft).some((error) => error.startsWith('Channel 1:')), false);
   draft.answers = answersAfterChange(
@@ -389,7 +393,7 @@ test('conditional fields follow their controlling answers', () => {
   assert.equal(isFieldVisible(field, { parent: 'yes' }), true);
 });
 
-test('required yes/no fields are binary unless explicitly configured otherwise', () => {
+test('yes/no controls stay binary while optional historical values do not block completion', () => {
   const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
   const prestart = definition.sections
     .find((section) => section.title === 'Pre-start information')!
@@ -407,12 +411,7 @@ test('required yes/no fields are binary unless explicitly configured otherwise',
     created_at: '2026-07-23T00:00:00.000Z',
     updated_at: '2026-07-23T00:00:00.000Z',
   };
-  assert.ok(
-    validateForm(submission).some(
-      (error) =>
-        error === 'Pre-start information: Do you have safe access? has an invalid selection',
-    ),
-  );
+  assert.equal(validateForm(submission).some((error) => error.includes('safe access')), false);
 });
 
 test('Comms replacement rebuilds channel count and sensor representation', () => {
@@ -461,7 +460,7 @@ test('Comms replacement rebuilds channel count and sensor representation', () =>
   assert.ok(expanded.ww_channels?.every((channel) => channel.rogowski_size === undefined));
 });
 
-test('each form validates when every visible required field and photo is present', () => {
+test('each form validates with populated capture fields and evidence', () => {
   for (const definition of FORM_DEFINITIONS) {
     const answers: FormSubmission['answers'] = {};
     const attachments: FormAttachment[] = [];
@@ -478,7 +477,6 @@ test('each form validates when every visible required field and photo is present
             ? field.showWhen.equals[0]
             : field.showWhen.equals;
         }
-        if (!field.required) continue;
         if (field.kind === 'photo') {
           attachments.push({
             id: `photo-${field.key}`,
@@ -533,6 +531,7 @@ test('scanner requirements are attached to every ingestion field', () => {
     'ww-installation:device.id',
     'ww-installation:device.number',
     'comms-fault:existing.device_id',
+    'comms-fault:existing.device_number',
     'comms-fault:works.new_device_id',
     'comms-fault:works.new_device_number',
     'ace-switchboard:job.number',
@@ -544,11 +543,6 @@ test('scanner requirements are attached to every ingestion field', () => {
     'captis-logger:logger.serial_number',
   ]) {
     assert.deepEqual(fields[key]?.scanModes, ['barcode'], key);
-  }
-  for (const removedCompatibilityField of [
-    'comms-fault:existing.device_number',
-  ]) {
-    assert.equal(fields[removedCompatibilityField], undefined, removedCompatibilityField);
   }
   assert.deepEqual(fields['ace-switchboard:job.qr_link']?.scanModes, ['qr']);
   assert.deepEqual(
@@ -640,6 +634,60 @@ test('every catalog photo slot remains a multi-photo collection', () => {
   );
   assert.ok(photoFields.length > 0);
   assert.equal(photoFields.every((field) => field.multiple === true), true);
+});
+
+test('hidden evidence follows channel purpose, model and replacement branches', () => {
+  const ww = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const next = answersAfterChange(ww, {
+    'device.type': 'A6M',
+    'channel.4.purpose': 'Sub-circuit / asset',
+    'channel.4.load': 'HVAC',
+  }, 'channel.4.purpose', 'Spare / unused');
+  assert.ok(hiddenFormPhotoSlots(ww, next).includes('channel.4.nameplate_photos'));
+  assert.ok(hiddenFormPhotoSlots(ww, { 'device.type': 'A3RM' }).includes('channel.6.nameplate_photos'));
+  const comms = FORM_DEFINITION_BY_TYPE['comms-fault'];
+  assert.ok(hiddenFormPhotoSlots(comms, { 'works.replace_device': 'no' }).includes('commissioning.start_screenshot'));
+  assert.equal(hiddenFormPhotoSlots(comms, { 'works.replace_device': 'yes' }).includes('commissioning.start_screenshot'), false);
+});
+
+test('legacy switchboard values remain selectable while sensor legacy choices stay model-specific', () => {
+  const fields = FORM_DEFINITION_BY_TYPE['ww-installation'].sections.flatMap((section) => section.fields);
+  const boardType = fields.find((field) => field.key === 'auditor.switchboard_type')!;
+  assert.ok(optionsForField(boardType, { 'auditor.switchboard_type': 'Existing custom board' }).includes('Existing custom board'));
+  const rating = fields.find((field) => field.key === 'channel.1.rating')!;
+  assert.equal(optionsForField(rating, { 'device.type': 'A3RM', 'channel.1.rating': '60A' }).includes('60A'), false);
+  assert.ok(optionsForField(rating, { 'device.type': 'A6M', 'channel.1.rating': '60A' }).includes('60A'));
+});
+
+test('minimal capture completes for every family while visible safety stays mandatory', () => {
+  for (const definition of FORM_DEFINITIONS) {
+    const submission: FormSubmission = {
+      id: definition.type, form_type: definition.type, schema_version: definition.schemaVersion,
+      installation_id: 'installation', status: 'Draft', answers: {}, attachments: [],
+      created_at: '', updated_at: '',
+    };
+    const hasSafety = definition.sections.some((section) => section.fields.some((field) => field.key === 'prestart.safe_to_proceed'));
+    assert.equal(validateForm(submission).length, hasSafety ? 1 : 0, definition.type);
+    submission.answers['prestart.safe_to_proceed'] = 'yes';
+    assert.deepEqual(validateForm(submission), [], definition.type);
+  }
+});
+
+test('replacement completion needs valid new identity and model-specific sensor capture', () => {
+  const submission: FormSubmission = {
+    id: 'replacement', form_type: 'comms-fault', schema_version: 2,
+    installation_id: 'installation', status: 'Draft', attachments: [],
+    answers: { 'prestart.safe_to_proceed': 'yes', 'works.replace_device': 'yes' },
+    created_at: '', updated_at: '',
+  };
+  assert.equal(validateForm(submission).length, 3);
+  Object.assign(submission.answers, { 'works.new_device_type': 'A3RM', 'works.new_device_id': 'SERIAL', 'works.new_sensor_rating': '60A' });
+  assert.equal(validateForm(submission).length, 1);
+  submission.answers['works.new_sensor_rating'] = '3000A - 9cm';
+  assert.deepEqual(validateForm(submission), []);
+  submission.answers['works.replace_device'] = 'no';
+  delete submission.answers['works.new_device_id'];
+  assert.deepEqual(validateForm(submission), []);
 });
 
 test('SUMS has the same stored field keys as Captis', () => {
@@ -738,7 +786,7 @@ test('SUMS report uses the SUMS form identity', () => {
   assert.match(buildFormReportHtml(submission), /SUMS Logger Installation Form/);
 });
 
-test('numeric required fields reject non-numeric values', () => {
+test('optional numeric observations do not block completion', () => {
   const submission: FormSubmission = {
     id: 'form-number',
     form_type: 'captis-logger',
@@ -750,10 +798,10 @@ test('numeric required fields reject non-numeric values', () => {
     created_at: '2026-07-20T00:00:00.000Z',
     updated_at: '2026-07-20T00:00:00.000Z',
   };
-  assert.ok(validateForm(submission).some((error) => error.includes('must be a number')));
+  assert.deepEqual(validateForm(submission), []);
 });
 
-test('A6M clamp current accepts the observed Not Connected state while A3RM stays numeric', () => {
+test('stored clamp-current observations remain non-blocking for both models', () => {
   const base: FormSubmission = {
     id: 'a6-current-observation',
     form_type: 'ww-installation',
@@ -782,11 +830,11 @@ test('A6M clamp current accepts the observed Not Connected state while A3RM stay
       answers: { ...base.answers, 'device.type': 'A3RM' },
     }).some((error) =>
       error.includes('Channel 1 current - AC clamp tester must be a number')),
-    true,
+    false,
   );
 });
 
-test('optional numeric and select values are validated when provided', () => {
+test('optional numeric and select observations are preserved without completion errors', () => {
   const honeywell: FormSubmission = {
     id: 'form-optional-number',
     form_type: 'honeywell-q400',
@@ -798,11 +846,7 @@ test('optional numeric and select values are validated when provided', () => {
     created_at: '2026-07-23T00:00:00.000Z',
     updated_at: '2026-07-23T00:00:00.000Z',
   };
-  assert.ok(
-    validateForm(honeywell).some((error) =>
-      error.includes('Latitude must be a number'),
-    ),
-  );
+  assert.deepEqual(validateForm(honeywell), []);
 
   const comms: FormSubmission = {
     ...honeywell,
@@ -810,11 +854,7 @@ test('optional numeric and select values are validated when provided', () => {
     form_type: 'comms-fault',
     answers: { 'existing.signal': 'Invented signal' },
   };
-  assert.ok(
-    validateForm(comms).some((error) =>
-      error.includes('Existing signal strength has an invalid selection'),
-    ),
-  );
+  assert.equal(validateForm(comms).some((error) => error.includes('Existing signal')), false);
 
   const savedLegacySignal: FormSubmission = {
     ...comms,

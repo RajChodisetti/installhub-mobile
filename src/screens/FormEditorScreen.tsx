@@ -1,3 +1,4 @@
+import { FormScrollView } from '../components/ui';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
@@ -21,16 +22,19 @@ import {
   FORM_DEFINITION_BY_TYPE,
   SAFE_TO_PROCEED_FIELD_KEY,
   answersAfterChange,
+  hiddenFormPhotoSlots,
   isFieldVisible,
   isSectionVisible,
   nonNumericValuesForField,
   optionsForField,
   requiredFormProgress,
+  supportedFormAnswers,
   validateForm,
   withMirroredDeviceIdentityAnswers,
   type FormFieldDefinition,
 } from '../forms/catalog';
 import { BarcodeScanField } from '../components/BarcodeScanField';
+import { RecordLoadState } from '../components/RecordLoadState';
 import {
   electricalAssetsRepo,
   canonicalInstallationRepo,
@@ -58,6 +62,7 @@ import {
   rememberedReportJob,
   reportJobMatchesSelection,
   resolveFormReportServerTarget,
+  resolveHistoricalFormReportServerTarget,
   shareFormPdf,
   waitForReportJob,
 } from '../services';
@@ -87,6 +92,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'FormEditor'>;
 type DraftSnapshot = Pick<FormSubmission, 'id' | 'answers' | 'attachments'>;
 
 function ChoiceRow({
+  fieldKey,
   label,
   options,
   value,
@@ -94,6 +100,7 @@ function ChoiceRow({
   disabled,
   danger = false,
 }: {
+  fieldKey: string;
   label: string;
   options: { label: string; value: string }[];
   value: string;
@@ -109,6 +116,7 @@ function ChoiceRow({
         return (
           <Pressable
             key={option.value}
+            testID={`form-choice:${fieldKey}:${option.value}`}
             disabled={disabled}
             accessibilityRole="radio"
             accessibilityState={{ checked: selected, disabled }}
@@ -149,6 +157,9 @@ export function FormEditorScreen({ navigation, route }: Props) {
   const { colors } = useTheme();
   const { triggerSync } = useSyncStatus();
   const [form, setForm] = useState<FormSubmission | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [answers, setAnswers] = useState<Record<string, FormValue>>({});
   const [attachments, setAttachments] = useState<FormAttachment[]>([]);
   const [canonicalBoard, setCanonicalBoard] = useState<ElectricalAsset | null>(null);
@@ -209,44 +220,58 @@ export function FormEditorScreen({ navigation, route }: Props) {
   useEffect(() => {
     let active = true;
     initialized.current = false;
+    setLoading(true);
+    setLoadError(null);
     void (async () => {
-      const item = await formsRepo.getById(formId);
-      if (item && item.installation_id !== installationId) {
-        if (active && mounted.current) {
-          Alert.alert('Form unavailable', 'This form does not belong to the selected installation.');
-          navigation.goBack();
+      try {
+        const item = await formsRepo.getById(formId);
+        if (!active || !mounted.current) return;
+        if (!item) {
+          throw new Error('This form is no longer available. It may have been deleted.');
         }
-        return;
+        if (item.installation_id !== installationId) {
+          throw new Error('This form does not belong to the selected installation.');
+        }
+        if (!FORM_DEFINITION_BY_TYPE[item.form_type]) {
+          throw new Error('This form type is not supported by this version of the app.');
+        }
+        const board = item.board_id
+          ? await electricalAssetsRepo.getById(item.board_id)
+          : null;
+        const zone = board ? await zonesRepo.getById(board.zone_id) : null;
+        const gridSupplies = board
+          ? await canonicalInstallationRepo.gridSupplies(installationId)
+          : [];
+        const electricityNmi = board ? canonicalNmiForBoard(board, gridSupplies) : '';
+        if (!active || !mounted.current) return;
+        const initialAnswers = board && item.status === 'Draft' &&
+          ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(item.form_type)
+          ? answersWithCanonicalBoardContext(
+              withMirroredDeviceIdentityAnswers(item.answers),
+              board,
+              electricityNmi,
+            )
+          : withMirroredDeviceIdentityAnswers(item.answers);
+        setForm(item);
+        setCanonicalBoard(board);
+        setCanonicalZoneName(zone?.zone_name ?? 'Unknown zone');
+        setCanonicalNmi(electricityNmi);
+        setAnswers(item.status === 'Draft'
+          ? supportedFormAnswers(item.form_type, initialAnswers, item.schema_version)
+          : initialAnswers);
+        setAttachments(item.attachments ?? []);
+        initialized.current = true;
+      } catch (error) {
+        if (!active || !mounted.current) return;
+        setLoadError(error instanceof Error ? error.message : 'The form could not be loaded. Try again.');
+      } finally {
+        if (active && mounted.current) setLoading(false);
       }
-      const board = item?.board_id
-        ? await electricalAssetsRepo.getById(item.board_id)
-        : null;
-      const zone = board ? await zonesRepo.getById(board.zone_id) : null;
-      const gridSupplies = board
-        ? await canonicalInstallationRepo.gridSupplies(installationId)
-        : [];
-      const electricityNmi = board ? canonicalNmiForBoard(board, gridSupplies) : '';
-      if (!active || !mounted.current) return;
-      const initialAnswers = item && board && item.status === 'Draft' &&
-        ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(item.form_type)
-        ? answersWithCanonicalBoardContext(
-            withMirroredDeviceIdentityAnswers(item.answers),
-            board,
-            electricityNmi,
-          )
-        : withMirroredDeviceIdentityAnswers(item?.answers ?? {});
-      setForm(item);
-      setCanonicalBoard(board);
-      setCanonicalZoneName(zone?.zone_name ?? 'Unknown zone');
-      setCanonicalNmi(electricityNmi);
-      setAnswers(initialAnswers);
-      setAttachments(item?.attachments ?? []);
-      initialized.current = true;
     })();
     return () => {
       active = false;
     };
-  }, [formId, installationId, navigation]);
+  }, [formId, installationId, loadAttempt]);
 
   useEffect(() => {
     if (!initialized.current || !form || form.status === 'Completed') return;
@@ -291,7 +316,13 @@ export function FormEditorScreen({ navigation, route }: Props) {
     return requiredFormProgress({ ...form, answers, attachments });
   }, [form, definition, answers, attachments]);
 
-  if (!form || !definition) return <LoadingState />;
+  if (loading) return <LoadingState />;
+  if (loadError || !form || !definition || form.id !== formId || form.installation_id !== installationId) {
+    return <RecordLoadState title="Form unavailable"
+      message={loadError ?? 'This form is no longer available. Reload it or return to the form list.'}
+      onRetry={() => setLoadAttempt((attempt) => attempt + 1)}
+      onBack={() => navigation.goBack()} />;
+  }
   const readOnly = form.status === 'Completed';
 
   const clearAttachmentSlots = (slots: string[]) => {
@@ -310,23 +341,9 @@ export function FormEditorScreen({ navigation, route }: Props) {
 
   const change = (key: string, value: string) => {
     setCompletionErrors([]);
-    setAnswers((current) => answersAfterChange(definition, current, key, value));
-
-    const channelLoad = /^channel\.(\d+)\.load$/.exec(key);
-    if (channelLoad && value === 'Not Used') {
-      clearAttachmentSlots([`channel.${channelLoad[1]}.nameplate_photos`]);
-    }
-    if (key === 'device.type' && value === 'A3RM') {
-      clearAttachmentSlots(
-        [4, 5, 6].map((channel) => `channel.${channel}.nameplate_photos`),
-      );
-    }
-    if (key === 'works.replace_device' && value !== 'yes') {
-      clearAttachmentSlots([
-        'commissioning.start_screenshot',
-        'commissioning.energy_screenshot',
-      ]);
-    }
+    const next = answersAfterChange(definition, answers, key, value);
+    setAnswers(next);
+    clearAttachmentSlots(hiddenFormPhotoSlots(definition, next));
   };
 
   const addPhoto = async (field: FormFieldDefinition, source: 'camera' | 'library') => {
@@ -385,6 +402,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
         >
           <Text style={[styles.label, { color: safetyBlocked || fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ChoiceRow
+            fieldKey={field.key}
             label={field.label}
             value={value}
             disabled={readOnly}
@@ -409,9 +427,10 @@ export function FormEditorScreen({ navigation, route }: Props) {
     }
     if (field.kind === 'select') {
       return (
-        <View key={field.key} style={styles.fieldBlock}>
+        <View key={field.key} testID={`form-field:${field.key}`} style={styles.fieldBlock}>
           <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ChoiceRow
+            fieldKey={field.key}
             label={field.label}
             value={value}
             disabled={readOnly}
@@ -428,7 +447,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
     if (field.kind === 'photo') {
       const items = attachments.filter((item) => item.slot === field.key);
       return (
-        <View key={field.key} style={styles.fieldBlock}>
+        <View key={field.key} testID={`form-field:${field.key}`} style={styles.fieldBlock}>
           <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
           <ScrollView
             horizontal
@@ -521,8 +540,9 @@ export function FormEditorScreen({ navigation, route }: Props) {
     }
     if (field.scanModes?.length) {
       return (
-        <View key={field.key}>
+        <View key={field.key} testID={`form-field:${field.key}`}>
           <BarcodeScanField
+            testID={`form-input:${field.key}`}
             label={label}
             value={value}
             onChangeText={(next) => change(field.key, next)}
@@ -540,6 +560,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
     return (
       <Input
         key={field.key}
+        testID={`form-input:${field.key}`}
         label={label}
         value={value}
         editable={!readOnly}
@@ -631,6 +652,14 @@ export function FormEditorScreen({ navigation, route }: Props) {
         }
       }
 
+      if (currentForm.historical_meter_removed) {
+        setPdfStatus('Finding the retained version of this form…');
+        target = await resolveHistoricalFormReportServerTarget(target, {
+          list: apiClient.listInstallationVersions,
+          get: apiClient.getInstallationVersion,
+        });
+      }
+
       const legacyJobKey = formReportJobKey(form.id);
       const jobKey = formReportJobKey(
         form.id,
@@ -642,7 +671,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
       await clearRememberedReportJob(legacyJobKey);
       const remembered = await rememberedReportJob(jobKey);
       let jobId = remembered?.jobId ?? null;
-      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
+      let expectedPayloadHash = target.recordVersionPayloadHash ?? remembered?.recordVersionPayloadHash;
       if (jobId) {
         try {
           const existing = await apiClient.getExportJobStatus(jobId);
@@ -667,7 +696,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
           target.formId,
           target,
         );
-        if (!reportJobMatchesSelection(started, target)) {
+        if (!reportJobMatchesSelection(started, target, expectedPayloadHash)) {
           throw new Error('The report job did not preserve the requested record version.');
         }
         jobId = started.jobId;
@@ -750,7 +779,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
   };
 
   return (
-    <ScrollView
+    <FormScrollView
       ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
@@ -764,12 +793,12 @@ export function FormEditorScreen({ navigation, route }: Props) {
           <Text style={{ color: colors.mutedForeground, marginTop: 5 }}>
             {readOnly
               ? 'Completed record'
-              : `${progress.done} of ${progress.total} required items · ${saving ? 'Saving…' : 'Saved automatically'}`}
+              : `${progress.total ? `${progress.done} of ${progress.total} required items · ` : 'Optional capture · '}${saving ? 'Saving…' : 'Saved automatically'}`}
           </Text>
         </View>
         <Badge label={form.status} tone={readOnly ? 'success' : 'default'} />
       </View>
-      <View style={[styles.progressTrack, { backgroundColor: colors.muted }]}>
+      {progress.total > 0 ? <View style={[styles.progressTrack, { backgroundColor: colors.muted }]}>
         <View
           style={[
             styles.progressFill,
@@ -779,10 +808,10 @@ export function FormEditorScreen({ navigation, route }: Props) {
             },
           ]}
         />
-      </View>
+      </View> : null}
       {completionErrors.length ? (
         <Card accessibilityRole="alert" style={{ marginBottom: spacing.md, borderColor: colors.destructive }}>
-          <Text style={[typography.subheading, { color: colors.destructive }]}>Required items need attention</Text>
+          <Text style={[typography.subheading, { color: colors.destructive }]}>Form completion needs attention</Text>
           {completionErrors.slice(0, 8).map((error) => (
             <Text key={error} style={{ color: colors.foreground, marginTop: spacing.xs, lineHeight: 20 }}>• {error}</Text>
           ))}
@@ -790,7 +819,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
             <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs }}>…and {completionErrors.length - 8} more</Text>
           ) : null}
           <Button
-            title="Jump to first required item"
+            title="Jump to first issue"
             variant="secondary"
             style={{ marginTop: spacing.md }}
             onPress={() => {
@@ -799,7 +828,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
                 y: Math.max(0, (sectionOffsets.current.get(sectionTitle) ?? 0) - spacing.md),
                 animated: true,
               });
-              void AccessibilityInfo.announceForAccessibility(completionErrors[0] ?? 'Required item');
+              void AccessibilityInfo.announceForAccessibility(completionErrors[0] ?? 'Form completion issue');
             }}
           />
         </Card>
@@ -824,23 +853,27 @@ export function FormEditorScreen({ navigation, route }: Props) {
           </Text>
         </Card>
       ) : null}
-      {!readOnly ? (
+      {!readOnly && definition.sections.some((section) => section.fields.some((field) => field.key === 'site.latitude')) ? (
         <Button
           title="Use Current Location"
           variant="secondary"
           style={{ marginBottom: spacing.md }}
           onPress={async () => {
-            const permission = await Location.requestForegroundPermissionsAsync();
-            if (!permission.granted) {
-              Alert.alert('Location permission needed', 'Latitude and longitude can still be entered manually.');
-              return;
+            try {
+              const permission = await Location.requestForegroundPermissionsAsync();
+              if (!permission.granted) {
+                Alert.alert('Location permission needed', 'Latitude and longitude can still be entered manually.');
+                return;
+              }
+              const position = await Location.getCurrentPositionAsync({});
+              setAnswers((current) => ({
+                ...current,
+                'site.latitude': String(position.coords.latitude),
+                'site.longitude': String(position.coords.longitude),
+              }));
+            } catch {
+              Alert.alert('Location unavailable', 'Enter latitude and longitude manually.');
             }
-            const position = await Location.getCurrentPositionAsync({});
-            setAnswers((current) => ({
-              ...current,
-              'site.latitude': String(position.coords.latitude),
-              'site.longitude': String(position.coords.longitude),
-            }));
           }}
         />
       ) : null}
@@ -850,6 +883,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
         .map((section, index) => (
           <View
             key={section.title}
+            testID={`form-section:${section.title}`}
             onLayout={(event) => sectionOffsets.current.set(section.title, event.nativeEvent.layout.y)}
           >
             <Card style={{ marginBottom: spacing.md }}>
@@ -878,7 +912,10 @@ export function FormEditorScreen({ navigation, route }: Props) {
             onPress={() => {
               void formsRepo.cloneAmendment(form.id).then((draft) =>
                 navigation.replace('FormEditor', { formId: draft.id, installationId }),
-              );
+              ).catch((error: unknown) => Alert.alert(
+                'Amendment not created',
+                error instanceof Error ? error.message : 'The amendment could not be created.',
+              ));
             }}
           />
         </>
@@ -920,7 +957,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
                   animated: true,
                 });
                 void AccessibilityInfo.announceForAccessibility(
-                  `${errors.length} required items need attention. ${errors[0]}`,
+                  `${errors.length} completion issues need attention. ${errors[0]}`,
                 );
                 return;
               }
@@ -967,8 +1004,15 @@ export function FormEditorScreen({ navigation, route }: Props) {
                   style: 'destructive',
                   onPress: async () => {
                     await autosave.cancelPending();
-                    await formsRepo.removeDraft(form.id);
-                    setReleasedNavigationAction(StackActions.pop(1));
+                    try {
+                      await formsRepo.removeDraft(form.id);
+                      setReleasedNavigationAction(StackActions.pop(1));
+                    } catch (error) {
+                      if (!isAssignedWorkAccessRequiredError(error)) {
+                        autosave.schedule({ id: form.id, answers, attachments });
+                      }
+                      Alert.alert('Draft not deleted', error instanceof Error ? error.message : 'The draft could not be deleted.');
+                    }
                   },
                 },
               ]);
@@ -976,7 +1020,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
           />
         </>
       )}
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

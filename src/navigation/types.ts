@@ -9,6 +9,7 @@ export type RootStackParamList = {
   ZoneWorkspace: { zoneId: string; installationId: string };
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };
+  MeterHistory: { installationId: string; meterId: string };
   MeterForm: {
     installationId: string;
     boardId: string;
@@ -21,6 +22,9 @@ export type RootStackParamList = {
     initialMode?: 'RECONCILIATION' | 'VALIDATION';
   };
   MeteringTable: { installationId: string };
+  FinancialSummary: { installationId: string };
+  Invoices: { installationId: string };
+  InvoiceDetail: { installationId: string; invoiceId: string };
   InstallationReport: { installationId: string };
   ClientReport: { installationId: string };
   PhotoPreview: { installationId: string };

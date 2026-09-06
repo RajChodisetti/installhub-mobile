@@ -362,8 +362,13 @@ test('zone deletion includes child-linked forms, meter forms and amendment desce
   );
 });
 
-test('board and site-asset deletion plans remove every formally linked form', () => {
+test('board and site-asset deletion retains completed history and detaches draft context', () => {
   const boardStore = storeFixture();
+  const completedBefore = structuredClone(boardStore.formSubmissions);
+  boardStore.formSubmissions.push({
+    ...form('draft-board', { board_id: 'board-delete', meter_id: 'meter-delete' }, 'file:///draft-evidence.jpg'),
+    status: 'Draft',
+  });
   const boardPlan = planLocalDeletion(boardStore, {
     kind: 'electrical_asset',
     id: 'board-delete',
@@ -371,14 +376,20 @@ test('board and site-asset deletion plans remove every formally linked form', ()
   assert.ok(boardPlan);
   assert.deepEqual(
     [...boardPlan.formIds].sort(),
-    ['form-amendment', 'form-board', 'form-meter'],
+    [],
   );
   applyLocalDeletionPlan(boardStore, boardPlan, repairedAt);
   assert.equal(
     boardStore.formSubmissions.some((item) =>
-      item.board_id === 'board-delete' || item.meter_id === 'meter-delete'),
+      item.status === 'Draft' && (item.board_id === 'board-delete' || item.meter_id === 'meter-delete')),
     false,
   );
+  assert.deepEqual(boardStore.formSubmissions.filter((item) => item.status === 'Completed'), completedBefore);
+  const retainedDraft = boardStore.formSubmissions.find((item) => item.id === 'draft-board')!;
+  assert.equal(retainedDraft.board_id, undefined);
+  assert.equal(retainedDraft.meter_id, undefined);
+  assert.equal(retainedDraft.attachments[0].uri, 'file:///draft-evidence.jpg');
+  assert.ok(boardStore.cloudSync.upload_queue.some((item) => item.entity_id === 'form-board'));
   assert.equal(
     boardStore.electricalAssets.some(
       (item) => item.electrical_parent_id === 'board-delete',
@@ -395,18 +406,22 @@ test('board and site-asset deletion plans remove every formally linked form', ()
   );
 
   const siteStore = storeFixture();
+  const completedSiteBefore = structuredClone(siteStore.formSubmissions);
+  siteStore.formSubmissions.push({ ...form('draft-site', { site_asset_id: 'site-delete' }), status: 'Draft' });
   const sitePlan = planLocalDeletion(siteStore, {
     kind: 'site_asset',
     id: 'site-delete',
   });
   assert.ok(sitePlan);
-  assert.deepEqual(sitePlan.formIds, ['form-site']);
+  assert.deepEqual(sitePlan.formIds, []);
   applyLocalDeletionPlan(siteStore, sitePlan, repairedAt);
   assert.equal(siteStore.siteAssets.some((item) => item.id === 'site-delete'), false);
   assert.equal(
-    siteStore.formSubmissions.some((item) => item.site_asset_id === 'site-delete'),
+    siteStore.formSubmissions.some((item) => item.status === 'Draft' && item.site_asset_id === 'site-delete'),
     false,
   );
+  assert.deepEqual(siteStore.formSubmissions.filter((item) => item.status === 'Completed'), completedSiteBefore);
+  assert.equal(siteStore.formSubmissions.find((item) => item.id === 'draft-site')?.site_asset_id, undefined);
 });
 
 test('draft-form deletion removes only that draft, its queue entry, and unreferenced evidence', () => {

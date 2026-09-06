@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { InstallationForm } from '../components/forms';
-import { LoadingState } from '../components/ui';
+import { Button, LoadingState } from '../components/ui';
 import { canonicalInstallationRepo, installationsRepo } from '../repositories';
 import type { Installation } from '../types';
 import { useAuth, useTheme } from '../context/AppProviders';
@@ -23,22 +23,42 @@ export function InstallationFormScreen({ navigation, route }: Props) {
   const [initial, setInitial] = useState<Installation | null>(null);
   const [initialElectricityNmi, setInitialElectricityNmi] = useState('');
   const [loading, setLoading] = useState(!!id);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (!id) return;
+    let active = true;
+    setLoading(true);
+    setLoadError(null);
     void Promise.all([
       installationsRepo.getById(id),
       canonicalInstallationRepo.gridSupplies(id),
     ]).then(([item, gridSupplies]) => {
+      if (!active) return;
+      if (!item) throw new Error('This installation is unavailable or you no longer have access.');
       const defaultGrid = gridSupplies.find((grid) => grid.isDefault)
         ?? [...gridSupplies].sort((a, b) => a.id.localeCompare(b.id))[0];
       setInitial(item);
       setInitialElectricityNmi(defaultGrid?.nmi ?? '');
-      setLoading(false);
-    });
-  }, [id]);
+    }).catch((error) => {
+      if (active) setLoadError(error instanceof Error ? error.message : 'Could not load installation details.');
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [id, loadAttempt]);
 
   if (loading) return <LoadingState />;
+  if (loadError || (id && initial?.status === 'Completed')) {
+    return (
+      <View style={[styles.pad, { flex: 1, backgroundColor: colors.background, gap: spacing.md }]}>
+        <Text accessibilityRole="alert" style={{ color: colors.foreground }}>
+          {loadError || 'Reopen this completed installation before editing its details.'}
+        </Text>
+        {loadError ? <Button title="Retry" onPress={() => setLoadAttempt((value) => value + 1)} /> : null}
+        <Button title="Back" variant="secondary" onPress={() => navigation.goBack()} />
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -104,6 +124,8 @@ export function InstallationFormScreen({ navigation, route }: Props) {
                     try {
                       await installationsRepo.remove(id);
                       navigation.popToTop();
+                    } catch (error) {
+                      Alert.alert('Installation not deleted', error instanceof Error ? error.message : 'Please try again.');
                     } finally {
                       await resumeAuditWorkForInstallation(
                         suspension,

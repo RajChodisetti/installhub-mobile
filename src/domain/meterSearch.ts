@@ -4,6 +4,7 @@ import type {
   MeterDevice,
   Zone,
 } from '../types';
+import { BOARD_TYPE_LABELS } from './installationV2';
 
 export interface MeterSearchResult {
   total: number;
@@ -24,6 +25,20 @@ export interface DeviceSearchResult {
 }
 
 export const INSTALLATION_DEVICE_RESULT_LIMIT = 250;
+
+export function supportsCommsReplacement(meter: Pick<MeterDevice, 'deviceFamily' | 'deviceModel'>): boolean {
+  return meter.deviceFamily === 'WATTWATCHERS' && (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M');
+}
+
+export function deviceSearchIdentity(meter: MeterDevice) {
+  const manufacturer = meter.deviceFamily === 'OTHER' ? meter.customManufacturerName?.trim() : 'Wattwatchers';
+  const model = meter.deviceModel === 'OTHER' ? meter.customModelName?.trim() || 'metering device' : meter.deviceModel;
+  const name = [manufacturer, model].filter(Boolean).join(' ');
+  const displayName = meter.displayName.value.trim();
+  const normalized = (value: string) => value.replace(/\s+/g, ' ').toLocaleLowerCase('en-AU');
+  return { name, customName: meter.customName?.trim() || '',
+    assetId: normalized(displayName) === normalized(name) ? '' : displayName };
+}
 
 export function deviceRecordBelongsToInstallation(
   record: DeviceSearchRecord,
@@ -50,14 +65,17 @@ export function searchInstallationDevices(
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error('Device search limit must be positive.');
   }
-  const normalized = query.trim().toLocaleLowerCase();
+  const tokens = query.trim().toLocaleLowerCase('en-AU').split(/\s+/).filter(Boolean);
   const matches = [...records]
     .filter((record) => deviceRecordBelongsToInstallation(record, installationId))
-    .filter(({ meter, board, zone, installation }) => !normalized || [
+    .filter(({ meter, board, zone, installation }) => tokens.every((token) => [
       meter.id,
       meter.serialNumber,
       meter.deviceNumber,
       meter.displayName.value,
+      meter.customName,
+      meter.deviceFamily,
+      deviceSearchIdentity(meter).name,
       meter.deviceModel,
       meter.customManufacturerName,
       meter.customModelName,
@@ -65,11 +83,12 @@ export function searchInstallationDevices(
       board.display_code,
       board.asset_name,
       board.asset_type,
+      board.type_code ? BOARD_TYPE_LABELS[board.type_code] : BOARD_TYPE_LABELS[board.asset_type.replace(/-/g, '_').toUpperCase() as keyof typeof BOARD_TYPE_LABELS],
       zone.zone_name,
       installation.site_name,
       installation.client_name,
       installation.site_address,
-    ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized))
+    ].filter(Boolean).join(' ').toLocaleLowerCase('en-AU').includes(token)))
     .sort((left, right) =>
       left.installation.site_name.localeCompare(right.installation.site_name) ||
       left.zone.zone_name.localeCompare(right.zone.zone_name) ||

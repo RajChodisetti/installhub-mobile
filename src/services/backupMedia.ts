@@ -14,6 +14,7 @@ import type {
   InstallationBackupTree,
 } from '../repositories/cloudSyncRepository';
 import { defaultMeterCustomName, resolvedZoneCodes } from '../domain/namingV2';
+import { supportedFormAnswers } from '../forms/catalog';
 
 export type BackupSyncStage = 'metadata' | 'complete';
 
@@ -546,7 +547,9 @@ function wireForm(
     boardId: form.board_id ?? null,
     meterId: form.meter_id ?? null,
     siteAssetId: form.site_asset_id ?? null,
-    answers: form.answers,
+    // Earlier pickers copied unrelated family prefixes into schema-v2 forms.
+    // Project only supported API fields; never mutate the original snapshot.
+    answers: supportedFormAnswers(form.form_type, form.answers, form.schema_version),
     attachments,
     completedAt: stagedAsDraft ? null : form.completed_at ?? null,
     supersedesId: form.supersedes_id ?? null,

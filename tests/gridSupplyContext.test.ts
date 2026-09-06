@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canonicalNmiForBoard } from '../src/domain/gridSupplyContext';
+import { canonicalNmiForBoard, ensureGridSupplyDefault, gridSupplyNameForWrite } from '../src/domain/gridSupplyContext';
 import type { ElectricalAsset, GridSupply } from '../src/types';
 
 const timestamp = '2026-08-22T00:00:00.000Z';
@@ -42,4 +42,23 @@ test('grid-supply NMI takes authority over the legacy board field', () => {
 
 test('legacy board NMI remains a read-only compatibility fallback', () => {
   assert.equal(canonicalNmiForBoard(board, []), 'LEGACY-BOARD-NMI');
+});
+
+test('removing or clearing a primary supply selects a deterministic remaining default', () => {
+  const supplies = [
+    { ...grids[1], id: 'z', isDefault: false },
+    { ...grids[1], id: 'a', isDefault: false },
+  ];
+  ensureGridSupplyDefault(supplies);
+  assert.deepEqual(supplies.map((supply) => supply.isDefault), [false, true]);
+  supplies[0].isDefault = true;
+  supplies[1].isDefault = false;
+  ensureGridSupplyDefault(supplies);
+  assert.deepEqual(supplies.map((supply) => supply.isDefault), [true, false]);
+  assert.doesNotThrow(() => ensureGridSupplyDefault([]));
+});
+
+test('optional connection names use the portal fallback', () => {
+  assert.equal(gridSupplyNameForWrite(' '), 'Incoming grid connection');
+  assert.equal(gridSupplyNameForWrite(' Tenant feed '), 'Tenant feed');
 });

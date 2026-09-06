@@ -1,5 +1,6 @@
+import { FormScrollView } from '../components/ui';
 import React, { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import {
   canonicalInstallationRepo,
@@ -12,24 +13,30 @@ import {
 import type {
   ElectricalAsset,
   GridSupply,
+  Installation,
   MeasurementAssignment,
   MeasurementDirection,
   MeasurementTarget,
   Meter,
   MeterChannelPurpose,
   SiteAsset,
+  SiteAssetTypeCode,
   Zone,
 } from '../types';
-import { meterDeviceFromLegacy } from '../domain/installationV2';
+import { meterDeviceFromLegacy, SITE_ASSET_TYPE_LABELS } from '../domain/installationV2';
+import { SITE_ASSET_TYPE_CODES } from '../types';
+import { stagedMeterSiteAsset } from '../domain/meterEditorAdditions';
+import { provisionalDisplayCodeV2 } from '../domain/namingV2';
 import {
   energyFlowLabel,
   measuredItemTypeLabel,
   meterChannelPurposeLabel,
   phaseGroupingLabel,
-  siteAssetTargetIdsOwnedByOtherMeters,
+  structurallySavableMeterAssignments,
 } from '../domain/meterCommissioning';
-import { SelectChips, WattwatcherForm, createEmptyMeter } from '../components/forms';
-import { Button, Card, LoadingState, SearchBar, SectionHeader } from '../components/ui';
+import { FormModal, SelectChips, WattwatcherForm, createEmptyMeter } from '../components/forms';
+import { Button, Card, LoadingState, SearchBar, SectionHeader, TextField } from '../components/ui';
+import { RecordLoadState } from '../components/RecordLoadState';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -37,6 +44,7 @@ import { createId } from '../utils';
 import { boundedPickerResults } from '../domain/sourcePicker';
 import { deleteRemovedLocalPhotos } from '../services';
 import { apiClient, type InventoryMeter } from '../api/apiClient';
+import { assignmentApprovalSignature, type AssignmentTakeoverApprovals } from '../domain/meterAssignmentTakeover';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MeterForm'>;
 type AssignmentDraft = Omit<MeasurementAssignment, 'phaseMode' | 'target' | 'direction'> & {
@@ -112,6 +120,8 @@ export function MeterFormScreen({ navigation, route }: Props) {
   const [meter, setMeter] = useState<Meter | null>(null);
   const [persistedMeterPhotoUris, setPersistedMeterPhotoUris] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [lockedByCompletedForm, setLockedByCompletedForm] = useState(false);
@@ -120,9 +130,19 @@ export function MeterFormScreen({ navigation, route }: Props) {
   const [boards, setBoards] = useState<ElectricalAsset[]>([]);
   const [gridSupplies, setGridSupplies] = useState<GridSupply[]>([]);
   const [assets, setAssets] = useState<SiteAsset[]>([]);
+  const [installation, setInstallation] = useState<Installation | null>(null);
+  const [stagedAssets, setStagedAssets] = useState<SiteAsset[]>([]);
+  const [quickAssetGroupId, setQuickAssetGroupId] = useState<string | null>(null);
+  const [quickAssetZoneId, setQuickAssetZoneId] = useState('');
+  const [quickAssetType, setQuickAssetType] = useState<SiteAssetTypeCode>('HVAC');
+  const [quickAssetName, setQuickAssetName] = useState('');
+  const [quickAssetCustomType, setQuickAssetCustomType] = useState('');
+  const [invalidCapabilityChannels, setInvalidCapabilityChannels] = useState<Set<string>>(new Set());
   const [zones, setZones] = useState<Zone[]>([]);
   const [assignmentDrafts, setAssignmentDrafts] = useState<AssignmentDraft[]>([]);
-  const [siteAssetIdsOwnedByOtherMeters, setSiteAssetIdsOwnedByOtherMeters] = useState<Set<string>>(new Set());
+  const [allAssignments, setAllAssignments] = useState<MeasurementAssignment[]>([]);
+  const [baselineAssignments, setBaselineAssignments] = useState<MeasurementAssignment[]>([]);
+  const [takeoverApprovals, setTakeoverApprovals] = useState<AssignmentTakeoverApprovals>({});
   const [targetSearch, setTargetSearch] = useState<Record<string, string>>({});
   const [deletionPreview, setDeletionPreview] = useState({
     assignmentIds: [] as string[],
@@ -147,15 +167,15 @@ export function MeterFormScreen({ navigation, route }: Props) {
   }, [meterId]);
 
   useEffect(() => {
-    (async () => {
+    let active = true;
+    setLoading(true);
+    setLoadError(null);
+    void (async () => {
       const board = await electricalAssetsRepo.getById(boardId);
-      if (!board) {
-        setLoading(false);
-        return;
-      }
-      if (board.audit_id !== installationId) {
-        Alert.alert('Meter unavailable', 'This meter does not belong to the selected installation.');
-        navigation.goBack();
+      if (!active) return;
+      if (!board || board.audit_id !== installationId) {
+        setBoard(null);
+        setMeter(null);
         return;
       }
       const [installation, forms, assignments, installationAssets, installationBoards, grids] = await Promise.all([
@@ -166,17 +186,22 @@ export function MeterFormScreen({ navigation, route }: Props) {
         electricalAssetsRepo.listByInstallation(board.audit_id),
         canonicalInstallationRepo.gridSupplies(board.audit_id),
       ]);
-      const installationZones = await Promise.all(
-        [...new Set(installationBoards.map((item) => item.zone_id).concat(installationAssets.map((item) => item.zone_id)))]
-          .map((id) => zonesRepo.getById(id)),
-      );
+      const installationZones = await zonesRepo.listByInstallation(board.audit_id);
+      if (!active) return;
+      setInstallation(installation);
+      if (!installation) {
+        setBoard(null);
+        setMeter(null);
+        return;
+      }
       setBoard(board);
       setBoards(installationBoards);
       setGridSupplies(grids);
       setAssets(installationAssets);
       setZones(installationZones.filter((item): item is Zone => Boolean(item)));
       setAssignmentDrafts(assignments.filter((assignment) => assignment.meterId === meterId));
-      setSiteAssetIdsOwnedByOtherMeters(siteAssetTargetIdsOwnedByOtherMeters(assignments, meterId));
+      setAllAssignments(assignments);
+      setBaselineAssignments(assignments.filter((assignment) => assignment.meterId === meterId));
       setReadOnly(installation?.status === 'Completed');
       const completedForm = meterId
         ? forms.find((form) => form.meter_id === meterId && form.status === 'Completed')
@@ -206,27 +231,41 @@ export function MeterFormScreen({ navigation, route }: Props) {
         ),
       });
       if (meterId) {
-        const nextMeter = board.meters.find((m) => m.id === meterId) ?? createEmptyMeter(deviceType);
+        const nextMeter = board.meters.find((m) => m.id === meterId) ?? null;
         setMeter(nextMeter);
-        setPersistedMeterPhotoUris(meterPhotoUris(nextMeter));
+        setPersistedMeterPhotoUris(nextMeter ? meterPhotoUris(nextMeter) : []);
       } else {
         const nextMeter = createEmptyMeter(deviceType);
         setMeter(nextMeter);
         setPersistedMeterPhotoUris([]);
       }
-      setLoading(false);
-    })();
-  }, [boardId, meterId, deviceType, installationId, navigation]);
+    })().catch((caught) => {
+      if (active) setLoadError(caught instanceof Error ? caught.message : 'This meter could not be loaded.');
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [boardId, meterId, deviceType, installationId, loadAttempt]);
 
-  if (loading || !meter || !board) {
-    return (
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <LoadingState />
-      </View>
-    );
-  }
+  if (loading) return <LoadingState />;
+  if (loadError || !installation || !meter || !board) return (
+    <RecordLoadState title={meterId ? 'Meter unavailable' : 'Meter workspace unavailable'}
+      message={loadError ?? (meterId
+        ? 'This meter or its switchboard is no longer available in this installation.'
+        : 'This switchboard is no longer available in this installation.')}
+      onRetry={() => setLoadAttempt((current) => current + 1)} onBack={() => navigation.goBack()} />
+  );
 
   const previewDevice = meterDeviceFromLegacy(board.audit_id, board, meter);
+  const allAssets = [...assets, ...stagedAssets];
+  const historicalAssignmentUnchanged = (assignment: AssignmentDraft) => baselineAssignments.some((prior) => prior.id === assignment.id
+    && assignmentApprovalSignature(prior) === assignmentApprovalSignature(assignment as MeasurementAssignment));
+  const assetConflicts = (assetId: string) => allAssignments.filter((item) => item.meterId !== meter.id
+    && item.target.kind === 'SITE_ASSET' && item.target.siteAssetId === assetId);
+  const quickAssetPreview = installation && quickAssetZoneId ? provisionalDisplayCodeV2(installation, {
+    zones, electricalAssets: boards, siteAssets: allAssets,
+    meterDevices: boards.flatMap((item) => item.meters.map((device) => meterDeviceFromLegacy(installationId, item, device))),
+  }, { zoneId: quickAssetZoneId, customName: quickAssetName || quickAssetCustomType || SITE_ASSET_TYPE_LABELS[quickAssetType], fallbackType: SITE_ASSET_TYPE_LABELS[quickAssetType] }).value : '';
   const zoneName = (zoneId: string) => zones.find((item) => item.id === zoneId)?.zone_name ?? 'Unknown zone';
   const purposeFor = (assignment: AssignmentDraft): MeterChannelPurpose | null => {
     const purposes = new Set(
@@ -285,14 +324,13 @@ export function MeterFormScreen({ navigation, route }: Props) {
         })));
     }
     if (assignment.target.kind === 'SITE_ASSET') {
-      return bound(assets
-        .filter((item) => item.electrical_source?.kind === 'BOARD' &&
-          boardIsUpstreamOf(boards, board.id, item.electrical_source.boardId) &&
-          !siteAssetIdsOwnedByOtherMeters.has(item.id))
+      return bound(allAssets
+        .filter((item) => (item.electrical_source?.kind === 'BOARD' && item.electrical_source.boardId === board.id)
+          || (assignment.target?.kind === 'SITE_ASSET' && assignment.target.siteAssetId === item.id && historicalAssignmentUnchanged(assignment)))
         .map((item) => ({
           key: item.id,
           label: `${item.asset_name} · ${item.asset_type}`,
-          subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}`,
+          subtitle: `${item.asset_type} · ${zoneName(item.zone_id)}${assetConflicts(item.id).length ? ' · Currently measured by another device; approval required' : ''}${item.electrical_source?.kind !== 'BOARD' || item.electrical_source.boardId !== board.id ? ' · Existing historical mapping' : ''}`,
           target: { kind: 'SITE_ASSET' as const, siteAssetId: item.id },
         })));
     }
@@ -303,6 +341,20 @@ export function MeterFormScreen({ navigation, route }: Props) {
     transform: (current: AssignmentDraft) => AssignmentDraft,
   ) => setAssignmentDrafts((current) => current.map((item) =>
     item.id === assignmentId ? transform(item) : item));
+  const chooseTarget = (assignment: AssignmentDraft, candidate: TargetCandidate) => {
+    const select = () => updateAssignment(assignment.id, (current) => ({ ...current, target: candidate.target, status: 'CONFIRMED' }));
+    const conflicts = candidate.target.kind === 'SITE_ASSET' ? assetConflicts(candidate.target.siteAssetId) : [];
+    if (!conflicts.length || conflicts.every((conflict) => takeoverApprovals[conflict.id] === assignmentApprovalSignature(conflict))) { select(); return; }
+    Alert.alert('Reassign this site asset?', `${candidate.label} is currently attached to:\n\n${conflicts.map((conflict) => {
+      const owner = boards.flatMap((item) => item.meters).find((device) => device.id === conflict.meterId);
+      return `${owner?.custom_name || owner?.device_id || conflict.meterId}\nDevice ID: ${conflict.meterId}\nAssignment: ${conflict.id}\nChannels: ${conflict.channelIds.join(', ')}\n${phaseGroupingLabel(conflict.phaseMode)} · ${energyFlowLabel(conflict.direction)}`;
+    }).join('\n\n')}\n\nSaving moves this asset to the selected group. The previous device channels remain To be confirmed. A changed mapping requires fresh approval.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Approve reassignment', onPress: () => {
+        setTakeoverApprovals((current) => ({ ...current, ...Object.fromEntries(conflicts.map((conflict) => [conflict.id, assignmentApprovalSignature(conflict)])) })); select();
+      } },
+    ]);
+  };
   const setTargetKind = (
     assignment: AssignmentDraft,
     kind: MeasurementTarget['kind'],
@@ -341,8 +393,8 @@ export function MeterFormScreen({ navigation, route }: Props) {
     }]);
   };
 
-  return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
+  return <>
+    <FormScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
       <Text style={[typography.heading, { color: colors.foreground, marginBottom: spacing.lg }]}>
         {meter.device_type === 'Other' ? 'Other Meter' : `Wattwatcher ${meter.device_type}`}
       </Text>
@@ -434,18 +486,22 @@ export function MeterFormScreen({ navigation, route }: Props) {
           data={meter}
           lockDeviceType={deviceType === 'Other'}
           onChange={(next) => setMeter({ ...meter, ...next })}
+          onCapabilitiesValidityChange={(id, valid) => setInvalidCapabilityChannels((current) => {
+            if (current.has(id) === !valid) return current;
+            const next = new Set(current); if (valid) next.delete(id); else next.add(id); return next;
+          })}
         />
       </View>
 
       <View style={{ marginTop: spacing.xl }}>
         <SectionHeader title="What each channel measures" actionLabel={readOnly ? undefined : '+ Add group'} onAction={readOnly ? undefined : addAssignment} />
         <Text style={{ color: colors.mutedForeground, lineHeight: 20, marginBottom: spacing.md }}>
-          Create one measured group for each load or supply. Group channels only when they measure the same thing, then choose the phase grouping, energy flow, and measured item. Every non-spare channel must appear once; spare channels need no group.
+          Create a measured group for each captured load or supply. Group channels only when they measure the same thing. Unassigned channels remain available; explicit To be confirmed targets block completion.
         </Text>
         {!assignmentDrafts.length ? (
           <Card style={{ marginBottom: spacing.md }}>
             <Text style={{ color: colors.mutedForeground }}>
-              No channel measurements recorded yet. Add a group for every non-spare channel.
+              No channel measurements recorded yet. Add a group when its measurement is known.
             </Text>
           </Card>
         ) : null}
@@ -579,11 +635,7 @@ export function MeterFormScreen({ navigation, route }: Props) {
                             key={candidate.key}
                             accessibilityRole="radio"
                             accessibilityState={{ checked: selected }}
-                            onPress={() => updateAssignment(assignment.id, (current) => ({
-                              ...current,
-                              target: candidate.target,
-                              status: 'CONFIRMED',
-                            }))}
+                            onPress={() => chooseTarget(assignment, candidate)}
                             style={{
                               minHeight: 54,
                               justifyContent: 'center',
@@ -615,6 +667,15 @@ export function MeterFormScreen({ navigation, route }: Props) {
                   </Text>
                 ) : null}
                 <Button
+                  title="Create site asset for this group"
+                  variant="secondary"
+                  disabled={readOnly || busy || purposeFor(assignment) !== 'SUB_CIRCUIT'}
+                  onPress={() => {
+                    setQuickAssetGroupId(assignment.id); setQuickAssetZoneId(board.zone_id);
+                    setQuickAssetType('HVAC'); setQuickAssetName(''); setQuickAssetCustomType('');
+                  }}
+                />
+                <Button
                   title="Remove measured group"
                   variant="danger"
                   onPress={() => setAssignmentDrafts((current) => current.filter((item) => item.id !== assignment.id))}
@@ -626,63 +687,49 @@ export function MeterFormScreen({ navigation, route }: Props) {
       </View>
       <Button
         title={busy ? 'Saving…' : 'Save device & channel measurements'}
-        disabled={busy || readOnly}
+        disabled={busy || readOnly || invalidCapabilityChannels.size > 0}
         style={{ marginTop: spacing.lg }}
         onPress={async () => {
           setBusy(true);
           try {
-            const finalizedAssignments: MeasurementAssignment[] = assignmentDrafts.map((assignment, index) => {
-              if (!assignment.phaseMode) {
-                throw new Error(`Choose the phase grouping for measured group ${index + 1}.`);
-              }
-              if (!assignment.direction) {
-                throw new Error(`Choose the energy flow for measured group ${index + 1}.`);
-              }
-              if (!assignment.target) {
-                throw new Error(`Choose what the channels measure for measured group ${index + 1}.`);
-              }
-              if (
-                (assignment.target.kind === 'BOARD' && !assignment.target.boardId) ||
-                (assignment.target.kind === 'GRID_BOUNDARY' && !assignment.target.gridSupplyId) ||
-                (assignment.target.kind === 'SITE_ASSET' && !assignment.target.siteAssetId)
-              ) {
-                throw new Error(`Choose the exact switchboard, grid connection, or site asset for measured group ${index + 1}.`);
-              }
-              return {
+            const selectedAssetIds = new Set<string>();
+            const finalizedAssignments = structurallySavableMeterAssignments(
+              assignmentDrafts.map((assignment) => ({
                 ...assignment,
-                phaseMode: assignment.phaseMode,
-                target: assignment.target,
-                direction: assignment.direction,
-                status: assignment.target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
-              };
+                phaseMode: assignment.phaseMode || 'OTHER',
+                direction: assignment.direction || 'CONSUMPTION',
+                target: assignment.target ?? { kind: 'TBC' },
+              })),
+              previewDevice.channels,
+            ).map((assignment): MeasurementAssignment => {
+              const target = assignment.target;
+              const purpose = purposeFor(assignment);
+              let unresolved = !targetKindsFor(assignment).includes(target.kind);
+              if (target.kind === 'BOARD') {
+                unresolved ||= !boards.some((candidate) => candidate.id === target.boardId)
+                  || (purpose === 'MAIN_SUPPLY' ? target.boardId !== boardId
+                    : target.boardId === boardId || !boardIsUpstreamOf(boards, boardId, target.boardId));
+              } else if (target.kind === 'GRID_BOUNDARY') {
+                unresolved ||= !gridSupplies.some((grid) => grid.id === target.gridSupplyId)
+                  || !meterBoardReachesGrid(boards, boardId, target.gridSupplyId);
+              } else if (target.kind === 'SITE_ASSET') {
+                const asset = allAssets.find((item) => item.id === target.siteAssetId);
+                const directlySupplied = asset?.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === boardId;
+                unresolved ||= !asset || (!directlySupplied && !historicalAssignmentUnchanged(assignment))
+                  || selectedAssetIds.has(target.siteAssetId);
+                if (!unresolved && assetConflicts(target.siteAssetId).some((conflict) => takeoverApprovals[conflict.id] !== assignmentApprovalSignature(conflict))) {
+                  throw new Error('Approve the exact current device and channel group before reassigning this asset.');
+                }
+                if (!unresolved) selectedAssetIds.add(target.siteAssetId);
+              }
+              return unresolved ? { ...assignment, target: { kind: 'TBC' }, status: 'TBC' } : assignment;
             });
-            if (!meter.device_id.trim()) {
-              throw new Error('Device ID / serial is required.');
-            }
-            if (meter.device_type === 'Other') {
-              if (!meter.custom_manufacturer_name?.trim() || !meter.custom_model_name?.trim()) {
-                throw new Error('Custom meters require manufacturer and model.');
-              }
-              if (!(meter.ww_channels?.length)) {
-                throw new Error('Declare at least one channel for this custom meter.');
-              }
-              const missingCapabilities = meter.ww_channels.findIndex(
-                (channel) => !channel.capabilities || Object.keys(channel.capabilities).length === 0,
-              );
-              if (missingCapabilities >= 0) {
-                throw new Error(`Declare capabilities for custom meter channel ${missingCapabilities + 1}.`);
-              }
-              const invalidOrdinal = meter.ww_channels.findIndex(
-                (channel) => !Number.isSafeInteger(channel.ordinal) || (channel.ordinal ?? 0) < 1,
-              );
-              if (invalidOrdinal >= 0) {
-                throw new Error(`Custom meter channel ${invalidOrdinal + 1} requires a stable positive ordinal.`);
-              }
-            }
             await electricalAssetsRepo.saveMeterConfiguration(
               boardId,
               meter,
               finalizedAssignments,
+              { stagedAssets, baselineAssignments, takeoverApprovals: Object.fromEntries(finalizedAssignments.flatMap((assignment) => assignment.target.kind === 'SITE_ASSET'
+                ? assetConflicts(assignment.target.siteAssetId).filter((conflict) => takeoverApprovals[conflict.id]).map((conflict) => [conflict.id, takeoverApprovals[conflict.id]!]) : [])) },
             );
             deleteRemovedLocalPhotos(persistedMeterPhotoUris, meterPhotoUris(meter));
             setPersistedMeterPhotoUris(meterPhotoUris(meter));
@@ -750,8 +797,26 @@ export function MeterFormScreen({ navigation, route }: Props) {
           }}
         />
       ) : null}
-    </ScrollView>
-  );
+    </FormScrollView>
+    <FormModal visible={Boolean(quickAssetGroupId)} title="Create measured site asset" onClose={() => setQuickAssetGroupId(null)}>
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>The new asset is supplied by {board.asset_name}. It stays in this device draft until you save the device and its measurements.</Text>
+      <SelectChips label="Physical zone" value={quickAssetZoneId} options={zones.map((zone) => zone.id)} getLabel={(id) => zoneName(id)} onChange={setQuickAssetZoneId} />
+      <SelectChips label="Asset type" value={quickAssetType} options={[...SITE_ASSET_TYPE_CODES]} getLabel={(type) => SITE_ASSET_TYPE_LABELS[type]} onChange={setQuickAssetType} />
+      {quickAssetType === 'OTHER' ? <TextField label="Custom asset type" value={quickAssetCustomType} onChangeText={setQuickAssetCustomType} /> : null}
+      <TextField label="Site asset name" maxLength={64} value={quickAssetName} placeholder={quickAssetCustomType || SITE_ASSET_TYPE_LABELS[quickAssetType]} onChangeText={setQuickAssetName} />
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>Generated asset ID preview: {quickAssetPreview || 'Choose a physical zone'}</Text>
+      <Button title="Use new asset in this group" disabled={!quickAssetZoneId || busy} onPress={() => {
+        if (!quickAssetGroupId) return;
+        try {
+          if (!zones.some((zone) => zone.id === quickAssetZoneId)) throw new Error('Choose an available physical zone.');
+          const created = stagedMeterSiteAsset({ id: createId('site'), installationId, zoneId: quickAssetZoneId, boardId, name: quickAssetName, typeCode: quickAssetType, customType: quickAssetCustomType, timestamp: new Date().toISOString() });
+          setStagedAssets((current) => [...current, created]);
+          updateAssignment(quickAssetGroupId, (current) => ({ ...current, target: { kind: 'SITE_ASSET', siteAssetId: created.id }, status: 'CONFIRMED' }));
+          setQuickAssetGroupId(null);
+        } catch (cause) { Alert.alert('Asset not added', cause instanceof Error ? cause.message : 'Check the asset details.'); }
+      }} />
+    </FormModal>
+  </>;
 }
 
 const styles = StyleSheet.create({

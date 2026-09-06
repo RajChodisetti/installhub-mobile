@@ -1,8 +1,9 @@
+import { FormScrollView } from '../components/ui';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useInstallation, useZoneWorkspace } from '../hooks';
+import { useInstallation } from '../hooks';
 import { electricalAssetsRepo, getLocalDeletionPreview, siteAssetsRepo, zonesRepo } from '../repositories';
 import { ElectricalAssetCard, SiteAssetCard } from '../components/domain';
 import {
@@ -23,6 +24,7 @@ import {
   SiteAssetForm,
 } from '../components/forms';
 import { deleteLocalPhoto, pickLocalPhoto, takeLocalPhoto } from '../services';
+import { RecordLoadState } from '../components/RecordLoadState';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
@@ -40,17 +42,24 @@ const ZONE_PAGE_SIZE = 100;
 export function ZoneWorkspaceScreen({ navigation, route }: Props) {
   const { zoneId, installationId } = route.params;
   const { colors } = useTheme();
-  const { zone, boards, siteAssets, loading, refresh } = useZoneWorkspace(zoneId);
   const {
     item: installation,
     boards: installationBoards,
+    siteAssets: installationSiteAssets,
     gridSupplies,
     zones,
     meterDevices,
     measurementAssignments,
     readiness,
+    loading,
+    error,
     refresh: refreshInstallation,
   } = useInstallation(installationId);
+  const zone = zones.find((candidate) => candidate.id === zoneId);
+  const boards = installationBoards.filter((candidate) => candidate.zone_id === zoneId);
+  const siteAssets = installationSiteAssets.filter((candidate) => candidate.zone_id === zoneId);
+  const refresh = refreshInstallation;
+  const retry = () => { void refresh().catch(() => undefined); };
   const readOnly = installation?.status === 'Completed';
   const zoneMeterIds = new Set(
     meterDevices
@@ -128,34 +137,43 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
     void refreshInstallation().then(() => {
       setAssetModal(true);
       setDeviceDetourReturnToken((current) => current + 1);
+    }).catch((caught) => {
+      Alert.alert('Could not refresh zone', caught instanceof Error ? caught.message : 'Try loading the zone again.');
     });
   }, [refreshInstallation]));
 
   const addPhoto = async (source: 'library' | 'camera') => {
-    const uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
-    if (!uri || !zone) return;
+    if (!zone) return;
+    let uri: string | null = null;
+    let saved = false;
     try {
+      uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
+      if (!uri) return;
       await zonesRepo.update(zoneId, { photos: [...zone.photos, uri] });
+      saved = true;
       await refresh();
     } catch (error) {
-      deleteLocalPhoto(uri);
+      // A refresh failure must not delete evidence already referenced by the
+      // persisted zone. Only an uncommitted newly acquired file is disposable.
+      if (uri && !saved) deleteLocalPhoto(uri);
       Alert.alert(
-        'Photo not added',
-        error instanceof Error ? error.message : 'The photo could not be saved.',
+        saved ? 'Photo saved; refresh failed' : 'Photo not added',
+        error instanceof Error ? error.message : saved ? 'Retry loading the zone.' : 'The photo could not be saved.',
       );
     }
   };
 
-  if (loading || !zone) {
-    return (
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <LoadingState />
-      </View>
-    );
-  }
+  if (loading && !installation) return <LoadingState />;
+  if (!installation || !zone) return (
+    <RecordLoadState title="Zone unavailable"
+      message={error ?? 'This zone is no longer available in this installation.'}
+      onRetry={retry} onBack={() => navigation.goBack()} />
+  );
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
+    <FormScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
+      {error ? <RecordLoadState inline title="Could not refresh zone" message={error}
+        onRetry={retry} onBack={() => navigation.goBack()} /> : null}
       <Text style={[typography.title, { color: colors.foreground }]}>{zone.zone_name}</Text>
       <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
         Zone code: {zone.zone_code ?? 'Not set'}
@@ -208,11 +226,20 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
                 text: 'Remove',
                 style: 'destructive',
                 onPress: async () => {
-                  await zonesRepo.update(zoneId, {
-                    photos: zone.photos.filter((p) => p !== uri),
-                  });
-                  deleteLocalPhoto(uri);
-                  await refresh();
+                  let removed = false;
+                  try {
+                    await zonesRepo.update(zoneId, {
+                      photos: zone.photos.filter((p) => p !== uri),
+                    });
+                    removed = true;
+                    deleteLocalPhoto(uri);
+                    await refresh();
+                  } catch (error) {
+                    Alert.alert(
+                      removed ? 'Photo removed; refresh failed' : 'Photo not removed',
+                      error instanceof Error ? error.message : 'Retry loading the zone.',
+                    );
+                  }
                 },
               },
             ]);
@@ -376,6 +403,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
 
       <FormModal visible={assetModal} title="Add site asset" onClose={() => setAssetModal(false)}>
         <SiteAssetForm
+          siteAssets={installationSiteAssets}
           key={assetFormKey}
           active={assetModal}
           initial={{ audit_id: installationId, zone_id: zoneId }}
@@ -438,11 +466,11 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         <TextArea label="Description" value={zoneDesc} onChangeText={setZoneDesc} />
         <Button
           title="Save"
-          disabled={!zoneName.trim() || !isValidZoneCode(zoneCode)}
+          disabled={Boolean(zoneCode.trim()) && !isValidZoneCode(zoneCode)}
           onPress={async () => {
             await zonesRepo.update(zoneId, {
-              zone_name: zoneName.trim(),
-              zone_code: zoneCode,
+              zone_name: zoneName.trim() || 'Zone',
+              zone_code: zoneCode.trim() || undefined,
               zone_description: zoneDesc.trim(),
             });
             setEditZone(false);
@@ -477,7 +505,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           })(); }}
         />
       </FormModal>
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

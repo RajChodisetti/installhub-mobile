@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   answersWithCanonicalBoardContext,
+  canonicalWwSwitchboardTypeAnswer,
   channelAfterPurposeChange,
   channelsAfterDeviceTypeChange,
   deviceLabelPrefix,
@@ -125,7 +126,7 @@ test('WW completion projects read-only canonical board context and one stable me
   const answers = answersWithCanonicalBoardContext(form.answers, board);
   assert.equal(answers['auditor.switchboard_name'], 'Canonical Main Board');
   assert.equal(answers['auditor.switchboard_location'], 'Plant room');
-  assert.equal(answers['auditor.switchboard_type'], 'MSB');
+  assert.equal(answers['auditor.switchboard_type'], 'Main switchboard');
   assert.equal(answers['auditor.site_nmi'], 'NMI-1');
 
   const first = meterFromInstallationForm({ ...form, answers }, board, 'stable-meter');
@@ -145,6 +146,15 @@ test('WW completion projects read-only canonical board context and one stable me
   assert.deepEqual(amended.ww_channels?.map((channel) => channel.id), [
     'stable-meter:1', 'stable-meter:2', 'stable-meter:3',
   ]);
+});
+
+test('WW canonical switchboard answer matches portal human labels', () => {
+  assert.equal(canonicalWwSwitchboardTypeAnswer({
+    asset_type: 'MSB', type_code: 'MSB', custom_type_name: undefined,
+  }), 'Main switchboard');
+  assert.equal(canonicalWwSwitchboardTypeAnswer({
+    asset_type: 'Other', type_code: 'OTHER', custom_type_name: 'Generator board',
+  }), 'Generator board');
 });
 
 test('WW completion never copies non-yes/no pre-start strings into the meter', () => {

@@ -1,3 +1,5 @@
+import { resolveOwnedMediaUri } from './ownedMediaPaths';
+import { anyInstallationRecoveryIsActive } from './installationRecoveryFence';
 import { File } from 'expo-file-system';
 import { sha256 } from 'js-sha256';
 import {
@@ -12,7 +14,7 @@ import {
   getInstallationBackupTree,
   getNextUpload,
   listPendingCompleteBackupAttempts,
-  listInstallationsNeedingBackup,
+  getInstallationBackupSelection,
   listUploadQueue,
   finishCompleteBackupAttempt,
   discardCompleteBackupAttempt,
@@ -29,7 +31,13 @@ import {
   InstallationBackupDispatchBlockedError,
 } from '../repositories/cloudSyncRepository';
 import { installationsRepo } from '../repositories';
-import type { CloudUploadQueueItem } from '../types';
+import type { CloudUploadQueueItem, PendingMetadataBackupAttempt, ConflictedMetadataBackupAttempt } from '../types';
+import { metadataPrecommitRejectionCode, type MetadataRejectionObservation } from './metadataBackupRejection';
+import { listPendingMetadataBackupAttempts, prepareMetadataBackupAttempt, recordAcceptedMetadataBackupAttempt,
+  finishMetadataBackupAttempt, archiveConflictedMetadataBackupAttempt, archiveRejectedMetadataBackupAttempt,
+  listAcceptedMetadataConflicts, assertCurrentAcceptedMetadataConflict, resolveAcceptedMetadataConflict } from '../repositories/metadataBackupRepository';
+import { confirmMetadataBackupAttempt } from './metadataBackupConfirmation';
+import { validateCanonicalRemoteTreeIds } from './remoteInstallationValidation';
 import type { RemoteInstallationTree } from '../api/apiClient';
 import { buildBackupPayload, discoverBackupMedia } from './backupMedia';
 import {
@@ -47,14 +55,15 @@ import {
   isDefinitivelyUnconfirmedUploadConfirmationError,
   recoverUploadConfirmation,
 } from './uploadConfirmationRecovery';
+import type { ForegroundRejectedMetadataRetry } from './foregroundRejectedMetadataRetry';
 import { createSingleFlightProgressRunner } from './singleFlightProgress';
+import type { BackupInstallationOutcome } from './backupOutcome';
 import { uploadThenConfirmForAuthority } from './backupAuthorityFence';
 import {
   assertCurrentAssignedWorkAuthority,
   type AssignedWorkMutationAuthority,
 } from './assignedWorkMutationGuard';
 import {
-  captureServerResultInstallationSnapshot,
   type ServerResultCommitFence,
 } from './serverResultCommitFence';
 
@@ -65,6 +74,7 @@ export type SyncProgress = {
   total: number;
   failedCount: number;
   lastError?: string;
+  installationOutcome?: BackupInstallationOutcome;
 };
 
 export interface CloudBackupRunAuthority {
@@ -74,6 +84,9 @@ export interface CloudBackupRunAuthority {
   readonly cloudAuthority: CloudSessionAuthority;
   readonly assignedWorkAuthority: AssignedWorkMutationAuthority;
   readonly assertAdditionalAuthority?: () => void;
+  /** Foreground assignment refresh runs only after durable requests are recovered. */
+  readonly beforeNewBackups?: () => Promise<void>;
+  readonly rejectedMetadataRetry?: ForegroundRejectedMetadataRetry;
 }
 
 export class CloudBackupAuthorityChangedError extends Error {
@@ -165,7 +178,7 @@ async function processUpload(
     row.installation_id,
     authority.actorUserId,
   );
-  const file = new File(row.local_uri);
+  const file = new File(resolveOwnedMediaUri(row.local_uri));
   if (!file.exists) {
     await updateUploadQueueItem(row.id, {
       status: 'failed',
@@ -421,6 +434,109 @@ function backupRecoveryStillAllowed(
   }
 }
 
+async function recoverMetadataAttempt(attempt: PendingMetadataBackupAttempt, authority: CloudBackupRunAuthority, freshFirstDispatch = false) {
+  const assertCurrent = () => {
+    assertCloudBackupRunAuthorityCurrent(authority);
+    if (attempt.actor_user_id !== authority.actorUserId) throw new Error('Metadata backup belongs to another account.');
+    assertInstallationAllowsBackupRecovery(attempt.installation_id, authority.actorUserId);
+  };
+  await confirmMetadataBackupAttempt(attempt, {
+    assertCurrent,
+    push: async (payload) => {
+      assertCurrent();
+      try { return await apiClient.push(payload, authority.cloudAuthority); }
+      catch (error) {
+        // Only a definitive POST conflict retires ambiguity. Keep its complete
+        // original intent for explicit preserved-copy recovery; never rebase it.
+        if (error instanceof ApiError && error.status === 409) {
+          await archiveConflictedMetadataBackupAttempt(attempt, error.message, assertCurrent);
+        }
+        const code = error instanceof ApiError ? metadataPrecommitRejectionCode(error.status, error.message) : null;
+        if (code && attempt.accepted_tree_revision === undefined
+          && !Object.prototype.hasOwnProperty.call(attempt, 'accepted_record_version_number')) {
+          assertCurrent();
+          let observation: MetadataRejectionObservation;
+          try {
+            const response = await apiClient.pull('1970-01-01T00:00:00.000Z', attempt.installation_id, authority.cloudAuthority);
+            assertCurrent();
+            if (response.installations.length !== 1
+              || response.installations[0]?.installation.id !== attempt.installation_id) {
+              throw new Error('The server could not prove the original request was rejected. It remains pending.');
+            }
+            const tree = response.installations[0]!;
+            validateCanonicalRemoteTreeIds(tree);
+            observation = { kind: 'unchanged_preimage', tree };
+          } catch (proofError) {
+            assertCurrent();
+            // A fresh intent has never been dispatched before this engine run.
+            // A restarted/replayed first-create must not infer no prior commit
+            // from a 404, since the original record might have been purged.
+            if (freshFirstDispatch && attempt.base_tree_revision === undefined
+              && proofError instanceof ApiError && proofError.status === 404
+              && proofError.message === 'Installation not found') {
+              observation = { kind: 'absent_first_dispatch', installationId: attempt.installation_id, freshFirstDispatch: true };
+            } else throw proofError;
+          }
+          assertCurrent();
+          await archiveRejectedMetadataBackupAttempt(attempt, code, (error as ApiError).message, observation, assertCurrent);
+          throw new Error(`${(error as ApiError).message} The rejected request was preserved. Correct this capture issue and back up again.`);
+        }
+        throw error;
+      }
+    },
+    recordAccepted: (original, result) => recordAcceptedMetadataBackupAttempt(original, result, assertCurrent),
+    fetchCanonical: async (id) => {
+      assertCurrent();
+      const response = await apiClient.pull('1970-01-01T00:00:00.000Z', id, authority.cloudAuthority);
+      assertCurrent();
+      const matches = response.installations.filter((tree) => tree.installation.id === id);
+      if (response.installations.length !== 1 || matches.length !== 1) {
+        throw new Error('Canonical metadata confirmation returned unexpected installation scope. Retry the original request.');
+      }
+      const remote = matches[0]!;
+      validateCanonicalRemoteTreeIds(remote);
+      return remote;
+    },
+    finish: async (original, remote, revision) => {
+      assertCurrent();
+      const current = await getInstallationBackupTree(original.installation_id);
+      assertCurrent();
+      if (!current) throw new Error('Installation disappeared before metadata confirmation.');
+      await finishMetadataBackupAttempt(original, remote, {
+        ...serverResultCommitFence(authority, current.installation.tree_revision ?? 0, current.watermark),
+        expectedServerTreeRevision: current.installation.server_tree_revision,
+        expectedTreeSnapshotSha256: sha256(JSON.stringify(current)),
+      }, revision);
+    },
+  });
+}
+
+async function recoverAcceptedMetadataConflict(original: ConflictedMetadataBackupAttempt, authority: CloudBackupRunAuthority) {
+  const assertCurrent = () => {
+    assertCloudBackupRunAuthorityCurrent(authority);
+    if (original.actor_user_id !== authority.actorUserId) throw new Error('The saved acknowledgement belongs to another account.');
+    assertCurrentAcceptedMetadataConflict(original, () => assertCloudBackupRunAuthorityCurrent(authority));
+  };
+  assertCurrent();
+  // Use the same pinned cloud read lease, never replay an acknowledged POST.
+  const response = await apiClient.pull('1970-01-01T00:00:00.000Z', original.installation_id, authority.cloudAuthority);
+  assertCurrent();
+  if (response.installations.length !== 1 || response.installations[0]?.installation.id !== original.installation_id) {
+    throw new Error('Canonical acknowledgement lookup returned unexpected installation scope. The conflict remains protected.');
+  }
+  const remote = response.installations[0]!;
+  validateCanonicalRemoteTreeIds(remote);
+  const current = await getInstallationBackupTree(original.installation_id);
+  assertCurrent();
+  if (!current) throw new Error('The acknowledged checkout is no longer available.');
+  await resolveAcceptedMetadataConflict(original, remote, {
+    ...serverResultCommitFence(authority, current.installation.tree_revision ?? 0, current.watermark),
+    expectedServerTreeRevision: current.installation.server_tree_revision,
+    expectedTreeSnapshotSha256: sha256(JSON.stringify(current)),
+  });
+  assertCloudBackupRunAuthorityCurrent(authority);
+}
+
 async function executeCloudBackup(
   onProgress: (progress: SyncProgress) => void = () => {},
   authority: CloudBackupRunAuthority,
@@ -432,6 +548,37 @@ async function executeCloudBackup(
   let uploaded = 0;
   let total = 0;
   let activeInstallationId: string | undefined;
+  const selectedInstallations = new Set<string>();
+  const confirmedInstallations = new Set<string>();
+  const skippedInstallations = new Set<string>();
+  const finishRun = async (): Promise<SyncProgress> => {
+    assertCurrentSession();
+    // Re-read after confirmations: edits, opt-outs, recovery, or assignment changes
+    // during the run must not be presented as a fully backed-up installation.
+    const latest = await getInstallationBackupSelection(authority.actorUserId);
+    assertCurrentSession();
+    const visible = new Set(latest.visibleInstallationIds);
+    const optedIn = new Set(latest.optedInInstallationIds);
+    const deferred = new Set(latest.deferredInstallationIds);
+    for (const id of skippedInstallations) if (optedIn.has(id)) deferred.add(id);
+    const remaining = new Set([...deferred, ...latest.trees.map((tree) => tree.installation.id)]);
+    const done: SyncProgress = {
+      phase: 'done', uploaded, total, failedCount: 0,
+      installationOutcome: {
+        selected: [...selectedInstallations].filter((id) => visible.has(id)).length,
+        confirmed: [...confirmedInstallations].filter((id) => visible.has(id)).length,
+        alreadyCurrent: latest.alreadyCurrentInstallationIds.filter((id) => !confirmedInstallations.has(id)).length,
+        deferred: deferred.size, remaining: remaining.size,
+      },
+    };
+    await recordSyncDiagnostic({
+      outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
+      latencyMs: Date.now() - syncStartedAt,
+    });
+    assertCurrentSession();
+    onProgress(done);
+    return done;
+  };
   const confirmationDependencies = completeBackupDependencies(authority);
   const recoveryConfirmationDependencies: CompleteBackupConfirmationDependencies = {
     ...confirmationDependencies,
@@ -458,6 +605,24 @@ async function executeCloudBackup(
     assertCurrentSession();
     await resetInterruptedUploads(authority.actorUserId);
     assertCurrentSession();
+    for (const original of await listAcceptedMetadataConflicts(authority.actorUserId)) {
+      assertCurrentSession(); activeInstallationId = original.installation_id;
+      selectedInstallations.add(activeInstallationId);
+      onProgress({ phase: 'pushing', installationId: activeInstallationId, uploaded, total, failedCount: 0 });
+      await recoverAcceptedMetadataConflict(original, authority);
+      assertCurrentSession();
+    }
+    for (const attempt of await listPendingMetadataBackupAttempts(authority.actorUserId)) {
+      assertCurrentSession();
+      if (!backupRecoveryStillAllowed(attempt.installation_id, authority.actorUserId)) {
+        skippedInstallations.add(attempt.installation_id); continue;
+      }
+      activeInstallationId = attempt.installation_id;
+      selectedInstallations.add(activeInstallationId);
+      onProgress({ phase: 'pushing', installationId: activeInstallationId, uploaded, total, failedCount: 0 });
+      await recoverMetadataAttempt(attempt, authority);
+      assertCurrentSession();
+    }
     // Recovery is independent of the current backup opt-in and dirty flags:
     // once a final request may have committed, it must be reconciled first.
     for (const attempt of await listPendingCompleteBackupAttempts()) {
@@ -465,8 +630,9 @@ async function executeCloudBackup(
       if (!backupRecoveryStillAllowed(
         attempt.installation_id,
         authority.actorUserId,
-      )) continue;
+      )) { skippedInstallations.add(attempt.installation_id); continue; }
       activeInstallationId = attempt.installation_id;
+      selectedInstallations.add(activeInstallationId);
       onProgress({
         phase: 'pushing',
         installationId: activeInstallationId,
@@ -476,28 +642,21 @@ async function executeCloudBackup(
       });
       await confirmCompleteBackupAttempt(attempt, recoveryConfirmationDependencies);
       assertCurrentSession();
+      confirmedInstallations.add(attempt.installation_id);
     }
 
     assertCurrentSession();
-    const trees = await listInstallationsNeedingBackup(authority.actorUserId);
+    await authority.beforeNewBackups?.();
     assertCurrentSession();
-    if (!trees.length) {
-      const done: SyncProgress = {
-        phase: 'done',
-        uploaded,
-        total,
-        failedCount: 0,
-      };
-      await recordSyncDiagnostic({
-        outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
-        latencyMs: Date.now() - syncStartedAt,
-      });
-      onProgress(done);
-      return done;
-    }
+
+    assertCurrentSession();
+    const { trees } = await getInstallationBackupSelection(authority.actorUserId);
+    assertCurrentSession();
+    if (!trees.length) return await finishRun();
 
     for (let originalTree of trees) {
       const installationId = originalTree.installation.id;
+      selectedInstallations.add(installationId);
       activeInstallationId = installationId;
       const pendingSince = Date.parse(originalTree.watermark);
       if (Number.isFinite(pendingSince)) {
@@ -526,15 +685,19 @@ async function executeCloudBackup(
       // A prior confirm may have committed even if its response was lost or
       // the app was killed. Replay the bound session before metadata so its
       // exact CAS revision is recovered instead of immediately conflicting.
-      const uploadRecoveryCommitFence = serverResultCommitFence(
+      const assertUploadRecoveryCurrent = () => {
+        assertCurrentSession();
+        assertInstallationAllowsBackupRecovery(installationId, authority.actorUserId);
+      };
+      const uploadRecoveryCommitFence = { ...serverResultCommitFence(
         authority,
         originalTree.installation.tree_revision ?? 0,
         originalTree.watermark,
-      );
+      ), assertCurrent: assertUploadRecoveryCurrent };
       for (const row of queue) {
         if (await recoverUploadConfirmation(row, {
           confirm: (sessionId, checksum) => {
-            assertCurrentSession();
+            assertUploadRecoveryCurrent();
             return apiClient.confirmUpload(
               sessionId,
               checksum,
@@ -550,17 +713,17 @@ async function executeCloudBackup(
             item,
             checksum,
             remoteUrl,
-            assertCurrentSession,
+            assertUploadRecoveryCurrent,
           ),
           resetUnconfirmed: (item) => updateUploadQueueItem(item.id, {
             status: 'pending',
             session_id: undefined,
             last_error: undefined,
-          }, assertCurrentSession),
+          }, assertUploadRecoveryCurrent),
           isProvenUnconfirmed: isDefinitivelyUnconfirmedUploadConfirmationError,
-          assertCurrent: assertCurrentSession,
+          assertCurrent: assertUploadRecoveryCurrent,
         })) uploaded += 1;
-        assertCurrentSession();
+        assertUploadRecoveryCurrent();
       }
       queue = await listUploadQueue(installationId);
       const refreshedAfterConfirmation = await getInstallationBackupTree(installationId);
@@ -572,7 +735,9 @@ async function executeCloudBackup(
       // Confirmation recovery above is allowed to finish an ambiguous request.
       // Every new request below must recheck the latest assignment state.
       assertCurrentSession();
-      if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) continue;
+      if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) {
+        skippedInstallations.add(installationId); continue;
+      }
 
       onProgress({
         phase: 'pushing',
@@ -581,36 +746,44 @@ async function executeCloudBackup(
         total,
         failedCount: queue.filter((item) => item.status === 'failed').length,
       });
-      const metadataSnapshot = captureServerResultInstallationSnapshot(originalTree);
-      const metadataResult = await apiClient.push(
-        buildBackupPayload(originalTree, queue, 'metadata'),
-        authority.cloudAuthority,
+      // Bind the server's original state before dispatch: metadata may retain
+      // immutable forms or an old Comms meter which differ from local capture.
+      let priorResponse: { installations: RemoteInstallationTree[] };
+      let firstCreateAbsenceProved = false;
+      try {
+        priorResponse = await apiClient.pull('1970-01-01T00:00:00.000Z', installationId, authority.cloudAuthority);
+      } catch (error) {
+        assertCurrentSession();
+        // The scoped route checks existence before listing. Only its explicit
+        // missing-installation response proves a first-create has no preimage.
+        if (originalTree.baseTreeRevision === undefined && error instanceof ApiError
+          && error.status === 404 && error.message === 'Installation not found') {
+          priorResponse = { installations: [] };
+          firstCreateAbsenceProved = true;
+        } else throw error;
+      }
+      assertCurrentSession();
+      const priorTrees = priorResponse.installations.filter((tree) => tree.installation.id === installationId);
+      const priorTree = priorTrees[0];
+      if (priorResponse.installations.length !== priorTrees.length
+        || (originalTree.baseTreeRevision === undefined ? priorTrees.length !== 0 : priorTrees.length !== 1)) {
+        throw new Error('The server installation no longer matches the known metadata base. Refresh and review before backup.');
+      }
+      if (priorTree) {
+        validateCanonicalRemoteTreeIds(priorTree);
+        if (priorTree.treeSchemaVersion !== 2
+          || (priorTree.treeRevision ?? priorTree.installation.treeRevision ?? priorTree.installation.tree_revision) !== originalTree.baseTreeRevision) {
+          throw new Error('The server revision changed before metadata could be prepared. Local work was preserved.');
+        }
+      }
+      const metadataAttempt = await prepareMetadataBackupAttempt(
+        originalTree, buildBackupPayload(originalTree, queue, 'metadata'),
+        serverResultCommitFence(authority, originalTree.installation.tree_revision ?? 0, originalTree.watermark),
+        priorTree,
+        authority.rejectedMetadataRetry ? { descriptor: authority.rejectedMetadataRetry, firstCreateAbsenceProved } : undefined,
       );
       assertCurrentSession();
-      // The confirmation pull commits server identity, generated codes, and
-      // the accepted CAS revision atomically. A revision-only write here can
-      // strand an imported copy if the pull is interrupted.
-      await fetchAndMergeCanonicalTree(
-        installationId,
-        metadataResult.treeRevision,
-        metadataSnapshot.localTreeRevision,
-        metadataSnapshot.treeWatermark,
-        true,
-        authority,
-      );
-      assertCurrentSession();
-      await installationsRepo.applyServerState(installationId, {
-        status: metadataSnapshot.status,
-        // A reopened Draft may still carry its last immutable version for
-        // historical reporting. A null metadata result must not erase it.
-        record_version_number: metadataResult.recordVersionNumber ??
-          metadataSnapshot.recordVersionNumber,
-        backup_conflict: { kind: 'NONE' },
-      }, serverResultCommitFence(
-        authority,
-        metadataSnapshot.localTreeRevision,
-        metadataSnapshot.treeWatermark,
-      ));
+      await recoverMetadataAttempt(metadataAttempt, authority, true);
       assertCurrentSession();
 
       let next = await getNextUpload(installationId);
@@ -636,13 +809,15 @@ async function executeCloudBackup(
       }
 
       assertCurrentSession();
-      if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) continue;
+      if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) {
+        skippedInstallations.add(installationId); continue;
+      }
 
       const failed = queue.filter((item) => item.status === 'failed');
       if (failed.length) throw new Error(failed[0]?.last_error || 'Evidence upload failed.');
 
       const latestTree = await getInstallationBackupTree(installationId);
-      if (!latestTree) continue;
+      if (!latestTree) { skippedInstallations.add(installationId); continue; }
       queue = await listUploadQueue(installationId);
       onProgress({
         phase: 'pushing',
@@ -671,8 +846,11 @@ async function executeCloudBackup(
           completeAttempt,
           newConfirmationDependencies,
         );
+        assertCurrentSession();
+        confirmedInstallations.add(installationId);
       } catch (error) {
         if (!(error instanceof InstallationBackupDispatchBlockedError)) throw error;
+        skippedInstallations.add(installationId);
         if (completeAttempt) {
           const durableAttempt = await getPendingCompleteBackupAttempt(installationId);
           if (
@@ -689,18 +867,7 @@ async function executeCloudBackup(
       }
     }
 
-    const done: SyncProgress = {
-      phase: 'done',
-      uploaded,
-      total,
-      failedCount: 0,
-    };
-    await recordSyncDiagnostic({
-      outcome: 'SUCCESS', conflict: false, schemaVersion: 2,
-      latencyMs: Date.now() - syncStartedAt,
-    });
-    onProgress(done);
-    return done;
+    return await finishRun();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : '';
     const conflict = Boolean(
@@ -757,11 +924,20 @@ async function executeCloudBackup(
 // present the exact same authority identity may join; a different foreground,
 // background, actor, or session flight waits and then re-runs under its own
 // fences.
+let activeCloudBackupRuns = 0;
+export function cloudBackupIsRunning(): boolean { return activeCloudBackupRuns > 0; }
 export const runCloudBackup = createSingleFlightProgressRunner<
   SyncProgress,
   SyncProgress,
   CloudBackupRunAuthority
 >(
-  executeCloudBackup,
+  async (...args) => {
+    // Mutual exclusion is established synchronously, before either operation
+    // awaits: a new engine cannot replay durable upload receipts during recovery.
+    if (anyInstallationRecoveryIsActive()) throw new Error('Wait for installation recovery to finish before Cloud Backup.');
+    activeCloudBackupRuns += 1;
+    try { return await executeCloudBackup(...args); }
+    finally { activeCloudBackupRuns -= 1; }
+  },
   (active, incoming) => active.identity === incoming.identity,
 );

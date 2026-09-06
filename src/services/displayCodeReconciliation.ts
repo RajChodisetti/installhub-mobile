@@ -108,7 +108,18 @@ function canonicalRemoteCode(
   record: Record<string, unknown>,
   field: 'displayCode' | 'displayName',
 ): DisplayCode {
-  const value = record[field] ?? record[field === 'displayCode' ? 'display_code' : 'display_name'];
+  let value = record[field] ?? record[field === 'displayCode' ? 'display_code' : 'display_name'];
+  if (field === 'displayCode' && typeof value === 'string') {
+    // sync/pull uses the compatibility scalar alongside the full canonical
+    // object. Other canonical endpoints expose the object directly. A scalar
+    // alone cannot prove generated/overridden identity or its pinned rule.
+    const metadata = record.displayCodeMeta ?? record.display_code_meta;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+      || (metadata as Record<string, unknown>).value !== value) {
+      throw new Error('Canonical server tree returned missing or contradictory displayCode metadata.');
+    }
+    value = metadata;
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Canonical server tree is missing ${field}.`);
   }

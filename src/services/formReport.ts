@@ -1,3 +1,4 @@
+import { resolveOwnedMediaUri } from './ownedMediaPaths';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Asset } from 'expo-asset';
@@ -39,6 +40,10 @@ export class FormPdfGenerationError extends Error {
   }
 }
 
+export class MissingLocalFormEvidenceError extends Error {
+  readonly name = 'MissingLocalFormEvidenceError';
+}
+
 export class RemoteFormEvidenceError extends Error {
   readonly name = 'RemoteFormEvidenceError';
 }
@@ -75,18 +80,18 @@ async function embedAttachments(
         'This form uses cloud evidence. Generate it on the API server to use the original images.',
       );
     }
-    const file = new File(attachment.uri);
+    const localUri = resolveOwnedMediaUri(attachment.uri);
+    const file = new File(localUri);
     if (!file.exists) {
-      throw new FormPdfGenerationError(
-        `Evidence is missing for ${attachment.slot}.`,
-        qualityTier + 1 < FORM_PDF_TIERS.length ? qualityTier + 1 : null,
+      throw new MissingLocalFormEvidenceError(
+        `Original evidence is unavailable on this device for ${attachment.slot}. The attachment has been kept unchanged.`,
       );
     }
     let source = file;
     let generated: File | null = null;
     if (qualityTier > 0) {
       const processed = await manipulateAsync(
-        attachment.uri,
+        localUri,
         [{ resize: { width: tier.width } }],
         { compress: tier.quality, format: SaveFormat.JPEG },
       );
@@ -117,6 +122,7 @@ function nextTierAfterFailure(qualityTier: number): number | null {
 }
 
 export function isRetryableFormPdfError(error: unknown): boolean {
+  if (error instanceof MissingLocalFormEvidenceError) return false;
   if (
     error instanceof FormPdfGenerationError ||
     error instanceof RemoteFormEvidenceError

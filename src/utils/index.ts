@@ -10,10 +10,15 @@ export function formatDate(iso?: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  const calendarDate = /^\d{4}-\d{2}-\d{2}$/.test(iso);
+  if (calendarDate && d.toISOString().slice(0, 10) !== iso) return iso;
   return d.toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+    // A scheduled/audit date is a calendar day, not midnight UTC converted to
+    // the device timezone. Timestamp callers retain their local-time behavior.
+    ...(calendarDate ? { timeZone: 'UTC' } : {}),
   });
 }
 

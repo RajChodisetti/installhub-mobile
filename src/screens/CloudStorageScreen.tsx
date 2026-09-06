@@ -17,6 +17,7 @@ import {
 import { Badge, Button, Card, EmptyState, LoadingState, SectionHeader } from '../components/ui';
 import { useTheme } from '../context/AppProviders';
 import type { RootStackParamList } from '../navigation/types';
+import { inspectCloudVersion } from '../domain/cloudVersionSummary';
 import { shareCloudFile } from '../services/cloudFiles';
 import { formatStorageBytes } from '../services/storageDiagnostics';
 import { spacing, typography } from '../theme';
@@ -78,15 +79,17 @@ export function CloudStorageScreen({ route }: Props) {
         serverInstallationId,
         version.versionNumber,
       );
-      const snapshot = record.snapshot;
+      const snapshot = inspectCloudVersion(record.snapshot);
       Alert.alert(
         `Cloud version ${version.versionNumber}`,
         [
           `Saved: ${formatTimestamp(record.createdAt)}`,
-          `Zones: ${snapshot.zones?.length ?? 0}`,
-          `Boards: ${snapshot.electricalAssets?.length ?? 0}`,
-          `Site assets: ${snapshot.siteAssets?.length ?? 0}`,
-          `Forms: ${snapshot.formSubmissions?.length ?? 0}`,
+          `Site: ${snapshot.siteName}`,
+          `Zones: ${snapshot.zones}`,
+          `Boards: ${snapshot.boards}`,
+          `Site assets: ${snapshot.siteAssets}`,
+          `Forms: ${snapshot.forms}`,
+          `Report eligibility: ${snapshot.reportEligibility}`,
           '',
           'Versions are read-only here. Import the current cloud installation from Cloud Backups to create a cpN local copy.',
         ].join('\n'),

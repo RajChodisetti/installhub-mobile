@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import { MeterHistoryScreen } from '../screens/MeterHistoryScreen';
+import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   NavigationContainer,
   DarkTheme,
@@ -25,6 +26,9 @@ import { SiteAssetDetailScreen } from '../screens/SiteAssetDetailScreen';
 import { MeterFormScreen } from '../screens/MeterFormScreen';
 import { DataViewScreen } from '../screens/DataViewScreen';
 import { MeteringTableScreen } from '../screens/MeteringTableScreen';
+import { FinancialSummaryScreen } from '../screens/FinancialSummaryScreen';
+import { InvoicesScreen } from '../screens/InvoicesScreen';
+import { InvoiceDetailScreen } from '../screens/InvoiceDetailScreen';
 import { InstallationReportScreen } from '../screens/InstallationReportScreen';
 import { ClientReportScreen } from '../screens/ClientReportScreen';
 import { PhotoPreviewScreen } from '../screens/PhotoPreviewScreen';
@@ -45,6 +49,7 @@ import { useAuditWorkTracking } from '../services/AuditWorkTrackingContext';
 import { getStore, subscribeStore } from '../data/seed';
 import { focusedAuditInstallationId } from '../services/auditWorkTrackingPolicy';
 import { assignedWorkRouteMustReturnToDetail } from '../services/assignedWorkMutationGuard';
+import { registerAssignedWorkNavigationSnapshot } from '../services/assignedWorkNavigationFence';
 import type { Installation } from '../types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -107,6 +112,10 @@ export function RootNavigator() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const { setFocusedRoute } = useAuditWorkTracking();
   const redirectingRouteKey = useRef<string | null>(null);
+
+  useLayoutEffect(() => registerAssignedWorkNavigationSnapshot(() => (
+    navigationRef.isReady() ? navigationRef.getRootState() : null
+  )), [navigationRef]);
 
   const enforceAssignedWorkRoute = useCallback(() => {
     if (!isAuthenticated || !navigationRef.isReady()) {
@@ -248,9 +257,13 @@ export function RootNavigator() {
             <Stack.Screen name="ZoneWorkspace" component={ZoneWorkspaceScreen} options={{ title: 'Zone' }} />
             <Stack.Screen name="BoardDetail" component={BoardDetailScreen} options={{ title: 'Board' }} />
             <Stack.Screen name="SiteAssetDetail" component={SiteAssetDetailScreen} options={{ title: 'Asset' }} />
+            <Stack.Screen name="MeterHistory" component={MeterHistoryScreen} options={{ title: 'Device history' }} />
             <Stack.Screen name="MeterForm" component={MeterFormScreen} options={{ title: 'Meter' }} />
             <Stack.Screen name="DataView" component={DataViewScreen} options={{ title: 'Data View' }} />
             <Stack.Screen name="MeteringTable" component={MeteringTableScreen} options={{ title: 'Metering' }} />
+            <Stack.Screen name="FinancialSummary" component={FinancialSummaryScreen} options={{ title: 'Financial Summary' }} />
+            <Stack.Screen name="Invoices" component={InvoicesScreen} options={{ title: 'Invoices' }} />
+            <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} options={{ title: 'Invoice' }} />
             <Stack.Screen name="InstallationReport" component={InstallationReportScreen} options={{ title: 'Report' }} />
             <Stack.Screen name="ClientReport" component={ClientReportScreen} options={{ title: 'Client Report' }} />
             <Stack.Screen name="PhotoPreview" component={PhotoPreviewScreen} options={{ title: 'Photo Gallery' }} />

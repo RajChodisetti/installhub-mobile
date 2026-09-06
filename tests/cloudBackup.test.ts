@@ -192,7 +192,7 @@ test('running backup flights recheck revocation before every new request family'
     'confirmCompleteBackupAttempt(attempt, recoveryConfirmationDependencies)',
   );
   const firstNewDispatchGate = execute.indexOf(
-    'if (!backupDispatchStillAllowed(installationId, authority.actorUserId)) continue;',
+    'if (!backupDispatchStillAllowed(installationId, authority.actorUserId))',
   );
   assert.ok(ambiguousRecovery >= 0 && ambiguousRecovery < firstNewDispatchGate);
   assert.match(

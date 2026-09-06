@@ -1,3 +1,7 @@
+import { metadataHistoryLocalMediaReferences } from './metadataBackupRejection';
+import { mediaReferenceIdentity } from './ownedMediaPaths';
+import { assertInstallationNotRecovering } from './installationRecoveryFence';
+import { assignedWorkRecoveryLocalMediaReferences } from './assignedWorkRecovery';
 import type { AppDataStore } from '../types';
 import { STORE_GENERATION_PREFIX, STORE_MANIFEST_KEY, STORE_RECOVERY_KEY } from '../data/storePersistence';
 import { assignedWorkInstallationIsVisibleToActor } from './assignedWorkPolicy';
@@ -393,6 +397,15 @@ export async function clearImportedThumbnailCache(
   for (const job of ownedJobs) {
     assertCurrentAssignedWorkAuthority(authority, actorUserId);
     if (!job.local_uri) continue;
+    assertInstallationNotRecovering(job.installation_id);
+    // File deletion is synchronous: re-read after the awaited module load and
+    // immediately before deletion so a newly preserved copy cannot lose media.
+    if ((getStore().assignedWorkRecoveryCheckouts ?? []).some((copy) => (
+      assignedWorkRecoveryLocalMediaReferences(copy).includes(job.local_uri!)
+    ))) throw new Error('This preview is retained by a recovery copy and cannot be cleared.');
+    if (metadataHistoryLocalMediaReferences(getStore()).some((uri) => mediaReferenceIdentity(uri) === mediaReferenceIdentity(job.local_uri!))) {
+      throw new Error('This preview is retained with a rejected backup request and cannot be cleared.');
+    }
     const file = new File(job.local_uri);
     if (!file.exists) continue;
     previousBytes += file.size ?? 0;
@@ -408,6 +421,7 @@ export async function clearImportedThumbnailCache(
     const now = new Date().toISOString();
     for (const job of store.cloudSync.thumbnail_queue) {
       if (!currentOwnedIds.has(job.installation_id)) continue;
+      assertInstallationNotRecovering(job.installation_id);
       job.status = 'pending';
       job.attempts = 0;
       job.local_uri = undefined;

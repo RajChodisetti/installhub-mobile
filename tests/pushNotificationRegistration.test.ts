@@ -352,6 +352,6 @@ test('Expo config and runtime use the scheduler channel and build identity', () 
       < runtime.indexOf('await registerPushNotificationDevice'),
   );
 
-  assert.equal(app.expo.ios.buildNumber, '14');
-  assert.equal(app.expo.android.versionCode, 2);
+  assert.match(app.expo.ios.buildNumber, /^\d+(?:\.\d+){0,2}$/, 'iOS build identity must remain valid as builds advance');
+  assert.ok(Number.isSafeInteger(app.expo.android.versionCode) && app.expo.android.versionCode > 0);
 });

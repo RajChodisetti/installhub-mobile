@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ElectricalAsset,
   FormSubmission,
@@ -19,17 +19,21 @@ import {
   siteAssetsRepo,
   zonesRepo,
 } from '../repositories';
-import { subscribeStore } from '../data/seed';
+import { getStore, initStore, subscribeStore } from '../data/seed';
 import type { DeviceSearchRecord } from '../domain/meterSearch';
+import { localDashboardSnapshot } from '../domain/jobDashboard';
+import { actorForCurrentAssignedWorkAuthority, captureAssignedWorkMutationAuthority } from '../services/assignedWorkMutationGuard';
 
 export function useInstallations() {
-  const [items, setItems] = useState<Installation[]>([]);
+  const [snapshot, setSnapshot] = useState<ReturnType<typeof localDashboardSnapshot>>({ items: [], countsByInstallation: {} });
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setItems(await installationsRepo.list());
+      await initStore();
+      const actorUserId = actorForCurrentAssignedWorkAuthority(captureAssignedWorkMutationAuthority());
+      setSnapshot(localDashboardSnapshot(getStore(), actorUserId));
     } finally {
       setLoading(false);
     }
@@ -42,68 +46,126 @@ export function useInstallations() {
     });
   }, [refresh]);
 
-  return { items, loading, refresh };
+  return { ...snapshot, loading, refresh };
 }
 
 export function useDeviceSearchRecords(installationId: string) {
-  const [items, setItems] = useState<DeviceSearchRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-
+  const authority = captureAssignedWorkMutationAuthority();
+  const actor = actorForCurrentAssignedWorkAuthority(authority);
+  const scope = `${installationId}:${actor}:${authority.generation}`;
+  const [state, setState] = useState<{
+    scope: string; items: DeviceSearchRecord[]; installation: Installation | null;
+    loading: boolean; loaded: boolean; error: string | null;
+  }>({ scope, items: [], installation: null, loading: true, loaded: false, error: null });
+  const request = useRef(0);
+  const mounted = useRef(true);
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
   const refresh = useCallback(async () => {
-    setLoading(true);
+    if (!mounted.current || currentScope.current !== scope) return;
+    const version = ++request.current;
+    const isCurrent = () => mounted.current && currentScope.current === scope
+      && request.current === version && actorForCurrentAssignedWorkAuthority(authority) === actor;
+    setState((prior) => ({ ...(prior.scope === scope ? prior : {
+      scope, items: [], installation: null, loaded: false,
+    }), loading: true, error: null }));
     try {
+      if (!actor) throw new Error('Sign in to search installation devices.');
       const installation = await installationsRepo.getById(installationId);
+      if (!isCurrent()) return;
       if (!installation) {
-        setItems([]);
+        setState({ scope, items: [], installation: null, loaded: true, loading: false, error: null });
         return;
+      }
+      if (installation.id !== installationId || installation.local_owner_user_id !== actor) {
+        throw new Error('This installation is unavailable to the signed-in account.');
       }
       const [zones, boards, meters] = await Promise.all([
         zonesRepo.listByInstallation(installationId),
         electricalAssetsRepo.listByInstallation(installationId),
         canonicalInstallationRepo.meterDevices(installationId),
       ]);
+      if (!isCurrent()) return;
       const boardById = new Map(boards.map((board) => [board.id, board]));
       const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
-      setItems(meters.flatMap((meter) => {
+      const items = meters.flatMap((meter) => {
         const board = boardById.get(meter.installedOnBoardId);
         const zone = board ? zoneById.get(board.zone_id) : undefined;
         return board && zone ? [{ meter, board, zone, installation }] : [];
-      }));
-    } finally {
-      setLoading(false);
+      });
+      setState({ scope, items, installation, loaded: true, loading: false, error: null });
+    } catch (caught) {
+      if (isCurrent()) setState((prior) => ({ ...prior, loading: false,
+        error: caught instanceof Error ? caught.message : 'Installation devices could not be loaded.' }));
+      throw caught;
     }
-  }, [installationId]);
-
+  }, [scope]);
   useEffect(() => {
-    void refresh();
-    return subscribeStore(() => { void refresh(); });
+    mounted.current = true;
+    void refresh().catch(() => undefined);
+    const unsubscribe = subscribeStore(() => { void refresh().catch(() => undefined); });
+    return () => { mounted.current = false; request.current += 1; unsubscribe(); };
   }, [refresh]);
-
-  return { items, loading, refresh };
+  const scoped = state.scope === scope ? state : {
+    items: [], installation: null, loaded: false, loading: true, error: null,
+  };
+  return { ...scoped, refresh };
 }
 
 export function useForms(installationId?: string) {
-  const [items, setItems] = useState<FormSubmission[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<{
+    installationId?: string;
+    items: FormSubmission[];
+    loading: boolean;
+    loaded: boolean;
+    error: string | null;
+  }>({ items: [], loading: true, loaded: false, error: null });
+  const refreshVersion = useRef(0);
+  const mounted = useRef(true);
+  const currentId = useRef(installationId);
+  currentId.current = installationId;
 
   const refresh = useCallback(async () => {
+    if (!mounted.current || currentId.current !== installationId) return;
+    const version = ++refreshVersion.current;
+    const isCurrent = () => mounted.current && version === refreshVersion.current
+      && currentId.current === installationId;
+    setState((current) => ({
+      ...(current.installationId === installationId ? current : {
+        installationId, items: [], loaded: false,
+      }),
+      loading: Boolean(installationId), error: null,
+    }));
     if (!installationId) return;
-    setLoading(true);
     try {
-      setItems(await formsRepo.listByInstallation(installationId));
-    } finally {
-      setLoading(false);
+      const items = await formsRepo.listByInstallation(installationId);
+      if (isCurrent()) setState({ installationId, items, loading: false, loaded: true, error: null });
+    } catch (caught) {
+      if (isCurrent()) setState((current) => ({
+        ...current, loading: false,
+        error: caught instanceof Error ? caught.message : 'Field forms could not be loaded.',
+      }));
+      throw caught;
     }
   }, [installationId]);
 
   useEffect(() => {
-    void refresh();
-    return subscribeStore(() => {
-      void refresh();
+    mounted.current = true;
+    void refresh().catch(() => undefined);
+    const unsubscribe = subscribeStore(() => {
+      void refresh().catch(() => undefined);
     });
+    return () => {
+      mounted.current = false;
+      refreshVersion.current += 1;
+      unsubscribe();
+    };
   }, [refresh]);
 
-  return { items, loading, refresh };
+  const scoped = state.installationId === installationId ? state : {
+    items: [], loading: Boolean(installationId), loaded: false, error: null,
+  };
+  return { ...scoped, refresh };
 }
 
 export function useInstallation(id?: string) {
@@ -117,10 +179,19 @@ export function useInstallation(id?: string) {
   const [virtualMeters, setVirtualMeters] = useState<VirtualMeterDefinition[]>([]);
   const [readiness, setReadiness] = useState<InstallationReadiness | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const refreshVersion = useRef(0);
+  const mounted = useRef(true);
+  const currentId = useRef(id);
+  currentId.current = id;
 
   const refresh = useCallback(async () => {
-    if (!id) return;
+    if (!id || !mounted.current) return;
+    const version = ++refreshVersion.current;
+    const isCurrent = () => mounted.current && version === refreshVersion.current
+      && currentId.current === id;
     setLoading(true);
+    setError(null);
     try {
       const [inst, z, b, a, grids, meters, assignments, virtuals, ready] = await Promise.all([
         installationsRepo.getById(id),
@@ -133,6 +204,7 @@ export function useInstallation(id?: string) {
         canonicalInstallationRepo.virtualMeters(id),
         canonicalInstallationRepo.readiness(id),
       ]);
+      if (!isCurrent()) return;
       setItem(inst);
       setZones(z);
       setBoards(b);
@@ -142,16 +214,27 @@ export function useInstallation(id?: string) {
       setMeasurementAssignments(assignments);
       setVirtualMeters(virtuals);
       setReadiness(ready);
+    } catch (caught) {
+      if (isCurrent()) {
+        setError(caught instanceof Error ? caught.message : 'Installation data could not be loaded.');
+      }
+      throw caught;
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [id]);
 
   useEffect(() => {
-    void refresh();
-    return subscribeStore(() => {
-      void refresh();
+    mounted.current = true;
+    void refresh().catch(() => undefined);
+    const unsubscribe = subscribeStore(() => {
+      void refresh().catch(() => undefined);
     });
+    return () => {
+      mounted.current = false;
+      refreshVersion.current += 1;
+      unsubscribe();
+    };
   }, [refresh]);
 
   return {
@@ -165,6 +248,7 @@ export function useInstallation(id?: string) {
     virtualMeters,
     readiness,
     loading,
+    error,
     refresh,
   };
 }

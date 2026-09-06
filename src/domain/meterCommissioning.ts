@@ -17,6 +17,32 @@ import {
 } from './formMeterPrefill';
 import { defaultMeterCustomName } from './namingV2';
 
+const WW_SWITCHBOARD_ANSWER_BY_CODE: Record<string, string> = {
+  MSB: 'Main switchboard',
+  MSSB: 'Main sub-switchboard',
+  DB: 'Distribution board',
+  HVAC_DB: 'HVAC distribution board',
+  LX_DB: 'Lighting distribution board',
+  PV_DB: 'Solar / PV distribution board',
+  MCC: 'Motor control centre',
+};
+
+/** The portal stores the canonical board's human label in the hidden WW report
+ * answer. Keep the local code on the board itself, but emit the same form value
+ * so an equivalent commissioning operation has the same backend state. */
+export function canonicalWwSwitchboardTypeAnswer(
+  board: Pick<ElectricalAsset, 'asset_type' | 'type_code' | 'custom_type_name'>,
+): string {
+  const code = board.type_code ?? ({
+    'HVAC-DB': 'HVAC_DB',
+    'LX-DB': 'LX_DB',
+    'PV-DB': 'PV_DB',
+    Other: 'OTHER',
+  } as Record<string, string>)[board.asset_type] ?? board.asset_type;
+  if (code === 'OTHER') return board.custom_type_name?.trim() || 'Other';
+  return WW_SWITCHBOARD_ANSWER_BY_CODE[code] ?? board.asset_type;
+}
+
 /** Direct custom-meter capture owns identity, channel metadata, relationships,
  * notes and evidence, but not the Wattwatchers commissioning questionnaire. */
 export function showsWattwatchersCommissioningSections(
@@ -149,7 +175,7 @@ export function answersWithCanonicalBoardContext(
     ...answers,
     'auditor.switchboard_name': board.asset_name,
     'auditor.switchboard_location': board.location_description ?? '',
-    'auditor.switchboard_type': board.asset_type,
+    'auditor.switchboard_type': canonicalWwSwitchboardTypeAnswer(board),
     'auditor.site_nmi': gridNmi,
   };
 }
@@ -248,4 +274,61 @@ export function meterFromInstallationForm(
     ww_prestart: prestart,
     ww_channels: channels,
   };
+}
+
+/**
+ * Turns optional editor rows into assignments accepted by the structural write
+ * contract. Empty rows disappear. Malformed groups keep the first usable,
+ * unique, same-purpose channel subset and become explicit TBC work instead of
+ * blocking an otherwise unrelated meter save.
+ */
+export function structurallySavableMeterAssignments(
+  assignments: MeasurementAssignment[],
+  channels: WattwatcherChannel[],
+): MeasurementAssignment[] {
+  const purposeById = new Map(channels.map((channel) => [channel.id, channel.purpose]));
+  const usedChannelIds = new Set<string>();
+
+  return assignments.flatMap((assignment) => {
+    if (!assignment.channelIds.length) return [];
+    const retained: string[] = [];
+    const localIds = new Set<string>();
+    let sharedPurpose: WattwatcherChannel['purpose'] | undefined;
+    let structurallyChanged = false;
+
+    for (const channelId of assignment.channelIds) {
+      const purpose = purposeById.get(channelId);
+      if (
+        localIds.has(channelId)
+        || usedChannelIds.has(channelId)
+        || !purpose
+        || purpose === 'SPARE'
+        || (sharedPurpose !== undefined && purpose !== sharedPurpose)
+      ) {
+        structurallyChanged = true;
+        continue;
+      }
+      localIds.add(channelId);
+      usedChannelIds.add(channelId);
+      sharedPurpose = purpose;
+      retained.push(channelId);
+    }
+
+    if (!retained.length) return [];
+    const phaseMode = retained.length === 1
+      ? 'SINGLE_PHASE'
+      : retained.length === 3
+        ? 'THREE_PHASE'
+        : 'OTHER';
+    structurallyChanged ||= phaseMode !== assignment.phaseMode
+      || retained.length !== assignment.channelIds.length;
+    const target = structurallyChanged ? { kind: 'TBC' as const } : assignment.target;
+    return [{
+      ...assignment,
+      channelIds: retained,
+      phaseMode,
+      target,
+      status: target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
+    }];
+  });
 }

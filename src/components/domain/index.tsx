@@ -5,18 +5,20 @@ import { formatDateTime } from '../../utils';
 import { useTheme } from '../../context/AppProviders';
 import { Badge, Card, ListRow } from '../ui';
 import { typography } from '../../theme';
-import { dashboardJobTiming } from '../../domain/jobDashboard';
+import { dashboardJobTiming, type DashboardEntityCounts } from '../../domain/jobDashboard';
 
 export function InstallationCard({
   item,
   onPress,
   onDelete,
   deleteDisabled = false,
+  counts,
 }: {
   item: Installation;
   onPress?: () => void;
   onDelete?: () => void;
   deleteDisabled?: boolean;
+  counts?: DashboardEntityCounts;
 }) {
   const { colors } = useTheme();
   const timing = dashboardJobTiming(item);
@@ -35,7 +37,7 @@ export function InstallationCard({
   return (
     <ListRow
       title={item.site_name}
-      subtitle={`${item.client_name} · ${item.site_address}\n${timingSummary}`}
+      subtitle={`${item.client_name} · ${item.site_address}\n${timingSummary}${counts ? `\n${counts.zones} zones · ${counts.boards} boards · ${counts.siteAssets} assets · ${counts.forms} forms` : ''}`}
       onPress={onPress}
       right={(
         <View style={{ alignItems: 'flex-end', gap: 4 }}>

@@ -332,7 +332,7 @@ test('a foreground authority waits and restarts instead of joining a background-
   assert.equal(await foreground, 'foreground-A-generation-7');
 });
 
-test('accepted complete push survives a failed pull and replays before any metadata write', async () => {
+test('accepted complete push survives a failed pull and resumes with reads before any metadata write', async () => {
   const store = offlineCaptureStore();
   applyServerTreeRevision(store, 'offline-installation', 1);
   const tree = buildInstallationBackupTree(store, store.installations[0]!);
@@ -414,13 +414,34 @@ test('accepted complete push survives a failed pull and replays before any metad
 
   await confirmCompleteBackupAttempt(attempt, dependencies);
 
-  assert.deepEqual(pushedStages, ['complete', 'complete']);
+  assert.deepEqual(pushedStages, ['complete']);
   assert.equal(store.installations[0]!.server_tree_revision, 2);
   assert.equal(store.cloudSync.pending_complete_attempts?.['offline-installation'], undefined);
   assert.equal(
     store.cloudSync.synced_at_by_installation['offline-installation'],
     attempt.tree_watermark,
   );
+});
+
+test('incomplete persisted complete receipts never dispatch another request', async () => {
+  for (const kind of ['revision-only', 'version-only'] as const) {
+    const store = offlineCaptureStore();
+    const tree = buildInstallationBackupTree(store, store.installations[0]!);
+    const attempt = applyPreparedCompleteBackupAttempt(store, tree.installation.id,
+      buildBackupPayload(tree, [], 'complete'), tree.watermark, tree.installation.status,
+      tree.installation.tree_revision ?? 0);
+    if (kind === 'revision-only') attempt.accepted_tree_revision = 2;
+    else attempt.accepted_record_version_number = null;
+    await assert.rejects(confirmCompleteBackupAttempt(attempt, {
+      getInstallationBackupTree: async () => tree,
+      async push() { assert.fail('No new POST for partial receipt'); },
+      async recordAccepted() { assert.fail('No receipt overwrite'); },
+      async fetchAndMerge() { assert.fail('No merge for partial receipt'); },
+      async applyServerState() { assert.fail('No server state change'); },
+      async finish() { assert.fail('No confirmed backup'); },
+    }), /incomplete/);
+    assert.equal(store.cloudSync.pending_complete_attempts?.[tree.installation.id]?.id, attempt.id);
+  }
 });
 
 test('new complete-backup replay checks current dispatch authority immediately before push', async () => {
@@ -827,18 +848,16 @@ test('held metadata response cannot commit after the source installation changes
     'utf8',
   );
   const metadataStart = sync.indexOf(
-    'const metadataSnapshot = captureServerResultInstallationSnapshot(originalTree)',
+    'const metadataAttempt = await prepareMetadataBackupAttempt(',
   );
   const nextStage = sync.indexOf('let next = await getNextUpload', metadataStart);
   const metadataStage = sync.slice(metadataStart, nextStage);
-  assert.match(metadataStage, /metadataSnapshot\.localTreeRevision/);
-  assert.match(metadataStage, /metadataSnapshot\.treeWatermark/);
-  assert.match(metadataStage, /status: metadataSnapshot\.status/);
-  assert.match(metadataStage, /metadataSnapshot\.recordVersionNumber/);
-  assert.doesNotMatch(
-    metadataStage.slice(metadataStage.indexOf('await apiClient.push')),
-    /originalTree\.installation/,
-  );
+  assert.ok(metadataStart >= 0 && nextStage > metadataStart);
+  assert.match(metadataStage, /originalTree\.installation\.tree_revision/);
+  assert.match(metadataStage, /originalTree\.watermark/);
+  assert.match(metadataStage, /priorTree/);
+  assert.match(metadataStage, /await recoverMetadataAttempt\(metadataAttempt, authority, true\)/);
+  assert.doesNotMatch(metadataStage, /await apiClient\.push/);
 });
 
 test('whole-tree watermark blocks a server result after an unversioned child change', () => {

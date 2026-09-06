@@ -3,16 +3,49 @@ import test from 'node:test';
 import {
   validIanaTimezone,
   validateInstallationIdentity,
+  installationIdentityForWrite,
 } from '../src/domain/installationValidation';
 
-test('installation identity requires every completion-critical field', () => {
+test('portal permits blank optional installation identity fields', () => {
   const errors = validateInstallationIdentity({
     client_name: '', site_name: ' ', site_address: '', inspector_name: '',
     site_code: '', audit_date: '', timezone: undefined,
   });
-  assert.deepEqual(errors.map((error) => error.field), [
-    'client_name', 'site_name', 'site_code', 'site_address', 'inspector_name', 'audit_date', 'timezone',
-  ]);
+  assert.deepEqual(errors, []);
+});
+
+test('blank capture uses portal defaults and produces a valid write', () => {
+  const values = installationIdentityForWrite({
+    client_name: ' ', site_name: '', site_address: '', inspector_name: '',
+    site_code: '', audit_date: '', timezone: undefined,
+  }, undefined, '2026-09-05');
+  assert.deepEqual(values, {
+    client_name: '', site_name: 'Untitled installation', site_address: '', inspector_name: '',
+    site_code: 'UI', audit_date: '2026-09-05', timezone: 'Australia/Sydney',
+  });
+  assert.deepEqual(validateInstallationIdentity(values), []);
+});
+
+test('unrelated edits preserve a historical site code byte-for-byte', () => {
+  for (const site_code of ['old mixed Code', '123456789012345678901234', ' OLD ']) {
+    const initial = { site_code };
+    const values = installationIdentityForWrite({
+      client_name: 'Client', site_name: 'Renamed', site_address: '', inspector_name: '',
+      site_code, audit_date: '2026-09-05', timezone: 'Australia/Sydney',
+    }, initial);
+    assert.equal(values.site_code, site_code);
+    assert.deepEqual(validateInstallationIdentity(values, initial), []);
+    assert.deepEqual(validateInstallationIdentity({ ...values, site_code: 'bad code' }, initial).map((error) => error.field), ['site_code']);
+  }
+});
+
+test('cleared code regenerates and a newly authored code normalizes as in portal', () => {
+  const input = {
+    client_name: '', site_name: 'Essendon Test', site_address: '', inspector_name: '',
+    site_code: '', audit_date: '2026-09-05', timezone: 'Australia/Sydney',
+  };
+  assert.equal(installationIdentityForWrite(input, { site_code: 'OLD' }).site_code, 'ET');
+  assert.equal(installationIdentityForWrite({ ...input, site_code: ' new-01 ' }).site_code, 'NEW-01');
 });
 
 test('installation identity validates a real audit date and IANA timezone', () => {

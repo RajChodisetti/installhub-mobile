@@ -33,7 +33,7 @@ test('readiness issue keys remain stable across message copy changes', () => {
   assert.equal(first, second);
 });
 
-test('reconciliation contains only explicit unresolved choices while validation keeps other blockers', () => {
+test('reconciliation contains only explicit unresolved choices while diagnostics stay separate', () => {
   const issue = (
     code: string,
     entityType: ReadinessIssue['entityType'],

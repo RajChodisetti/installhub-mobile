@@ -1,7 +1,8 @@
 import type { AppDataStore, FormSubmission } from '../types';
 import {
   meterAfterCommsReplacement,
-  visibleSafeToProceedCompletionError,
+  supportedFormAnswers,
+  validateForm,
 } from '../forms/catalog';
 import {
   answersWithCanonicalBoardContext,
@@ -26,7 +27,7 @@ export function completeFormSubmissionInStore(
 ): FormSubmission {
   const index = store.formSubmissions.findIndex((form) => form.id === formId);
   if (index < 0) throw new Error('Form submission not found');
-  const current = store.formSubmissions[index];
+  const current = { ...store.formSubmissions[index] };
   if (current.status === 'Completed') {
     throw new Error('Completed forms are immutable. Create an amendment instead.');
   }
@@ -37,29 +38,32 @@ export function completeFormSubmissionInStore(
   if (installation.status === 'Completed') {
     throw new Error('Reopen this completed installation before completing a form.');
   }
-  const safetyError = visibleSafeToProceedCompletionError(current);
-  if (safetyError) throw new Error(safetyError);
+  const errors = validateForm(current);
+  if (errors.length) throw new Error(errors.join('\n'));
+
+  // Form relationships are optional capture context. Keep valid local links,
+  // and drop stale links instead of making them mandatory completion fields.
+  const scopedBoards = store.electricalAssets.filter((item) => item.audit_id === current.installation_id);
+  if (current.zone_id && !store.zones.some((item) => item.id === current.zone_id && item.audit_id === current.installation_id)) current.zone_id = undefined;
+  if (current.board_id && !scopedBoards.some((item) => item.id === current.board_id)) current.board_id = undefined;
+  if (current.site_asset_id && !store.siteAssets.some((item) => item.id === current.site_asset_id && item.audit_id === current.installation_id)) current.site_asset_id = undefined;
+  if (current.meter_id) {
+    const device = store.meterDevices.find((item) => item.id === current.meter_id && item.installationId === current.installation_id);
+    const legacyBoard = scopedBoards.find((item) => item.meters.some((meter) => meter.id === current.meter_id));
+    const installedOnBoardId = device?.installedOnBoardId ?? legacyBoard?.id;
+    if (!installedOnBoardId || (current.board_id && installedOnBoardId !== current.board_id)) current.meter_id = undefined;
+  }
 
   let boardId = current.board_id;
   let meterId = current.meter_id;
   let answers = current.answers;
-  if (['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(current.form_type)) {
-    if (!boardId) {
-      throw new Error('Choose or create the switchboard before completing this WW installation form.');
-    }
+  const supportedWwDevice = current.form_type !== 'ww-installation'
+    || ['A3RM', 'A6M'].includes(String(answers['device.type'] ?? ''));
+  if (boardId && supportedWwDevice && ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(current.form_type)) {
     const board = store.electricalAssets.find(
       (item) => item.id === boardId && item.audit_id === current.installation_id,
     );
     if (!board) throw new Error('The selected switchboard is no longer available.');
-    const linkedDevice = meterId
-      ? store.meterDevices.find((item) => item.id === meterId)
-      : undefined;
-    if (meterId && !linkedDevice) {
-      throw new Error('The linked meter is no longer available. Reconcile the form before completing it.');
-    }
-    if (linkedDevice && linkedDevice.installedOnBoardId !== board.id) {
-      throw new Error('This form meter is already installed on another switchboard.');
-    }
     meterId ??= createMeterId();
     answers = answersWithCanonicalBoardContext(answers, board);
     const zone = store.zones.find((item) => item.id === board.zone_id);
@@ -80,11 +84,8 @@ export function completeFormSubmissionInStore(
     board.updated_at = timestamp;
   } else if (
     current.form_type === 'comms-fault' &&
-    current.answers['works.replace_device'] === 'yes'
+    current.answers['works.replace_device'] === 'yes' && boardId && meterId
   ) {
-    if (!boardId || !meterId) {
-      throw new Error('A replacement form must remain linked to its switchboard and stable meter.');
-    }
     const board = store.electricalAssets.find(
       (item) => item.id === boardId && item.audit_id === current.installation_id,
     );
@@ -108,7 +109,7 @@ export function completeFormSubmissionInStore(
     ...current,
     board_id: boardId,
     meter_id: meterId,
-    answers,
+    answers: supportedFormAnswers(current.form_type, answers, current.schema_version),
     status: 'Completed',
     completed_at: timestamp,
     updated_at: timestamp,

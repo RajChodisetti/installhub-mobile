@@ -4,6 +4,7 @@ import type {
   FormType,
   GridSupply,
   InstallationReadiness,
+  ReadinessIssue,
   Installation,
   MeasurementAssignment,
   MeterDevice,
@@ -16,9 +17,14 @@ import type {
 } from '../types';
 import { createId, nowIso } from '../utils';
 import { getStore, initStore, updateStore } from '../data/seed';
-import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
+import { FORM_DEFINITION_BY_TYPE, supportedFormAnswers } from '../forms/catalog';
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
+import { supportsCommsReplacement } from '../domain/meterSearch';
+import { insertStagedMeterSiteAssets } from '../domain/meterEditorAdditions';
+import { assignmentApprovalSignature, type AssignmentTakeoverApprovals } from '../domain/meterAssignmentTakeover';
+import { assertSiteAssetMappingBaseline, electricalSourceFromSelection, type SiteAssetMeteringDraft } from '../domain/electricalCapture';
 import { completeFormSubmissionInStore } from '../domain/formCompletion';
+import { ensureGridSupplyDefault, gridSupplyNameForWrite } from '../domain/gridSupplyContext';
 import {
   applyLocalDeletionPlan,
   assertLocalDeletionPlanStillAllowed,
@@ -29,13 +35,13 @@ import {
 import {
   allAssetMeteringRows,
   BOARD_TYPE_LABELS,
-  boardIsOnAssetSupplyPath,
   boardTypeCode,
   bumpTreeRevision,
   createMeasurementAssignment,
   deriveVirtualMeters,
   electricalTreeRows,
   installationReadiness,
+  installationValidationIssues,
   isValidInstallationSiteCode,
   meteringInventorySummary,
   normalizeGridSupplyNmi,
@@ -236,6 +242,7 @@ export interface ElectricalAssetsRepository {
     boardId: string,
     meter: Meter,
     assignments: MeasurementAssignment[],
+    options?: { stagedAssets?: SiteAsset[]; takeoverApprovals?: AssignmentTakeoverApprovals; baselineAssignments?: MeasurementAssignment[] },
   ): Promise<ElectricalAsset>;
   remove(id: string): Promise<void>;
 }
@@ -264,19 +271,11 @@ export type SiteAssetWriteInput = Omit<
   meter_present?: boolean;
 };
 
-export type SiteAssetEditorMetering =
-  | {
-      kind: 'METERED';
-      meterId: string;
-      channelIds: string[];
-      phaseMode: MeasurementAssignment['phaseMode'];
-      direction: MeasurementAssignment['direction'];
-    }
-  | { kind: 'UNMETERED' }
-  | { kind: 'TBC' };
+export type SiteAssetEditorMetering = SiteAssetMeteringDraft;
 
 export interface CanonicalInstallationRepository {
   readiness(installationId: string): Promise<InstallationReadiness>;
+  validationIssues(installationId: string): Promise<ReadinessIssue[]>;
   electricalTree(installationId: string): Promise<ElectricalTreeRow[]>;
   allAssetMetering(installationId: string): Promise<AllAssetMeteringRow[]>;
   virtualMeters(installationId: string): Promise<VirtualMeterDefinition[]>;
@@ -364,6 +363,9 @@ function assertCompletionAttemptState(
 ): void {
   assertCurrentAssignedWorkAuthority(attempt.authority, attempt.actorUserId);
   assertAssignedWorkMutationAllowed(installation, attempt.authority);
+  if (store.cloudSync.pending_metadata_attempts?.[installation.id] || store.cloudSync.conflicted_metadata_attempts?.[installation.id]) {
+    throw new Error('Resolve the metadata backup confirmation before completing this installation.');
+  }
   assertCompletionAttemptInstallationState(
     installation,
     attempt.pendingCompletion,
@@ -650,7 +652,7 @@ export const installationsRepo: InstallationsRepository = {
       const index = store.installations.findIndex((item) => item.id === id);
       if (index < 0) throw new Error('Installation not found');
       assertAssignedWorkAccess(store.installations[index]);
-      if (!enabled && store.cloudSync.pending_complete_attempts?.[id]) {
+      if (!enabled && (store.cloudSync.pending_complete_attempts?.[id] || store.cloudSync.pending_metadata_attempts?.[id])) {
         throw new Error(
           'Confirm or resolve the pending cloud backup before turning backup off.',
         );
@@ -1008,10 +1010,11 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
     });
     return updated!;
   },
-  async saveMeterConfiguration(boardId, meter, assignments) {
+  async saveMeterConfiguration(boardId, meter, assignments, options = {}) {
     const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let updated: ElectricalAsset | null = null;
-    await updateStore((store) => {
+    await updateStore((currentStore) => {
+      const store = structuredClone(currentStore);
       const index = store.electricalAssets.findIndex((item) => item.id === boardId);
       if (index < 0) throw new Error('Switchboard not found.');
       const board = store.electricalAssets[index];
@@ -1025,11 +1028,18 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
       if (existingDevice && existingDevice.installedOnBoardId !== board.id) {
         throw new Error('This stable meter is installed on another switchboard.');
       }
+      if (options.baselineAssignments) {
+        const signature = (items: MeasurementAssignment[]) => JSON.stringify([...items].sort((left, right) => left.id.localeCompare(right.id)).map(assignmentApprovalSignature));
+        if (signature(options.baselineAssignments) !== signature(store.measurementAssignments.filter((item) => item.meterId === meter.id))) {
+          throw new Error('This device’s measurements changed while the editor was open. Reopen the device and review its current groups before saving.');
+        }
+      }
       const meters = board.meters.some((item) => item.id === meter.id)
         ? board.meters.map((item) => item.id === meter.id ? meter : item)
         : [...board.meters, meter];
+      insertStagedMeterSiteAssets(store, installation, boardId, assignments, options.stagedAssets ?? []);
       replaceBoardMetersFromLegacy(store, board, meters);
-      replaceMeterMeasurementAssignments(store, meter.id, assignments);
+      replaceMeterMeasurementAssignments(store, meter.id, assignments, options.takeoverApprovals);
       updated = {
         ...board,
         meter_present: true,
@@ -1038,6 +1048,7 @@ export const electricalAssetsRepo: ElectricalAssetsRepository = {
       store.electricalAssets[index] = updated;
       projectCanonicalCompatibility(store, board.audit_id);
       bumpTreeRevision(store, board.audit_id);
+      Object.assign(currentStore, store);
     });
     return updated!;
   },
@@ -1062,12 +1073,14 @@ export const siteAssetsRepo: SiteAssetsRepository = {
   async saveEditor(id, input, metering) {
     const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
     let saved: SiteAsset | null = null;
-    await updateStore((store) => {
+    await updateStore((currentStore) => {
+      const store = structuredClone(currentStore);
       const existingIndex = id
         ? store.siteAssets.findIndex((item) => item.id === id)
         : -1;
       if (id && existingIndex < 0) throw new Error('Site asset not found.');
       const previous = existingIndex >= 0 ? store.siteAssets[existingIndex] : undefined;
+      if (id && metering.baselineAssignments) assertSiteAssetMappingBaseline(id, store.measurementAssignments, metering.baselineAssignments);
       const installationId = previous?.audit_id ?? input.audit_id;
       const installation = store.installations.find((item) => item.id === installationId);
       if (!installation) throw new Error('Installation not found.');
@@ -1134,43 +1147,54 @@ export const siteAssetsRepo: SiteAssetsRepository = {
       else store.siteAssets.push(saved);
 
       if (metering.kind === 'METERED') {
-        const meter = store.meterDevices.find(
-          (item) => item.id === metering.meterId && item.installationId === installationId,
-        );
-        if (!meter) throw new Error('Selected meter is no longer available.');
-        if (!boardIsOnAssetSupplyPath(store, saved, meter.installedOnBoardId)) {
-          throw new Error('Selected meter is not on this asset’s electrical source path.');
+        if (metering.preserveMapping) {
+          const { assignment, source, normalizedSource = source } = metering.preserveMapping;
+          const current = store.measurementAssignments.find((item) => item.id === assignment.id);
+          const sourceKey = source.kind === 'BOARD' ? `BOARD:${source.boardId}` : source.kind === 'GRID' ? `GRID:${source.gridSupplyId}` : 'TBC';
+          const expectedNormalizedSource = electricalSourceFromSelection(sourceKey,
+            store.electricalAssets.filter((item) => item.audit_id === installationId),
+            store.gridSupplies.filter((item) => item.installationId === installationId));
+          if (!previous || !current || current.target.kind !== 'SITE_ASSET' || current.target.siteAssetId !== previous.id
+            || current.meterId !== metering.meterId
+            || JSON.stringify(current.channelIds) !== JSON.stringify(metering.channelIds)
+            || current.phaseMode !== metering.phaseMode || current.direction !== metering.direction
+            || assignmentApprovalSignature(current) !== assignmentApprovalSignature(assignment)
+            || JSON.stringify(previous.electrical_source) !== JSON.stringify(source)
+            || JSON.stringify(saved.electrical_source) !== JSON.stringify(normalizedSource)
+            || JSON.stringify(expectedNormalizedSource) !== JSON.stringify(normalizedSource)) {
+            throw new Error('The historical asset mapping changed. Reopen the asset before preserving or replacing it.');
+          }
+        } else {
+          const meter = store.meterDevices.find(
+            (item) => item.id === metering.meterId && item.installationId === installationId,
+          );
+          if (!meter) throw new Error('Selected meter is no longer available.');
+          if (saved.electrical_source?.kind !== 'BOARD' || saved.electrical_source.boardId !== meter.installedOnBoardId) {
+            throw new Error('Choose a device installed on this asset’s immediate supplying switchboard.');
+          }
+          const assignment = createMeasurementAssignment({
+            installationId,
+            assetId: saved.id,
+            meter,
+            channelIds: metering.channelIds,
+            phaseMode: metering.phaseMode,
+            direction: metering.direction,
+          });
+          setAssetMeteringState(
+            store,
+            saved.id,
+            { kind: 'METERED', measurementAssignmentIds: [assignment.id] },
+            [assignment],
+            metering.takeoverApprovals,
+          );
         }
-        const previousAssignmentIds = new Set(
-          previous?.metering_state?.kind === 'METERED'
-            ? previous.metering_state.measurementAssignmentIds
-            : [],
-        );
-        const conflicting = store.measurementAssignments.find((assignment) =>
-          !previousAssignmentIds.has(assignment.id) &&
-          assignment.target.kind !== 'TBC' &&
-          assignment.channelIds.some((channelId) => metering.channelIds.includes(channelId)));
-        if (conflicting) throw new Error('A selected channel is already assigned elsewhere.');
-        const assignment = createMeasurementAssignment({
-          installationId,
-          assetId: saved.id,
-          meter,
-          channelIds: metering.channelIds,
-          phaseMode: metering.phaseMode,
-          direction: metering.direction,
-        });
-        setAssetMeteringState(
-          store,
-          saved.id,
-          { kind: 'METERED', measurementAssignmentIds: [assignment.id] },
-          [assignment],
-        );
       } else {
         setAssetMeteringState(store, saved.id, { kind: metering.kind });
       }
       saved.updated_at = timestamp;
       projectCanonicalCompatibility(store, installationId);
       bumpTreeRevision(store, installationId);
+      Object.assign(currentStore, store);
     });
     return saved!;
   },
@@ -1337,6 +1361,10 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
     await initStore();
     return installationReadiness(getStore(), installationId);
   },
+  async validationIssues(installationId) {
+    await initStore();
+    return installationValidationIssues(getStore(), installationId);
+  },
   async electricalTree(installationId) {
     await initStore();
     return electricalTreeRows(getStore(), installationId);
@@ -1382,7 +1410,7 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
     return store.meterDevices.filter(
       (meter) =>
         meter.installationId === asset.audit_id &&
-        boardIsOnAssetSupplyPath(store, asset, meter.installedOnBoardId),
+        asset.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === meter.installedOnBoardId,
     );
   },
 };
@@ -1390,7 +1418,6 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
 export const gridSuppliesRepo: GridSuppliesRepository = {
   async create(input) {
     const assertAssignedWorkAccess = captureAssignedWorkMutationGuard();
-    if (!input.name.trim()) throw new Error('Grid supply name is required.');
     let created: GridSupply | null = null;
     await updateStore((store) => {
       const installation = store.installations.find((item) => item.id === input.installationId);
@@ -1403,7 +1430,7 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
       created = {
         ...input,
         id: createId('grid'),
-        name: input.name.trim(),
+        name: gridSupplyNameForWrite(input.name),
         nmi: normalizeGridSupplyNmi(input.nmi),
         externalKey: input.externalKey?.trim() || undefined,
         isDefault: makeDefault,
@@ -1424,10 +1451,6 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
       if (!installation) throw new Error('Installation not found');
       assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing Grid supplies.');
-      if (patch.name !== undefined && !patch.name.trim()) throw new Error('Grid supply name is required.');
-      if (patch.isDefault === false && current.isDefault) {
-        throw new Error('Set another Grid supply as default instead.');
-      }
       if (patch.isDefault) {
         store.gridSupplies
           .filter((item) => item.installationId === current.installationId)
@@ -1438,11 +1461,12 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
         ...patch,
         id,
         installationId: current.installationId,
-        name: patch.name?.trim() ?? current.name,
+        name: patch.name === undefined ? current.name : gridSupplyNameForWrite(patch.name),
         nmi: patch.nmi !== undefined ? normalizeGridSupplyNmi(patch.nmi) : current.nmi,
         externalKey: patch.externalKey !== undefined ? patch.externalKey.trim() || undefined : current.externalKey,
       };
       store.gridSupplies[index] = updated;
+      ensureGridSupplyDefault(store.gridSupplies.filter((item) => item.installationId === current.installationId));
       bumpTreeRevision(store, current.installationId);
     });
     return updated!;
@@ -1473,7 +1497,6 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before deleting a Grid supply.');
       const siblings = store.gridSupplies.filter((item) => item.installationId === grid.installationId && item.id !== id);
       if (!siblings.length) throw new Error('An installation must keep at least one Grid supply.');
-      if (grid.isDefault) throw new Error('Set another Grid supply as default before deleting this one.');
       const boards = store.electricalAssets.filter(
         (item) => item.audit_id === grid.installationId && item.electrical_source?.kind === 'GRID' && item.electrical_source.gridSupplyId === id,
       );
@@ -1503,6 +1526,7 @@ export const gridSuppliesRepo: GridSuppliesRepository = {
         assignment.status = 'TBC';
       });
       store.gridSupplies = store.gridSupplies.filter((item) => item.id !== id);
+      ensureGridSupplyDefault(siblings);
       bumpTreeRevision(store, grid.installationId);
     });
   },
@@ -1539,9 +1563,6 @@ export const formsRepo: FormsRepository = {
       'a3rm-installation',
       'a6m-installation',
     ].includes(input.form_type);
-    if (commissionsMeter && !input.board_id) {
-      throw new Error('Choose or create the switchboard before starting a WW installation form.');
-    }
     const timestamp = nowIso();
     const record: FormSubmission = {
       id: createId('form'),
@@ -1563,7 +1584,18 @@ export const formsRepo: FormsRepository = {
       if (!installation) throw new Error('Installation not found');
       assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before adding a form.');
-      if (commissionsMeter) {
+      if (input.form_type === 'comms-fault' && input.answers?.['works.replace_device'] === 'yes' && input.meter_id) {
+        const meter = store.meterDevices.find((item) => item.id === input.meter_id);
+        const board = store.electricalAssets.find((item) => item.id === input.board_id);
+        if (!meter || !supportsCommsReplacement(meter)) {
+          throw new Error('The comms-fault replacement form supports A3RM and A6M devices only.');
+        }
+        if (meter.installationId !== input.installation_id || !board || board.audit_id !== input.installation_id
+          || meter.installedOnBoardId !== board.id || board.zone_id !== input.zone_id) {
+          throw new Error('The selected device is not installed on this switchboard. Refresh the installation and try again.');
+        }
+      }
+      if (commissionsMeter && input.board_id) {
         const board = store.electricalAssets.find((item) => item.id === input.board_id);
         if (!board || board.audit_id !== input.installation_id) {
           throw new Error('Choose a switchboard in this installation before starting the WW form.');
@@ -1571,6 +1603,7 @@ export const formsRepo: FormsRepository = {
         record.zone_id = board.zone_id;
         record.answers = answersWithCanonicalBoardContext(record.answers, board);
       }
+      record.answers = supportedFormAnswers(record.form_type, record.answers, record.schema_version);
       store.formSubmissions.unshift(record);
       bumpTreeRevision(store, input.installation_id);
     });
@@ -1598,6 +1631,7 @@ export const formsRepo: FormsRepository = {
         import_source_server_id: undefined,
         updated_at: nowIso(),
       };
+      updated.answers = supportedFormAnswers(updated.form_type, updated.answers, updated.schema_version);
       store.formSubmissions[index] = updated;
       bumpTreeRevision(store, updated.installation_id);
     });
@@ -1657,6 +1691,7 @@ export const formsRepo: FormsRepository = {
         completed_at: undefined,
         supersedes_id: currentOriginal.id,
       };
+      clone.answers = supportedFormAnswers(clone.form_type, clone.answers, clone.schema_version);
       store.formSubmissions.unshift(clone);
       bumpTreeRevision(store, currentOriginal.installation_id);
     });

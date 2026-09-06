@@ -10,6 +10,7 @@ import {
   deriveVirtualMeters,
   electricalTreeRows,
   installationReadiness,
+  installationValidationIssues,
   installationDisplayCodePrefix,
   installationSiteCodeForNewCopy,
   isValidInstallationSiteCode,
@@ -27,6 +28,8 @@ import {
   SITE_ASSET_TYPE_LABELS,
 } from '../src/domain/installationV2';
 import { SITE_ASSET_TYPE_CODES, type AppDataStore } from '../src/types';
+import type { MeasurementAssignment } from '../src/types';
+import { assignmentApprovalSignature } from '../src/domain/meterAssignmentTakeover';
 
 function storeFixture(): AppDataStore {
   const timestamp = '2026-08-01T00:00:00.000Z';
@@ -364,7 +367,7 @@ test('metering inventory keeps confirmed unmetered non-blocking and exposes brok
   }];
   asset.meter_present = true;
   assert.equal(
-    installationReadiness(store, 'installation').issues.find(
+    installationValidationIssues(store, 'installation').find(
       (issue) => issue.code === 'METERING_STATE_INVALID' && issue.entityId === asset.id,
     )?.field,
     'meteringState.measurementAssignmentIds',
@@ -414,7 +417,7 @@ test('metering inventory keeps confirmed unmetered non-blocking and exposes brok
   assert.equal(wrongMeter.channels.unassignedActive, 1);
 });
 
-test('display-code readiness matches server case-and-all-whitespace normalization', () => {
+test('display-code diagnostics match server case-and-all-whitespace normalization', () => {
   const store = normalizeCanonicalStore(storeFixture());
   store.meterDevices = [];
   store.electricalAssets[0]!.meters = [];
@@ -422,7 +425,7 @@ test('display-code readiness matches server case-and-all-whitespace normalizatio
   store.siteAssets[0]!.display_code_meta = {
     value: ' ess - msb - 001 ', generatedValue: 'ESS-HVAC-001', isOverridden: true, ruleVersion: 1,
   };
-  const issues = installationReadiness(store, 'installation').issues;
+  const issues = installationValidationIssues(store, 'installation');
   assert.equal(issues.filter((item) => item.code === 'DISPLAY_CODE_DUPLICATE').length, 2);
 });
 
@@ -451,7 +454,7 @@ test('human names accept spaces and punctuation while duplicate checks span boar
     isOverridden: false,
     ruleVersion: 1,
   };
-  const validIssues = installationReadiness(store, 'installation').issues;
+  const validIssues = installationValidationIssues(store, 'installation');
   assert.equal(validIssues.some((issue) =>
     issue.code === 'DISPLAY_CODE_INVALID' && [board.id, asset.id, meter.id].includes(issue.entityId)), false);
 
@@ -460,7 +463,7 @@ test('human names accept spaces and punctuation while duplicate checks span boar
   asset.display_code = ' shared   name ';
   asset.display_code_meta.value = ' shared   name ';
   meter.displayName.value = 'SHAREDNAME';
-  const duplicateIds = installationReadiness(store, 'installation').issues
+  const duplicateIds = installationValidationIssues(store, 'installation')
     .filter((issue) => issue.code === 'DISPLAY_CODE_DUPLICATE')
     .map((issue) => issue.entityId)
     .sort();
@@ -546,7 +549,7 @@ test('legacy MSB without NMI evidence remains explicitly TBC', () => {
   assert.deepEqual(store.electricalAssets[0]!.electrical_source, { kind: 'TBC' });
 });
 
-test('invalid timezone blocks local completion and mapping export', () => {
+test('invalid optional timezone does not block completion or completed mapping export', () => {
   const store = normalizeCanonicalStore(storeFixture());
   store.installations[0]!.timezone = 'Mars/Olympus_Mons';
   store.meterDevices = [];
@@ -558,10 +561,11 @@ test('invalid timezone blocks local completion and mapping export', () => {
   store.siteAssets[0]!.metering_state = { kind: 'UNMETERED' };
   store.siteAssets[0]!.meter_present = false;
   const readiness = installationReadiness(store, 'installation');
-  const timezone = readiness.issues.find((item) => item.code === 'TIMEZONE_REQUIRED_FOR_EXPORT');
-  assert.equal(timezone?.severity, 'ERROR');
-  assert.equal(readiness.readyToComplete, false);
+  assert.equal(readiness.issues.some((item) => item.code === 'TIMEZONE_REQUIRED_FOR_EXPORT'), false);
+  assert.equal(readiness.readyToComplete, true);
   assert.equal(readiness.eligibility.mappingExport, false);
+  store.installations[0]!.status = 'Completed';
+  assert.equal(installationReadiness(store, 'installation').eligibility.mappingExport, true);
 });
 
 test('legacy channel migration and projection preserve custom loads and model-specific ratings', () => {
@@ -593,17 +597,17 @@ test('DEC-005 custom meters require explicit channels, capabilities, and positiv
   meter.customManufacturerName = 'Example Instruments';
   meter.customModelName = 'Flex 8';
   meter.channels = [];
-  assert.ok(installationReadiness(store, 'installation').issues.some(
+  assert.ok(installationValidationIssues(store, 'installation').some(
     (item) => item.code === 'METER_CAPABILITY_REQUIRED' && item.entityType === 'meter',
   ));
 
   meter.channels = [{ id: 'custom-channel', ordinal: 1, purpose: 'SPARE' }];
-  assert.ok(installationReadiness(store, 'installation').issues.some(
+  assert.ok(installationValidationIssues(store, 'installation').some(
     (item) => item.code === 'METER_CAPABILITY_REQUIRED' && item.field === 'capabilities',
   ));
 
   meter.channels[0]!.capabilities = { labels: ['pulse'] };
-  const validCustomIssues = installationReadiness(store, 'installation').issues;
+  const validCustomIssues = installationValidationIssues(store, 'installation');
   assert.equal(validCustomIssues.some(
     (item) => item.code === 'METER_CAPABILITY_REQUIRED',
   ), false);
@@ -612,7 +616,7 @@ test('DEC-005 custom meters require explicit channels, capabilities, and positiv
   ), false);
 
   meter.channels[0]!.ordinal = 0;
-  assert.ok(installationReadiness(store, 'installation').issues.some(
+  assert.ok(installationValidationIssues(store, 'installation').some(
     (item) => item.code === 'CHANNEL_NOT_FOUND' && item.field === 'ordinal',
   ));
 });
@@ -628,7 +632,7 @@ test('standard A3RM SPARE channels do not require custom capabilities', () => {
     purpose: 'SPARE' as const,
   }));
 
-  const issues = installationReadiness(store, 'installation').issues;
+  const issues = installationValidationIssues(store, 'installation');
   assert.equal(issues.some((item) => item.code === 'METER_CAPABILITY_REQUIRED'), false);
 });
 
@@ -851,7 +855,7 @@ test('Draft meter removal retires active mapping while retaining completed form 
   assert.equal(store.formSubmissions[0]!.status, 'Completed');
   assert.equal(store.formSubmissions[0]!.historical_meter_removed, true);
   assert.equal(store.formSubmissions[0]!.attachments[0]!.id, 'retained-evidence');
-  assert.equal(installationReadiness(store, 'installation').issues.some(
+  assert.equal(installationValidationIssues(store, 'installation').some(
     (issue) => issue.code === 'FORM_CONTEXT_REQUIRED' && issue.entityId === 'completed-meter-form',
   ), false);
 });
@@ -892,7 +896,7 @@ test('one meter can expose BOARD, GRID_BOUNDARY, SITE_ASSET, and explicit TBC ta
   };
   store.electricalAssets.push(child);
   const asset = store.siteAssets[0]!;
-  asset.electrical_source = { kind: 'BOARD', boardId: child.id };
+  asset.electrical_source = { kind: 'BOARD', boardId: root.id };
   const meter = {
     id: 'mapping-meter', installationId: 'installation', installedOnBoardId: root.id,
     deviceFamily: 'OTHER' as const, deviceModel: 'OTHER' as const,
@@ -939,19 +943,15 @@ test('one meter can expose BOARD, GRID_BOUNDARY, SITE_ASSET, and explicit TBC ta
   ]), /only one measurement assignment/);
 });
 
-test('meter assignment save requires every active channel exactly once while SPARE stays exempt', () => {
+test('meter save accepts omitted active channels and preserves explicit TBC measurements', () => {
   const store = normalizeCanonicalStore(storeFixture());
   const meter = store.meterDevices[0]!;
   meter.channels = [
     { id: 'active', ordinal: 1, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
     { id: 'spare', ordinal: 2, purpose: 'SPARE', capabilities: { current: true } },
   ];
-  const before = JSON.stringify(store);
-  assert.throws(
-    () => replaceMeterMeasurementAssignments(store, meter.id, []),
-    /Every non-spare meter channel/,
-  );
-  assert.equal(JSON.stringify(store), before);
+  assert.doesNotThrow(() => replaceMeterMeasurementAssignments(store, meter.id, []));
+  assert.equal(store.measurementAssignments.filter((item) => item.meterId === meter.id).length, 0);
   replaceMeterMeasurementAssignments(store, meter.id, [{
     id: 'active-tbc', installationId: 'installation', meterId: meter.id,
     channelIds: ['active'], phaseMode: 'SINGLE_PHASE', target: { kind: 'TBC' },
@@ -960,7 +960,7 @@ test('meter assignment save requires every active channel exactly once while SPA
   assert.deepEqual(store.measurementAssignments.map((item) => item.channelIds), [['active']]);
 });
 
-test('readiness exposes every absent active channel as CHANNEL_UNASSIGNED', () => {
+test('optional diagnostics expose every absent active channel as CHANNEL_UNASSIGNED', () => {
   const store = normalizeCanonicalStore(storeFixture());
   const meter = store.meterDevices[0]!;
   meter.channels = [
@@ -968,7 +968,7 @@ test('readiness exposes every absent active channel as CHANNEL_UNASSIGNED', () =
     { id: 'active-2', ordinal: 2, purpose: 'SUB_CIRCUIT', capabilities: { current: true } },
     { id: 'spare', ordinal: 3, purpose: 'SPARE', capabilities: { current: true } },
   ];
-  const issues = installationReadiness(store, 'installation').issues
+  const issues = installationValidationIssues(store, 'installation')
     .filter((item) => item.code === 'CHANNEL_UNASSIGNED');
   assert.deepEqual(issues.map((item) => item.entityId), ['active-1', 'active-2']);
   assert.ok(issues.every((item) => item.field === 'measurementAssignments'));
@@ -1029,4 +1029,99 @@ test('asset metering transition validates before mutation and removes exact assi
   assert.equal(store.measurementAssignments.length, 1);
   assert.deepEqual(store.measurementAssignments[0]!.target, { kind: 'TBC' });
   assert.equal(store.measurementAssignments[0]!.direction, 'CONSUMPTION');
+});
+
+test('site takeover commits the new exact mapping and TBC remainders together, with stale approval rejected atomically', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  meter.channels = ['c1', 'c2', 'c3'].map((id, index) => ({ id, ordinal: index + 1, purpose: 'SUB_CIRCUIT' }));
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: meter.installedOnBoardId };
+  const displaced = { ...structuredClone(asset), id: 'displaced', asset_name: 'Original asset', metering_state: { kind: 'METERED' as const, measurementAssignmentIds: ['old'] } };
+  store.siteAssets.push(displaced);
+  const prior: MeasurementAssignment = { id: 'old', installationId: asset.audit_id, meterId: meter.id, channelIds: ['c1', 'c2', 'c3'], phaseMode: 'THREE_PHASE', direction: 'CONSUMPTION', status: 'CONFIRMED', target: { kind: 'SITE_ASSET', siteAssetId: displaced.id } };
+  store.measurementAssignments = [prior];
+  const incoming = createMeasurementAssignment({ installationId: asset.audit_id, assetId: asset.id, meter, channelIds: ['c1'], phaseMode: 'SINGLE_PHASE', direction: 'CONSUMPTION' });
+  const state = { kind: 'METERED' as const, measurementAssignmentIds: [incoming.id] };
+  const before = JSON.stringify(store);
+  assert.throws(() => setAssetMeteringState(store, asset.id, state, [incoming]));
+  assert.throws(() => setAssetMeteringState(store, asset.id, state, [incoming], { old: 'stale' }));
+  assert.equal(JSON.stringify(store), before);
+  setAssetMeteringState(store, asset.id, state, [incoming], { old: assignmentApprovalSignature(prior) });
+  assert.deepEqual(displaced.metering_state, { kind: 'TBC' });
+  assert.deepEqual(asset.metering_state, state);
+  const remainder = store.measurementAssignments.find((item) => item.id === 'old')!;
+  assert.deepEqual(remainder.channelIds, ['c2', 'c3']);
+  assert.equal(remainder.phaseMode, 'OTHER');
+  assert.deepEqual(remainder.target, { kind: 'TBC' });
+});
+
+test('cross-meter asset takeover keeps released channel IDs and validation failures cannot partially detach them', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  meter.channels = [{ id: 'new-channel', ordinal: 1, purpose: 'SUB_CIRCUIT' }];
+  const other = { ...structuredClone(meter), id: 'other-meter', channels: [{ id: 'old-channel', ordinal: 1, purpose: 'SUB_CIRCUIT' as const }] };
+  store.meterDevices.push(other);
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: meter.installedOnBoardId };
+  const prior = createMeasurementAssignment({ installationId: asset.audit_id, assetId: asset.id, meter: other, channelIds: ['old-channel'], phaseMode: 'SINGLE_PHASE', direction: 'CONSUMPTION' });
+  const incoming = createMeasurementAssignment({ installationId: asset.audit_id, assetId: asset.id, meter, channelIds: ['new-channel'], phaseMode: 'SINGLE_PHASE', direction: 'CONSUMPTION' });
+  store.measurementAssignments = [prior];
+  const approvals = { [prior.id]: assignmentApprovalSignature(prior) };
+  const before = JSON.stringify(store);
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [incoming]));
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [{ ...incoming, phaseMode: 'THREE_PHASE' }], approvals));
+  assert.equal(JSON.stringify(store), before);
+  replaceMeterMeasurementAssignments(store, meter.id, [incoming], approvals);
+  assert.deepEqual(store.measurementAssignments.find((item) => item.id === prior.id)?.target, { kind: 'TBC' });
+  assert.deepEqual(store.measurementAssignments.find((item) => item.id === prior.id)?.channelIds, ['old-channel']);
+  assert.deepEqual(asset.metering_state, { kind: 'METERED', measurementAssignmentIds: [incoming.id] });
+});
+
+test('immediate-board eligibility preserves exact historical groups and rejects changed or new upstream mappings', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const meter = store.meterDevices[0]!;
+  meter.channels = [{ id: 'channel', ordinal: 1, purpose: 'SUB_CIRCUIT' }];
+  const root = store.electricalAssets[0]!;
+  const child = { ...structuredClone(root), id: 'child', meters: [], electrical_source: { kind: 'BOARD' as const, boardId: root.id } };
+  store.electricalAssets.push(child);
+  const asset = store.siteAssets[0]!;
+  asset.electrical_source = { kind: 'BOARD', boardId: child.id };
+  const historic = createMeasurementAssignment({ installationId: asset.audit_id, assetId: asset.id, meter, channelIds: ['channel'], phaseMode: 'SINGLE_PHASE', direction: 'CONSUMPTION' });
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [historic]), /immediate supplying/);
+  store.measurementAssignments = [historic];
+  assert.doesNotThrow(() => replaceMeterMeasurementAssignments(store, meter.id, [historic]));
+  const before = JSON.stringify(store);
+  assert.throws(() => replaceMeterMeasurementAssignments(store, meter.id, [{ ...historic, direction: 'GENERATION' }]), /historical mappings/);
+  assert.equal(JSON.stringify(store), before);
+});
+
+
+test('completion readiness contains only explicitly deferred supply, metering, and target states', () => {
+  const store = normalizeCanonicalStore(storeFixture());
+  const board = store.electricalAssets[0]!;
+  const asset = store.siteAssets[0]!;
+  const meter = store.meterDevices[0]!;
+  board.electrical_source = { kind: 'GRID', gridSupplyId: 'missing-grid' };
+  board.custom_type_name = '';
+  asset.electrical_source = { kind: 'BOARD', boardId: 'missing-board' };
+  asset.metering_state = { kind: 'METERED', measurementAssignmentIds: ['missing'] };
+  meter.serialNumber = '';
+  store.measurementAssignments = [{
+    id: 'assignment', installationId: 'installation', meterId: meter.id,
+    channelIds: [meter.channels[0]!.id], phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'BOARD', boardId: 'missing-board' }, direction: 'CONSUMPTION', status: 'TBC',
+  }];
+  assert.equal(installationReadiness(store, 'installation').readyToComplete, true);
+  assert.deepEqual(installationReadiness(store, 'installation').issues, []);
+  assert.ok(installationValidationIssues(store, 'installation').length > 0);
+
+  board.electrical_source = { kind: 'TBC' };
+  asset.metering_state = { kind: 'TBC' };
+  store.measurementAssignments[0]!.target = { kind: 'TBC' };
+  const readiness = installationReadiness(store, 'installation');
+  assert.equal(readiness.readyToComplete, false);
+  assert.deepEqual(readiness.issues.map((issue) => issue.code).sort(), [
+    'MEASUREMENT_TARGET_TBC', 'METERING_STATE_INVALID', 'SUPPLY_TBC',
+  ]);
 });

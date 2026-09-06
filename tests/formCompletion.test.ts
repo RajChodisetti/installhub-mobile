@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { completeFormSubmissionInStore } from '../src/domain/formCompletion';
-import { installationReadiness } from '../src/domain/installationV2';
+import { installationReadiness, installationValidationIssues } from '../src/domain/installationV2';
 import { requiredFormProgress } from '../src/forms/catalog';
 import type { AppDataStore, FormSubmission } from '../src/types';
 
@@ -51,26 +51,33 @@ function wwForm(boardId?: string, meterId?: string): FormSubmission {
   };
 }
 
-test('WW form cannot complete without a board and leaves the store unchanged', () => {
+test('WW form completes without optional board context and creates no meter', () => {
   const store = fixture(wwForm());
-  const before = JSON.stringify(store);
-  assert.throws(
-    () => completeFormSubmissionInStore(store, 'form', timestamp, () => 'meter-new'),
-    /Choose or create the switchboard/,
-  );
-  assert.equal(JSON.stringify(store), before);
+  const completed = completeFormSubmissionInStore(store, 'form', timestamp, () => {
+    throw new Error('must not project a meter without its board');
+  });
+  assert.equal(completed.status, 'Completed');
+  assert.equal(completed.board_id, undefined);
+  assert.equal(store.meterDevices.length, 0);
 });
 
-test('WW form cannot resurrect a missing linked meter and leaves the store unchanged', () => {
+test('WW completion clears stale optional meter context before projecting a new stable meter', () => {
   const store = fixture(wwForm('board', 'meter-deleted'));
-  const before = JSON.stringify(store);
-  assert.throws(
-    () => completeFormSubmissionInStore(store, 'form', timestamp, () => {
-      throw new Error('must not allocate a replacement ID');
-    }),
-    /linked meter is no longer available/,
-  );
-  assert.equal(JSON.stringify(store), before);
+  const completed = completeFormSubmissionInStore(store, 'form', timestamp, () => 'meter-new');
+  assert.equal(completed.status, 'Completed');
+  assert.equal(completed.meter_id, 'meter-new');
+  assert.equal(store.meterDevices[0].id, 'meter-new');
+});
+
+test('WW completion with no optional model captures evidence without projecting a guessed device', () => {
+  const form = wwForm('board');
+  delete form.answers['device.type'];
+  const store = fixture(form);
+  const completed = completeFormSubmissionInStore(store, 'form', timestamp, () => {
+    throw new Error('must not infer an unrecorded model');
+  });
+  assert.equal(completed.status, 'Completed');
+  assert.equal(store.meterDevices.length, 0);
 });
 
 test('visible safe-to-proceed No hard-blocks completion without mutating the store', () => {
@@ -86,7 +93,18 @@ test('visible safe-to-proceed No hard-blocks completion without mutating the sto
   );
   assert.equal(JSON.stringify(store), before);
   assert.equal(blockedProgress.total, safeProgress.total);
-  assert.equal(blockedProgress.done, safeProgress.done - 1);
+  assert.deepEqual(blockedProgress, { done: 0, total: 0 });
+});
+
+test('replacement validation is enforced atomically below the screen', () => {
+  const form: FormSubmission = {
+    ...wwForm(), form_type: 'comms-fault',
+    answers: { 'prestart.safe_to_proceed': 'yes', 'works.replace_device': 'yes' },
+  };
+  const store = fixture(form);
+  const before = JSON.stringify(store);
+  assert.throws(() => completeFormSubmissionInStore(store, 'form', timestamp, () => 'unused'), /New Meter \/ Device Type/);
+  assert.equal(JSON.stringify(store), before);
 });
 
 test('WW completion atomically pins canonical board and one stable operational meter', () => {
@@ -123,11 +141,12 @@ test('WW completion atomically pins canonical board and one stable operational m
   assert.equal(store.electricalAssets[0]!.meters.length, 1);
   assert.equal(store.measurementAssignments.length, 0);
   assert.deepEqual(
-    installationReadiness(store, 'installation').issues
+    installationValidationIssues(store, 'installation')
       .filter((issue) => issue.code === 'CHANNEL_UNASSIGNED')
       .map((issue) => issue.entityId),
     ['meter-stable:1', 'meter-stable:2'],
   );
+  assert.equal(installationReadiness(store, 'installation').issues.some((issue) => issue.code === 'CHANNEL_UNASSIGNED'), false);
 
   store.formSubmissions.push({
     ...wwForm('board', 'meter-stable'),

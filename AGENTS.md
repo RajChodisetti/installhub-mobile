@@ -10,9 +10,21 @@ Field App Complete is an iOS-first Expo/React Native field app for documenting e
 installations. An installation contains zones; zones contain electrical boards and site assets;
 boards can contain Wattwatcher A3RM/A6M meters and channel commissioning data. Installations also
 own versioned submissions for six field-form families, with durable local evidence and PDF export.
-The app is local-first: fixture JSON seeds an in-memory store persisted as one AsyncStorage JSON
-document, while authenticated installation trees and evidence are backed up to the Sustainability
-Wise API. Client reports and zone-summary sending remain placeholders.
+The app is local-first: fixture JSON seeds an in-memory store persisted as verified, chunked
+AsyncStorage generations, while authenticated installation trees and evidence are backed up to the
+Sustainability Wise API. Client reports include locally selected evidence and native PDF sharing;
+administrator finance/invoices and meter history use dedicated APIs. Zone-summary sending remains
+unavailable until an authenticated destination contract exists.
+
+The functional web reference is the UI portal's `/installhub` module in
+`sustainability-wise-api/apps/ecoaudit`, not the legacy standalone `installhub` web repository.
+See the [master parity audit](docs/ios-web-parity-audit.md),
+[field catalog audit](docs/ios-web-parity-forms.md),
+[form actions and historical reports](docs/ios-web-parity-form-actions.md),
+[photo selection and client reports](docs/ios-web-parity-client-report.md),
+[electrical workflow and meter history](docs/ios-web-parity-electrical.md), and
+[commercial and support workflows](docs/COMMERCIAL_AND_SUPPORT_PARITY.md).
+These audits distinguish implemented fixes from device/live verification still required.
 
 ## Start here
 
@@ -86,11 +98,13 @@ Installation (id)
 - Deleting a zone cascades to its boards, site assets, linked forms, upload
   queue rows, owned form media and generated form reports. Surviving
   cross-zone board references are cleared and marked TBC.
-- Deleting a board or site asset cascades to every form linked to that entity
-  (including embedded meter links), while surviving board/site-asset
-  relationships are cleared and marked TBC.
-- Meters are embedded values, not top-level store records. Update them by replacing the parent
-  board's `meters` array.
+- Deleting an individual board or site asset retains completed forms and their evidence;
+  affected draft forms lose the deleted board/meter or site-asset context. Board deletion removes
+  its active meters and assignments, while surviving supply/metering relationships are cleared
+  and marked TBC. Do not apply the installation/zone form cascade to individual boards/assets.
+- `meterDevices`, `gridSupplies`, and `measurementAssignments` are canonical store arrays.
+  Nested board `meters` and legacy site-asset channel fields are compatibility projections;
+  update them together through the existing domain/repository transactions.
 - Keep `ElectricalAsset.meter_present` synchronized with `meters.length > 0`.
 - A `*_tbc` flag represents an intentionally unresolved relationship; clearing it should also set
   the corresponding ID when applicable.
@@ -104,24 +118,39 @@ Installation (id)
   the stored source-tree hash match a fresh pull. Any uncertainty must opt in and sync the cpN tree.
 - Form media is copied into the app document directory; amendments must not delete files referenced
   by the completed record they supersede.
-- Form definitions, visibility rules, and required evidence live in `src/forms/catalog.ts`.
+- Form definitions, visibility rules, accepted values, and completion gates live in
+  `src/forms/catalog.ts`. Business answers and photo evidence are optional capture. A visible
+  `prestart.safe_to_proceed` must still be exactly `yes`; Comms Fault with replacement selected
+  still requires a supported new device type, Device ID/serial, and matching sensor rating.
+- Installation readiness blocks explicit TBC supply, asset metering, or measurement targets.
+  Missing optional answers, serials, photos, and unassigned active channels remain capture or
+  diagnostic concerns rather than blanket completion blockers. Structural ownership, channel
+  uniqueness, lifecycle, and API report-version checks remain enforced.
 - The six new-form families are WW Installation, Comms Fault, ACE
   Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger. Legacy
   `a3rm-installation`/`a6m-installation` submissions remain readable but must not
   return to the new-form picker.
-- WW Installation and Comms Fault use exact dependent sensor choices:
-  A3RM permits only `3000A - 9cm`, `3000A - 20cm`, and `3000A - 29cm`; A6M
-  permits only `60A`, `120A`, `200A`, `400A`, and `600A`.
+- WW Installation and Comms Fault use the model-dependent choices in the catalog:
+  A3RM uses `10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and
+  `Not Used`; A6M uses `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`, `CT-600A`, and `Not Used`.
+  Model-scoped older ratings remain readable through the catalog's compatibility options.
 - Scanner requirements are field metadata in the form catalog. Preserve manual
   entry as a fallback and keep SUMS serial fields enabled for both barcode and
   QR scanning.
-- New WW and replacement-device authoring exposes one required Device ID/serial
-  field. The optional `device_number` value is labelled as a distinct site/asset
+- WW authoring exposes one optional Device ID/serial field; Comms Fault requires the new serial
+  only when replacement is selected. The optional `device_number` value is a distinct site/asset
   tag, remains readable and is mirrored for compatibility only while blank; never
   describe it as a second serial identity.
-- Board, asset, and device names accept 1–64 visible characters. Stable record
+- Board, asset, and device names use type-based defaults when blank and accept up to 64 visible characters. Stable record
   IDs and serials remain separate identities, while duplicate names are rejected
   installation-wide.
+- A WW form may be created/completed without board context. With a valid board and supported
+  device type, completion creates or updates its stable operational meter atomically and opens
+  channel mapping. Without that context, completion preserves the form without inventing a meter.
+- Schema-v2 form answers sent to the API must use that family's supported non-photo catalog keys;
+  do not leak cross-family prefill keys. Preserve schema-v1 answers and immutable local snapshots.
+- Client-report evidence choices are local per-installation preferences, separate from the tree
+  and formal report pack. They do not sync between iOS, other devices, and the portal.
 - Every evidence-photo field is a multi-photo collection. Keep the visible
   “another photo” camera/library affordance after the first attachment.
 - Meter presence on a switchboard is derived from its installed devices. Do not

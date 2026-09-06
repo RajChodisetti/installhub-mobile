@@ -1,3 +1,4 @@
+import { metadataAttemptLocalMediaReferences, rejectedMetadataAttemptsForInstallation, resolvedMetadataConflictsForInstallation, resolvedMetadataConflictMediaReferences } from './metadataBackupRejection';
 import type {
   AppDataStore,
   AssignedWorkRecoveryCheckout,
@@ -24,7 +25,7 @@ function installationLocalOwnerUserId(
  * may then insert a clean server materialization with the canonical IDs in the
  * same store transaction, without transferring dirty work between actors.
  */
-export function quarantineAssignedWorkCheckout(
+function archiveAssignedWorkCheckout(
   store: AppDataStore,
   canonicalInstallationId: string,
   replacementActorUserId: string,
@@ -32,18 +33,21 @@ export function quarantineAssignedWorkCheckout(
     createRecoveryId?: () => string;
     quarantinedAt?: string;
   } = {},
+  reconciliation?: AssignedWorkRecoveryCheckout['reconciliation'],
 ): AssignedWorkRecoveryCheckout {
   const installation = store.installations.find(
     (item) => item.id === canonicalInstallationId,
   );
   if (!installation) throw new Error('Assigned checkout no longer exists.');
   const actorUserId = installationLocalOwnerUserId(installation);
-  if (!actorUserId || actorUserId === replacementActorUserId) {
+  if (!actorUserId || (reconciliation ? actorUserId !== replacementActorUserId : actorUserId === replacementActorUserId)) {
     throw new Error('Only another actor\'s owned checkout can be quarantined.');
   }
 
   const recovery: AssignedWorkRecoveryCheckout = {
     version: 1,
+    reason: reconciliation ? 'same_actor_reconciliation' : 'reassignment',
+    ...(reconciliation ? { reconciliation: structuredClone(reconciliation) } : {}),
     id: (options.createRecoveryId ?? (() => createId('assigned_recovery')))(),
     actor_user_id: actorUserId,
     replacement_actor_user_id: replacementActorUserId,
@@ -82,6 +86,10 @@ export function quarantineAssignedWorkCheckout(
       ),
       pending_complete_attempt:
         store.cloudSync.pending_complete_attempts?.[canonicalInstallationId],
+      pending_metadata_attempt: store.cloudSync.pending_metadata_attempts?.[canonicalInstallationId],
+      conflicted_metadata_attempt: store.cloudSync.conflicted_metadata_attempts?.[canonicalInstallationId],
+      rejected_metadata_attempts: rejectedMetadataAttemptsForInstallation(store, canonicalInstallationId),
+      resolved_metadata_conflicts: resolvedMetadataConflictsForInstallation(store, canonicalInstallationId),
       conflicted_complete_attempt:
         store.cloudSync.conflicted_complete_attempts?.[canonicalInstallationId],
       upload_queue: store.cloudSync.upload_queue.filter(
@@ -97,7 +105,7 @@ export function quarantineAssignedWorkCheckout(
   if (recoveries.some((item) => item.id === recovery.id)) {
     throw new Error('Assigned checkout recovery identity already exists.');
   }
-  recoveries.push(recovery);
+  recoveries.push(structuredClone(recovery));
 
   store.installations = store.installations.filter(
     (item) => item.id !== canonicalInstallationId,
@@ -135,6 +143,14 @@ export function quarantineAssignedWorkCheckout(
   if (store.cloudSync.pending_complete_attempts) {
     delete store.cloudSync.pending_complete_attempts[canonicalInstallationId];
   }
+  if (store.cloudSync.pending_metadata_attempts) delete store.cloudSync.pending_metadata_attempts[canonicalInstallationId];
+  if (store.cloudSync.conflicted_metadata_attempts) delete store.cloudSync.conflicted_metadata_attempts[canonicalInstallationId];
+  for (const entry of recovery.cloudSync.resolved_metadata_conflicts ?? []) {
+    delete store.cloudSync.resolved_metadata_conflicts![entry.original.id];
+  }
+  for (const attempt of recovery.cloudSync.rejected_metadata_attempts ?? []) {
+    delete store.cloudSync.rejected_metadata_attempts![attempt.id];
+  }
   if (store.cloudSync.conflicted_complete_attempts) {
     delete store.cloudSync.conflicted_complete_attempts[canonicalInstallationId];
   }
@@ -146,6 +162,24 @@ export function quarantineAssignedWorkCheckout(
   );
 
   return recovery;
+}
+
+/** Existing cross-actor protection is retained; callers cannot opt into same-actor removal. */
+export function quarantineAssignedWorkCheckout(
+  store: AppDataStore, id: string, replacementActorUserId: string,
+  options: { createRecoveryId?: () => string; quarantinedAt?: string } = {},
+): AssignedWorkRecoveryCheckout {
+  return archiveAssignedWorkCheckout(store, id, replacementActorUserId, options);
+}
+
+/** Only the reviewed, fenced atomic reconciliation transaction calls this path. */
+export function preserveSameActorRecoveryCheckout(
+  store: AppDataStore, id: string, actorUserId: string,
+  proof: NonNullable<AssignedWorkRecoveryCheckout['reconciliation']>,
+): AssignedWorkRecoveryCheckout {
+  return archiveAssignedWorkCheckout(store, id, actorUserId, {
+    createRecoveryId: () => proof.operationId,
+  }, proof);
 }
 
 export function assignedWorkRecoveryCheckoutsForActor(
@@ -163,13 +197,15 @@ export function assignedWorkRecoveryContainsActorInstallation(
   canonicalInstallationId: string,
 ): boolean {
   return (store.assignedWorkRecoveryCheckouts ?? []).some((recovery) => (
-    recovery.actor_user_id === actorUserId
+    recovery.reason !== 'same_actor_reconciliation'
+    && recovery.actor_user_id === actorUserId
     && recovery.canonical_installation_id === canonicalInstallationId
   ));
 }
 
 export interface AssignedWorkRecoverySummary {
   id: string;
+  reason: NonNullable<AssignedWorkRecoveryCheckout['reason']>;
   canonicalInstallationId: string;
   siteName: string;
   clientName: string;
@@ -192,7 +228,7 @@ export interface AssignedWorkRecoveryManifest {
     localUriReferences: string[];
   };
   activeTime: {
-    disposition: 'support_only_not_automatically_delivered_after_reassignment';
+    disposition: 'support_only_not_automatically_delivered_after_reassignment' | 'canonical_same_actor_outbox_unchanged';
     pendingSessionCount: number;
     pendingSessions: StoredActiveTimeSession[];
   };
@@ -248,6 +284,8 @@ export function assignedWorkRecoveryLocalMediaReferences(
   recovery.cloudSync.thumbnail_queue.forEach((item) => {
     addLocalMediaReference(references, item.local_uri);
   });
+  metadataAttemptLocalMediaReferences(recovery.cloudSync.rejected_metadata_attempts ?? []).forEach((uri) => references.add(uri));
+  resolvedMetadataConflictMediaReferences(recovery.cloudSync.resolved_metadata_conflicts ?? []).forEach((uri) => references.add(uri));
   return [...references].sort();
 }
 
@@ -255,7 +293,9 @@ export function pendingActiveTimeSessionsForRecovery(
   recovery: AssignedWorkRecoveryCheckout,
   sessions: StoredActiveTimeSession[],
 ): StoredActiveTimeSession[] {
-  return sessions
+  const preservedSessions = recovery.reason === 'same_actor_reconciliation'
+    ? recovery.reconciliation?.activeTimeSessions ?? [] : sessions;
+  return preservedSessions
     .filter((session) => (
       session.actorUserId === recovery.actor_user_id
       && session.installationId === recovery.canonical_installation_id
@@ -280,7 +320,9 @@ export function buildAssignedWorkRecoveryManifest(
       localUriReferences: assignedWorkRecoveryLocalMediaReferences(recovery),
     },
     activeTime: {
-      disposition: 'support_only_not_automatically_delivered_after_reassignment',
+      disposition: recovery.reason === 'same_actor_reconciliation'
+        ? 'canonical_same_actor_outbox_unchanged'
+        : 'support_only_not_automatically_delivered_after_reassignment',
       pendingSessionCount: pendingSessions.length,
       pendingSessions,
     },
@@ -314,6 +356,7 @@ AssignedWorkRecoverySummary[]
   return assignedWorkRecoveryCheckoutsForActor(getStore(), actorUserId)
     .map((item) => ({
       id: item.id,
+      reason: item.reason ?? 'reassignment',
       canonicalInstallationId: item.canonical_installation_id,
       siteName: item.installation.site_name,
       clientName: item.installation.client_name,
@@ -388,4 +431,14 @@ export async function shareAssignedWorkRecoveryManifest(
     UTI: 'public.json',
     dialogTitle: `Share ${recovery.installation.site_name} recovery manifest`,
   });
+}
+
+/** Full read-only copy, scoped to the current account and detached from live objects. */
+export async function readAssignedWorkRecoveryCheckout(recoveryId: string): Promise<AssignedWorkRecoveryCheckout> {
+  const { authority, actorUserId } = captureRecoveryActorAuthority();
+  const { initStore, getStore } = await import('../data/seed');
+  await initStore(); assertCurrentAssignedWorkAuthority(authority, actorUserId);
+  const item = assignedWorkRecoveryCheckoutsForActor(getStore(), actorUserId).find((entry) => entry.id === recoveryId);
+  if (!item) throw new Error('This recovery copy is unavailable for the signed-in account.');
+  return structuredClone(item);
 }

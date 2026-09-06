@@ -295,10 +295,65 @@ export interface ConflictedCompleteBackupAttempt extends PendingCompleteBackupAt
   conflicted_at: string;
 }
 
+/** Exact metadata intent and original local capture; metadata never proves a full backup. */
+export interface PendingMetadataBackupAttempt extends PendingCompleteBackupAttempt {
+  actor_user_id: string;
+  sent_tree: {
+    treeSchemaVersion: 2;
+    baseTreeRevision?: number;
+    installation: Installation;
+    gridSupplies: GridSupply[];
+    zones: Zone[];
+    electricalAssets: ElectricalAsset[];
+    siteAssets: SiteAsset[];
+    meterDevices: MeterDevice[];
+    measurementAssignments: MeasurementAssignment[];
+    formSubmissions: FormSubmission[];
+    watermark: string;
+  };
+  sent_tree_sha256: string;
+  base_remote_tree?: import('../api/apiClient').RemoteInstallationTree;
+  base_remote_tree_sha256?: string;
+}
+
+export interface ConflictedMetadataBackupAttempt extends PendingMetadataBackupAttempt {
+  conflicted_at: string;
+  conflict_reason: string;
+}
+
+/** Original rejected request retained after scoped proof that it did not change live canonical state. */
+export interface RejectedMetadataBackupAttempt extends PendingMetadataBackupAttempt {
+  rejected_at: string;
+  rejection_code: string;
+  rejection_message: string;
+  preserved_upload_queue: CloudUploadQueueItem[];
+  preserved_thumbnail_queue: ThumbnailDownloadQueueItem[];
+  rejection_proof: { kind: 'unchanged_preimage'; tree_revision: number; tree_sha256: string }
+    | { kind: 'absent_first_dispatch' };
+}
+
+/** Exact acknowledged conflict retained after a canonical GET proves its receipt. */
+export interface ResolvedMetadataBackupConflict {
+  version: 1;
+  original: ConflictedMetadataBackupAttempt;
+  original_sha256: string;
+  resolved_at: string;
+  canonical_tree_sha256: string;
+  accepted_tree_revision: number;
+  accepted_record_version_number: number | null;
+  preserved_upload_queue: CloudUploadQueueItem[];
+  preserved_thumbnail_queue: ThumbnailDownloadQueueItem[];
+}
+
 export interface CloudSyncState {
   synced_at_by_installation: Record<string, string>;
   force_dirty_installation_ids: string[];
   pending_complete_attempts?: Record<string, PendingCompleteBackupAttempt>;
+  pending_metadata_attempts?: Record<string, PendingMetadataBackupAttempt>;
+  conflicted_metadata_attempts?: Record<string, ConflictedMetadataBackupAttempt>;
+  /** Keyed by attempt ID; rejected history does not pause corrected capture. */
+  rejected_metadata_attempts?: Record<string, RejectedMetadataBackupAttempt>;
+  resolved_metadata_conflicts?: Record<string, ResolvedMetadataBackupConflict>;
   conflicted_complete_attempts?: Record<string, ConflictedCompleteBackupAttempt>;
   upload_queue: CloudUploadQueueItem[];
   thumbnail_queue: ThumbnailDownloadQueueItem[];
@@ -559,6 +614,10 @@ export interface Installation {
   tree_revision?: number;
   /** Last authoritative server revision accepted by push/upload/lifecycle APIs. */
   server_tree_revision?: number;
+  /** Exact local mutation revision last materialized or confirmed fully backed up. Local only. */
+  last_synced_local_tree_revision?: number;
+  /** Server half of the same fully confirmed local/server revision pair. */
+  last_synced_server_tree_revision?: number;
   record_version_number?: number;
   display_code_sequences?: Partial<Record<BoardTypeCode | SiteAssetTypeCode, number>>;
   /**
@@ -809,6 +868,15 @@ export interface SiteAssetEditorDraftRecord {
  */
 export interface AssignedWorkRecoveryCheckout {
   version: 1;
+  /** Missing on older archives means cross-actor reassignment. */
+  reason?: 'reassignment' | 'same_actor_reconciliation';
+  reconciliation?: {
+    operationId: string;
+    localSnapshotSha256: string;
+    serverTreeSha256: string;
+    serverTreeRevision: number;
+    activeTimeSessions: import('../services/activeTimeOutbox').StoredActiveTimeSession[];
+  };
   id: string;
   actor_user_id: string;
   replacement_actor_user_id: string;
@@ -827,6 +895,10 @@ export interface AssignedWorkRecoveryCheckout {
     synced_at?: string;
     force_dirty: boolean;
     pending_complete_attempt?: PendingCompleteBackupAttempt;
+    pending_metadata_attempt?: PendingMetadataBackupAttempt;
+    conflicted_metadata_attempt?: ConflictedMetadataBackupAttempt;
+    rejected_metadata_attempts?: RejectedMetadataBackupAttempt[];
+    resolved_metadata_conflicts?: ResolvedMetadataBackupConflict[];
     conflicted_complete_attempt?: ConflictedCompleteBackupAttempt;
     upload_queue: CloudUploadQueueItem[];
     thumbnail_queue: ThumbnailDownloadQueueItem[];

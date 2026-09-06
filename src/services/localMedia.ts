@@ -1,4 +1,6 @@
+import { resolveOwnedMediaUri, mediaReferenceIdentity, storedMediaIsReferenced } from './ownedMediaPaths';
 import * as ImagePicker from 'expo-image-picker';
+import { Platform } from 'react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { createId } from '../utils';
@@ -28,10 +30,17 @@ async function persistPhoto(sourceUri: string): Promise<string> {
 }
 
 async function acquirePhoto(source: 'camera' | 'library'): Promise<string | null> {
-  const permission = source === 'camera'
-    ? await ImagePicker.requestCameraPermissionsAsync()
-    : await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) return null;
+  // The iOS system picker authorizes individual selections without requiring
+  // the user to grant access to their entire photo library.
+  if (source === 'camera' || Platform.OS !== 'ios') {
+    const permission = source === 'camera'
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      if (source === 'camera') throw new Error('Camera access is required to take a photo. You can choose a photo instead.');
+      return null;
+    }
+  }
 
   const result = source === 'camera'
     ? await ImagePicker.launchCameraAsync({ quality: 0.9, allowsEditing: false })
@@ -61,10 +70,13 @@ export async function takeLocalPhoto(): Promise<string | null> {
 export function deleteLocalPhoto(uri: string | null | undefined): boolean {
   if (!uri) return false;
   try {
+    const { getStore } = require('../data/seed') as typeof import('../data/seed');
+    if (storedMediaIsReferenced(uri, getStore())) return false;
+    const currentUri = resolveOwnedMediaUri(uri);
     const directoryUri = mediaDirectory().uri;
     const ownedPrefix = directoryUri.endsWith('/') ? directoryUri : `${directoryUri}/`;
-    if (!uri.startsWith(ownedPrefix)) return false;
-    const file = new File(uri);
+    if (!currentUri.startsWith(ownedPrefix)) return false;
+    const file = new File(currentUri);
     if (!file.exists) return false;
     file.delete();
     return true;
@@ -77,10 +89,10 @@ export function deleteRemovedLocalPhotos(
   previousUris: Array<string | null | undefined>,
   retainedUris: Array<string | null | undefined>,
 ): number {
-  const retained = new Set(retainedUris.filter((uri): uri is string => Boolean(uri)));
+  const retained = new Set(retainedUris.filter((uri): uri is string => Boolean(uri)).map(mediaReferenceIdentity));
   let removed = 0;
   for (const uri of new Set(previousUris.filter((value): value is string => Boolean(value)))) {
-    if (!retained.has(uri) && deleteLocalPhoto(uri)) removed += 1;
+    if (!retained.has(mediaReferenceIdentity(uri)) && deleteLocalPhoto(uri)) removed += 1;
   }
   return removed;
 }

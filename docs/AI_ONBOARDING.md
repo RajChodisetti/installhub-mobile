@@ -3,8 +3,9 @@
 ## 1. Purpose and current maturity
 
 Field App Complete is an iOS-first field workflow for installers who document a customer's
-electrical site and commission Wattwatcher metering hardware. It mirrors a Field App Complete web
-workflow, but this repository is a self-contained Expo app.
+electrical site and commission Wattwatcher metering hardware. Its functional web reference is the
+UI portal's `/installhub` module in `sustainability-wise-api/apps/ecoaudit`, with dedicated
+`/v1/installhub` APIs. The legacy standalone `installhub` web repository is not the parity source.
 
 The implemented journey is:
 
@@ -21,12 +22,15 @@ Field App Complete API login
      └─ views/reports
         ├─ installation-scoped device search across all zones, with Open and Replace actions
         ├─ consolidated photo gallery across zones, switchboards, devices, assets, and forms
+        │  └─ local evidence inclusion choices -> client summary PDF/share
         ├─ six new field-form families with draft/completed/amendment lifecycle
         ├─ form-specific A4 PDFs with embedded evidence photos
         │  └─ local quality retries -> durable API job fallback
         ├─ merged installation pack (summary + completed form PDFs)
         ├─ Data View with explicit TBC reconciliation and separate completion checks
         ├─ metering table
+        ├─ meter history and guarded restore from cloud versions
+        ├─ administrator financial summary, cost lines, invoices and CSV/PDF share
         └─ compact tools/reports drawer
 ```
 
@@ -34,8 +38,18 @@ The app is production-connected for authentication, opt-in Cloud Backup, explici
 imports, user administration, installation access assignment, and server PDF jobs while remaining
 local-first for field work. Local records live in AsyncStorage; secure tokens live in SecureStore.
 Installation trees and evidence are backed up only after the user enables backup on that
-installation. Zone-summary sending is intentionally unavailable until an
-authenticated API destination is defined; client-report UI remains a placeholder.
+installation. Client reports summarize the installation and selected evidence with native PDF
+sharing. Their selection preferences stay local and do not alter installation revisions or formal
+report packs. Zone-summary sending is intentionally unavailable until an authenticated API
+destination is defined.
+
+The [master parity audit](ios-web-parity-audit.md) tracks integration and remaining verification.
+Detailed comparisons cover [all field definitions](ios-web-parity-forms.md),
+[form actions and historical report targets](ios-web-parity-form-actions.md),
+[photos and client reports](ios-web-parity-client-report.md),
+[electrical capture and meter history](ios-web-parity-electrical.md), and
+[commercial/support workflows](COMMERCIAL_AND_SUPPORT_PARITY.md). A source or unit-tested fix in
+these inventories is not proof of native interaction, live API delivery, or bidirectional reload.
 
 The Inventory tab is cloud-authoritative and shows the authenticated user's
 current meter list and total. Add meter offers barcode scan and manual Device ID
@@ -44,6 +58,14 @@ they do not create unregistered stock. A confirmed barcode claim reopens the
 scanner for batch intake. Scheduler company and per-user counts reflect the
 same custody rows, and completed installation projection removes installed
 meters from active stock without deleting movement history.
+Server-backed search reports the exact total and truncation, with company/user-held subtotals.
+Inventory-maintainer permission is independent of administrator role; an inspector maintainer
+does not fetch the administrator-only user directory.
+Inventory access, list/search and custody actions are bound to the initiating account/session
+and focused view through `useInventoryData`. Failed queries hide earlier rows and counts.
+Typed scanner input can be reviewed directly or retained when switching to manual entry;
+claiming still requires registered company stock. Installation Access similarly binds its
+read/assignment controls to the exact installation and initiating account.
 
 The authenticated technician can also request a transient daily route from the
 Dashboard. The API orders the day's eligible Field App Scheduler stops from either a
@@ -183,10 +205,12 @@ AsyncStorage keys:
 | `installhub.mobile.active-time.v1` | `activeTimeOutbox.ts` | versioned, actor-partitioned active installation session checkpoints and acknowledgements |
 | `installhub.theme` | `AppProviders.tsx` | `light`, `dark`, or `system` |
 | `installhub.active-report-jobs.v1` | `reportJobs.ts` | active form/installation API PDF job IDs |
+| `installhub.client-report-photos.v1:<encoded installation id>` | `clientReportPreferencesRepository.ts` | local client-preview exclusions bound to photo key and URI; not synchronized |
 | `ih_cloud_jwt` | Expo SecureStore | short-lived Field App Complete access token |
 | `ih_cloud_refresh` | Expo SecureStore | rotating refresh token |
 | `ih_cloud_user` | Expo SecureStore | cached offline session identity |
-| `ih_last_synced_at` | Expo SecureStore | last successful backup timestamp |
+| `ih_last_synced_at.<actor hash>` | Expo SecureStore | last completed backup check; legacy values do not prove a tree upload |
+| `ih_last_confirmed_backup_at.<actor hash>` | Expo SecureStore | last run that confirmed at least one installation and left no visible opted-in work pending or deferred |
 | `installhub.notifications.device-id.v1` | Expo SecureStore | stable random device identity used to upsert/delete this installation's push token |
 | `installhub.notifications.registration-generation.v1` | Expo SecureStore | monotonic lifecycle fence shared by notification registration and logout |
 
@@ -288,35 +312,37 @@ job-level outcome summaries are intentionally shown only after an installation e
 does not ask installers to predict completed hardware or monitoring results. New field forms prefer
 the end-customer name and fall back to the contracting client and then the site name.
 
-A3RM/A6M devices have exact 3/6 positive channel ordinals. An Other meter instead requires its
-manufacturer, model, at least one explicitly numbered channel, and non-empty capabilities for each
-channel; it is never defaulted to three. Wattwatchers commissioning-form evidence is required only
-for A3RM/A6M. Fixed A3RM/A6M channels use their model contract and do not require custom capability
-objects. Each WW commissioning channel records explicit `MAIN_SUPPLY`, `SUB_CIRCUIT`, or `SPARE`
-purpose; active channels require a load, and `Other` requires a separate custom load label.
-Choosing `SPARE` clears incompatible load, custom label, sensor, description, and evidence details. Measurement assignments
-retain explicit channel order, phase mode, direction, target, and stable identity.
+A3RM/A6M devices have exact 3/6 positive channel ordinals. Other meters expose optional
+manufacturer/model and explicit custom channels/capabilities; they are not defaulted to three
+channels. Fixed A3RM/A6M channels use their model contract. Business answers and photo evidence
+are optional capture, including WW serials, channel purpose/load details, and custom load labels.
+Supplied answers still follow catalog choices and visibility rules. Choosing `SPARE` clears
+incompatible load, custom label, sensor, description, and evidence details. Measurement assignments
+retain stable identity and exact channel order; structural ownership and duplicate-channel checks
+remain enforced.
 
-The mobile commissioning workflow now enforces the canonical sequence: choose or create a physical
-zone and switchboard, start the WW form against that exact board, complete the validated form, then
-map active channels. Form completion and operational-meter materialization are one store
+WW forms may be created and completed without board context. When a valid board and supported
+device type are present, form completion and operational-meter materialization are one store
 transaction: the immutable Completed form receives the same stable `board_id` and `meter_id` that
-the canonical `meterDevices` row uses. Canonical switchboard name/type/zone/location/NMI are shown
-once as concise read-only context in the form, while the same prefilled answers remain stored for
-PDF/reporting and are normalized again at completion.
+the canonical `meterDevices` row uses, then opens channel mapping. Without that context the form
+completes without inventing a meter. Canonical switchboard name/type/zone/location/NMI are shown as
+read-only context when available and normalized again at completion. Stale optional entity links
+are detached; they do not become mandatory capture fields.
 
-When a visible `prestart.safe_to_proceed` field is present, only the exact `yes` value counts toward
-required progress or permits form completion. Missing, No, or N/A values remain a prominent red
+When a visible `prestart.safe_to_proceed` field is present, only the exact `yes` value permits form
+completion. Missing, No, or N/A values remain a prominent red
 STOP state, and the domain completion transaction rejects them before mutating the store so screen
 or future repository callers cannot bypass the safety gate.
+Comms Fault with `works.replace_device === 'yes'` also requires a supported replacement device
+type, new Device ID/serial, and matching model-scoped sensor rating. These explicit portal gates
+are preserved separately from optional business capture.
 
 An assignment may target `BOARD`, `GRID_BOUNDARY`, `SITE_ASSET`, or explicit `TBC`. Main-supply
 channels may identify their installed-on board, an upstream Grid boundary, or TBC; sub-circuit
 channels may identify a downstream board, a site asset on the same source path, or TBC. One
 assignment cannot mix purposes, phase counts are explicit, and one channel cannot be assigned
-twice. New asset entry requires an explicit `METERED` or `UNMETERED` decision. A legacy asset
-already stored as `TBC` remains readable but prompts the installer to correct it before saving.
-The Metered branch
+twice. Site assets may save `METERED`, `UNMETERED`, or explicit `TBC`. Incomplete or invalid
+optional exact mapping saves as TBC instead of stealing another channel assignment. The Metered branch
 uses dependent source-path/device/channel/phase/direction choices and can detour to commissioning
 without discarding the partially entered asset draft. Moving an existing Metered asset to
 Unmetered/TBC previews the exact assignments and channels removed before the atomic save.
@@ -326,6 +352,11 @@ for switchboard name/type, inherits the asset's existing upstream or incoming-gr
 relationship, creates and auto-selects the board, then restores the protected asset
 draft. “Commission a new device” similarly returns to the draft and always opens
 the detailed WW installation form for the selected source board.
+
+Installation readiness blocks only explicit TBC electrical supply, asset metering, and measurement
+targets. Missing optional data or unassigned active channels can remain visible as quality
+diagnostics without becoming completion blockers. Present data still obeys structural validation;
+authoring choices such as installation scope and an Other label retain their existing UI checks.
 
 Meter deletion is Draft-only for the active installation tree: the meter and its assignments are
 retired and affected assets return to explicit `TBC`. Immutable Completed forms and their evidence
@@ -346,12 +377,13 @@ local repository write
   -> AsyncStorage store notification
   -> SyncStatusProvider debounce / foreground / 15-minute trigger
   -> syncService
-     1. build complete installation tree
-     2. push metadata with local paths removed
-     3. checksum + deduplicate + session upload + confirm every evidence file
-     4. push the complete tree with confirmed remote URLs
-     5. fetch and merge that exact canonical revision
-     6. advance the installation watermark only after the re-read matches
+     1. recover durable metadata and complete requests, then refresh assigned work
+     2. capture the local tree and exact known server preimage
+     3. persist the hashed metadata request before dispatch; record its receipt
+     4. confirm the exact canonical metadata revision without replacing local capture
+     5. checksum + deduplicate + session upload + confirm every evidence file
+     6. push the durable complete request with confirmed remote URLs
+     7. advance the installation watermark only after exact canonical confirmation
 ```
 
 During the metadata stage, every locally Completed form is deliberately sent as Draft without
@@ -360,12 +392,34 @@ Only the explicit complete stage may transmit Completed, after every attachment 
 remote URL. This avoids commissioning an immutable form from any metadata pass.
 
 `tree_revision` is the offline mutation counter; it is never used as the server CAS base. A separate
-persisted `server_tree_revision` starts absent for first offline capture, advances from the metadata
-push, advances again after every successful upload confirmation, and supplies the exact base for the
-complete push. Portal conflicts therefore report the last server base rather than a local edit count.
+persisted `server_tree_revision` starts absent for first offline capture, advances only after exact
+metadata confirmation, advances again after every successful upload confirmation, and supplies the
+exact base for the complete push. Portal conflicts therefore report the last server base rather than a local edit count.
+
+`pending_metadata_attempts` stores the exact wire payload, original local tree, actor, hashes and
+accepted receipt. Existing server records also bind an exact canonical preimage at the known CAS
+revision; this proves the API's immutable-form and pending Comms-meter retention rules. An ambiguous
+request replays that original body before assigned pulls. Recovery applies only verified canonical
+identity/code/address fields, preserving later local fields, children, answers and evidence. If the
+local snapshot changed, close retained installation screens and return Home before retrying.
+Metadata recovery never advances full-backup watermarks or establishes a clean-tree baseline.
+
+A definitive metadata POST conflict moves the intact intent to `conflicted_metadata_attempts`.
+Explicit preserve-copy recovery archives it with the local tree; ambiguous pending intent must be
+resolved first. Account reassignment likewise quarantines both maps with their owning checkout.
+Legacy conflicts without an original journal stay paused. See
+[metadata recovery](ios-web-parity-metadata-recovery.md) for contracts and validation.
 
 `listInstallationsNeedingBackup()` excludes installations whose per-record opt-in is disabled.
 Turning backup off stops future pushes but does not silently delete an existing server backup.
+
+`getInstallationBackupSelection()` reports eligible, current, and deferred actor-visible
+installations under the same dispatch guards. `SyncProgress.installationOutcome` separates
+confirmed installation trees from evidence-upload counts and rechecks remaining work at the end
+of a run. Phase `done` means the run finished, including when no tree was selected; it does not
+mean every opted-in installation was backed up. Settings and Diagnostics show the last check
+separately from a confirmed backup, and explicitly report deferred work. Neither reporting nor
+closing an editor clears an existing reconciliation conflict.
 
 Cloud import is intentionally separate from continuous sync:
 
@@ -462,6 +516,11 @@ are administrative/storage inspection contracts) are:
 /v1/installhub/installations/:id/access        assigned-inspector access
 /v1/installhub/installations/:id/files         stored originals and generated reports
 /v1/installhub/installations/:id/versions/*    immutable sync snapshots
+/v1/installhub/installations/:id/meters/:meterId/history  device history and /rollback
+/v1/installhub/installations/:id/financial-summary        administrator financial totals
+/v1/installhub/installations/:id/finance                 pricing header
+/v1/installhub/installations/:id/cost-lines/*             cost and labour lines
+/v1/installhub/installations/:id/invoices/*               draft/issue/void and PDF
 /v1/installhub/installations/:id/.../pdf/jobs  form and installation-pack jobs
 /v1/installhub/route-suggestions               signed-in technician's transient daily route
 /v1/export/jobs/*                              durable status and authenticated download
@@ -469,10 +528,11 @@ are administrative/storage inspection contracts) are:
 
 ### Administration, diagnostics, and storage
 
-The current user can change their password from Settings. Administrators also see User
-Management, Diagnostics, fixture reset, and installation access assignment:
+The current user can change their password and open Diagnostics from Settings. Administrators
+also see User Management and editable installation access assignment:
 
-- User Management lists Field App Complete-scoped accounts and can create users, edit
+- User Management shows the unified cross-product identity, membership, source and sync directory.
+  Administrators can create native Field users and, for eligible accounts, edit
   name/email/role, deactivate/reactivate accounts, and reset another user's password. The API
   prevents self-demotion/self-deactivation and removal of the last active admin.
 - Accounts granted shared Field App Complete access from Eco Audit or Solar Sense are identified by
@@ -487,17 +547,36 @@ Management, Diagnostics, fixture reset, and installation access assignment:
   refresh sessions; already-issued access tokens may remain valid for up to 15 minutes.
 - Access assignment gives one active user access to a backed-up installation. The creator and
   admins retain access; clearing the assignment removes only the additional user's access.
+  Authorized inspectors can inspect the current assignment without changing it.
+- Administrators grant/revoke company inventory-maintainer access independently of role, including
+  on active source-managed Field accounts; the source profile/password rules above still apply.
 - Cloud Files & History lists the installation's confirmed originals and completed report PDFs,
   supports authenticated download/share, and exposes immutable complete-sync snapshots for
   inspection. It applies the same creator/assignee/elevated access rules as cloud import.
+  Version inspection reads canonical `snapshot.installationTree`/`snapshot.readiness` envelopes
+  as well as older raw-tree snapshots.
 - The remote browser exposes permanent Cloud Backup deletion only to the installation creator or
   an administrator, behind an explicit destructive confirmation. Assigned-only inspectors can
   import and inspect but cannot delete another creator's backup.
 - Diagnostics checks API health, runs/retries Cloud Backup, and counts local entities, upload
   queue states, preview queue states, and tracked storage.
+  Entity/queue counts are actor-scoped; operational events use an explicit non-evidence allow-list.
 - Settings and Diagnostics can clear generated-report cache or imported 400 px preview cache.
   They never delete original form evidence, form records, or remote originals. Clearing previews
   resets their durable queue items to pending so they can be downloaded again.
+
+Financial Summary and Invoices use the dedicated administrator-only APIs for pricing, cost and
+labour lines, margins, draft invoices, issue/void actions, and native CSV/PDF sharing. The server
+owns amounts, eligibility and invoice status; commercial records are not stored in the local
+installation snapshot. Use the current backed-up installation ID, never an imported cpN source ID
+for financial writes. These flows do not send invoice emails or take payments. See
+[commercial and support workflows](COMMERCIAL_AND_SUPPORT_PARITY.md).
+
+Meter History lists immutable cloud device versions and offers restore only for a clean backed-up
+Draft checkout. Restore binds the authenticated actor, exact local/server revisions, stable meter
+identity and unchanged tree; an accepted restore is pulled and applied without overwriting other
+devices, forms or mappings. Ambiguous retries reuse the operation identity. See
+[electrical history safeguards](ios-web-parity-electrical.md#batch-two--device-history).
 
 ## 4. Domain model and relationships
 
@@ -564,9 +643,11 @@ Delete behavior is implemented manually:
   reports. It deliberately does not delete an existing Cloud Backup.
 - Zone deletion removes electrical assets, site assets, and forms linked through the zone, a child
   board, an embedded meter, or a child site asset.
-- Board and site-asset deletion removes directly linked forms. Board deletion also clears surviving
-  parent-board and site-asset references, marks them TBC, and clears meter-channel links that no
-  longer have a board.
+- Individual board/site-asset deletion retains Completed forms and evidence; affected Draft forms
+  lose only the deleted board/meter or site-asset context. Board deletion removes its active meters
+  and assignments, clears surviving parent-board and site-asset references, marks them TBC, and
+  clears meter-channel links that no longer have a board. This differs from the installation/zone
+  form cascade above.
 - Every cascade prunes removed entities from upload/thumbnail queues and updates imported-thumbnail
   counts. Form evidence cleanup removes only the deleted form's owned directory; it preserves a
   directory while any surviving amendment still references a file inside it.
@@ -590,21 +671,25 @@ the tabs in the root native stack.
 | `BoardDetail` | `boardId`, `installationId`, `zoneId` | Board edit/delete and meter list; start WW commissioning or add an Other Meter |
 | `SiteAssetDetail` | `assetId`, `installationId`, `zoneId` | Site asset edit/delete |
 | `MeterForm` | `installationId`, `boardId`, optional `meterId`, optional `deviceType` | Device details plus full channel measurement assignments; Other Meter captures manufacturer, model, classification, coverage and explicit channel capabilities |
-| `DataView` | `installationId`, optional `initialMode` | Explicit TBC reconciliation, separate non-TBC completion checks, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
+| `MeterHistory` | `installationId`, `meterId` | Paginated immutable cloud history and guarded restore of one stable device |
+| `DataView` | `installationId`, optional `initialMode` | Explicit TBC reconciliation, quality diagnostics, coverage, FED_FROM tree, MEASURES overlay and physical inventory |
 | `MeteringTable` | `installationId` | Combined board-meter/site-asset metering rows |
+| `FinancialSummary` | `installationId` | Administrator server pricing/cost/labour/margin summary, cost-line actions and CSV share |
+| `Invoices` | `installationId` | Administrator invoice list, billable line selection and draft creation |
+| `InvoiceDetail` | `installationId`, `invoiceId` | Administrator invoice details, draft editing, issue/void and PDF share |
 | `InstallationReport` | `installationId` | Summary and PDF export/share |
-| `ClientReport` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
-| `PhotoPreview` | `installationId` | Legacy placeholder route; not exposed from the installation workspace |
+| `ClientReport` | `installationId` | Installation/client summary, metering and completed-form counts, selected evidence and native preview PDF/share |
+| `PhotoPreview` | `installationId` | Consolidated evidence gallery, per-photo client-report inclusion and report navigation |
 | `FormsList` | `installationId` | List drafts/completed forms, export or amend |
 | `FormTypePicker` | installation plus optional entity links | Central/contextual six-form catalog |
 | `FormEditor` | `installationId`, `formId` | Autosave, validation, location, evidence, completion and PDF |
 | `RemoteInstallations` | none | Browse accessible Cloud Backups and import a fresh-ID `cpN` copy |
-| `UserManagement` | none | Admin-only Field App Complete account list |
-| `UserEditor` | optional `userId` | Admin create/update/deactivate/reactivate/password reset |
+| `UserManagement` | none | Admin unified account/source/membership directory |
+| `UserEditor` | optional `userId` and source metadata | Admin eligible account edits/password reset and independent inventory-maintainer access |
 | `ChangePassword` | none | Current user's password change |
-| `InstallationAccess` | `installationId` | Admin assign/clear one active user's backup access |
-| `CloudStorage` | installation ID/name | Browse authenticated originals/reports and inspect immutable versions |
-| `Diagnostics` | none | Admin API health, sync, entity, queue and storage diagnostics |
+| `InstallationAccess` | `installationId` | Read-only assignment for authorized inspectors; admin assign/clear |
+| `CloudStorage` | `installationId`, `serverInstallationId` | Browse authenticated originals/reports and inspect immutable versions |
+| `Diagnostics` | none | Signed-in API health, sync, local entity, queue and storage diagnostics |
 | `DailyRoute` | none | Map-free ordered stops and travel estimates for the signed-in technician |
 
 When adding a route, update both the route type and navigator registration. Use
@@ -641,7 +726,7 @@ preserving:
 - A3RM creates three channels and uses Rogowski coil-size choices.
 - A6M creates six channels and uses CT-rating choices.
 - Legacy saved choices remain selectable through `withLegacyOption`.
-- The WW form exposes a required Device ID/serial and an optional, barcode-scannable
+- The WW form exposes an optional Device ID/serial and an optional, barcode-scannable
   site/asset tag. A blank compatibility value is seeded from the serial, but an
   explicitly different site/asset tag is preserved through editing, backup, and
   reports. Replacement details in Comms Fault expose the same optional distinct tag.
@@ -653,8 +738,9 @@ preserving:
 - Comms Fault is replacement-only: it is not offered as an unlinked generic
   form. Device Search creates it directly with the stable device, board, zone,
   installation, and existing serial already linked.
-- A WW form cannot be created or completed without a real board in the same installation. The
-  installation-wide picker has searchable board choices plus an inline add-board detour.
+- A WW form can be created/completed without board context. The installation-wide picker offers
+  searchable board choices and an inline add-board detour; a selected board must belong to the
+  same installation. Operational-meter projection requires a valid board and supported device type.
 - New-board entry derives meter presence from installed devices and offers a clear
   detailed WW commissioning action; it does not ask a separate meter-present yes/no.
   Parent-board search includes name/type/zone and excludes the edited board and every
@@ -664,9 +750,9 @@ preserving:
   `<INSTALL>-<ZONE>-<NN>-<CUSTOMNAME>` codes. `NN` is at least two digits and the
   local high-water mark prevents reuse after an offline delete; the server resolves
   concurrent-device collisions. Rule-v1 and server-confirmed codes stay frozen.
-- Installations own a required editable uppercase `site_code` (maximum 16 characters). It is
-  derived from the site name while pristine and becomes the `<INSTALL>` prefix used by the naming
-  rule above.
+- Installations own an editable uppercase `site_code` (maximum 16 characters). A blank value is
+  derived from the site name/default during save and becomes the `<INSTALL>` naming prefix;
+  existing unchanged legacy codes remain preserved.
 - New board/asset names default from their selected type but remain editable. WW
   `device.name` similarly defaults to `A3RM Meter` or `A6M Meter` and advances on a
   type change only while still pristine. Stable IDs, optional site/asset tags, and
@@ -686,22 +772,28 @@ preserving:
 - Signal authoring uses `Low`, `Medium`, or `High`. Antenna authoring uses `Internal`,
   `External`, `CSM550 - External High Gain`, or `Other`. Known saved values from the previous
   mobile catalogs remain selectable for compatibility, but arbitrary new values are rejected.
-- Every visible Installation channel first requires a purpose: Main board supply,
-  Sub-circuit / asset, or Spare / unused. Active purposes require a Load; choosing
-  `Other` also requires a separate custom load label. Spare channels hide and
+- Every visible Installation channel offers Main board supply, Sub-circuit / asset, or Spare /
+  unused purpose. Active purposes reveal Load; `Other` reveals a separate custom load label.
+  These are optional capture fields. Spare channels hide and
   clear load, custom label, rating, description, nameplate evidence, polarity,
   and current. Historical drafts that used `Not Used` remain readable through
   the bounded legacy mapper, while current authoring uses the explicit purpose.
 - Comms Fault applies the same dependent choice rule to both the
   existing and replacement device; replacement identity, sensor and
   recommissioning fields are shown only when replacement is selected.
+  Completion with replacement selected requires a supported new type, new Device ID/serial and
+  matching sensor rating; the distinct site/asset tag remains optional.
 - ACE job/CT identifiers, Honeywell serial, and Captis meter/logger serials use
   barcode scanning. SUMS has the same stored fields as Captis and accepts both
   barcode and QR input for its serial fields.
 - Changing a controlling device type clears incompatible selections and values
   (including A6M-only channels 4-6) from newly hidden sections before autosave.
-- Completing any non-WW field form returns to its parent page after the save succeeds. A completed
-  WW installation form instead continues to the required channel-mapping step.
+- Completing a WW form that materializes a meter opens its channel-mapping step; completion without
+  a materialized meter returns to the parent page, as do non-WW forms. Partial channel capture may
+  be saved. Only explicit TBC states block installation readiness.
+- Schema-v2 answer persistence/wire projection uses supported non-photo keys from the exact form
+  family. Prefill must not leak keys from another family. Schema-v1 answers remain intact for
+  compatibility, and wire filtering must not rewrite immutable local Completed snapshots.
 
 ## 7. Direct dependencies
 
@@ -866,6 +958,14 @@ empty or undersized PDF. A retryable render failure offers the next lower tier a
 option. A cloud URL in an imported form is intentionally not fetched into local report HTML; that
 case goes directly to server generation so the confirmed original is used.
 
+Saved evidence URIs can contain an older iOS data-container UUID after an app update.
+`services/ownedMediaPaths.ts` resolves only validated app-owned `Documents/form-media/<form>/<file>`
+and `Documents/installhub-media/<file>` paths against the current document directory at display,
+PDF, upload and cleanup boundaries. It never rewrites the stored attachment, upload key, tree
+revision or immutable recovery copy. Cleanup compares the same managed relative identity before
+removing a file. A truly missing local original produces a distinct nonretryable evidence error,
+with its attachment preserved; reducing PDF quality cannot repair a missing file.
+
 `createInstallationPackPdf()` renders one branded installation summary, renders every completed
 form through the same form renderer/tier, and merges the pages with `pdf-lib`. The installation
 pack exposes the same reduced-quality and API fallback choices as an individual form.
@@ -893,6 +993,24 @@ photos per rendered part before merging).
 
 Generated local PDFs live in the cache and are reproducible. Settings can clear only that cache.
 
+Historical Completed forms whose operational meter was removed select an authoritative immutable
+version containing that exact completed form. The lookup verifies installation identity, version,
+canonical snapshot schema and matching payload hashes before queuing a pinned report job. A
+missing or unverifiable version produces an explicit error rather than using mutable live rows.
+
+The separate client preview report uses `domain/clientReport.ts` for installation summaries and
+the shared photo inventory. `useClientReportPhotoSelection` subscribes to
+`clientReportPreferencesRepository`, which persists local exclusions under
+`installhub.client-report-photos.v1:<encoded installation id>`. Exclusions bind both the photo key
+and URI so a replacement image starts included. The choices do not sync across devices or the
+portal and never change installation evidence or formal report-pack content.
+
+`services/clientReport.ts` embeds local/cached preview images as base64 JPEGs for iOS Expo Print,
+then opens the native PDF share sheet. The portal uses browser print. Missing selected previews or
+an excessive image payload fail with a download/deselect/retry message rather than a partial PDF.
+The client preview is distinct from the formal versioned original-evidence report workflow above.
+See [photo/client-report parity and remaining device checks](ios-web-parity-client-report.md).
+
 ### Zone summary
 
 No user-facing send action is exposed. The reference app's external handoff has
@@ -911,17 +1029,19 @@ An agent should distinguish deliberate demo behavior from accidental architectur
   not authoritative notification-delivery test environments.
 - Board and site-asset photos remain local working copies after backup; clearing the app sandbox
   still requires a future restore workflow to bring them back.
-- Client report and photo inclusion are placeholders; toggles do not feed the exported PDF.
+- Client-report inclusion feeds its native preview PDF; choices remain local, and imported remote
+  evidence needs an available authenticated preview cache. Native PDF layout, sharing and restart
+  persistence require device verification; see the client-report audit for the current evidence.
 - Reconciliation lists only deliberately unresolved/TBC choices and uses explicit searchable,
-  path-safe choices; other readiness failures remain blocking under the separate Checks view.
+  path-safe choices; other mapping/data-quality diagnostics do not become completion blockers.
   Candidates are capped deterministically
   and large coverage/meter lists are virtualized. The physical view lists zone-contained boards and
   assets, while the electrical view keeps FED_FROM hierarchy separate from the MEASURES overlay.
-- A completed Wattwatchers installation form creates the stable operational meter and immediately
-  routes to commissioning step 2. The installer must represent every non-spare channel exactly once
-  and explicitly choose phase, direction, and a Board/Grid/Site Asset/TBC target. Current schema-v2
-  authoring records channel purpose and a conditional custom load label; older drafts without those
-  answers remain readable and must supply the missing explicit values before completion.
+- A completed WW form creates the stable operational meter and opens mapping when valid board/type
+  context is available. Without it, the Completed form remains valid without a projected meter.
+  Assignment saves normalize optional partial capture while retaining exact ownership/uniqueness
+  checks. Unassigned active channels are diagnostics; explicit TBC targets remain blockers. Older
+  drafts remain readable without forcing newly introduced optional answers.
 - Site-asset editor recovery drafts are local-only records inside the encrypted transactional store.
   They are bound to user and installation, checksum-verified, expire after seven days, are cleared
   on logout/success/explicit discard, and require explicit review if the base tree or asset changed.
@@ -967,14 +1087,14 @@ map, so neither the mobile store nor API database needs a structural migration.
 login
   -> create/open installation (identity, audit date, IANA timezone)
   -> walk physical zones
-  -> add a switchboard and explicitly choose Grid / parent board / TBC
-  -> choose whether a meter device is installed
-  -> complete the immutable WW evidence form
-  -> app opens the stable meter's assignment editor
-  -> map every active channel exactly once (phase + direction + target)
+  -> add a switchboard with Grid / parent board / TBC supply
+  -> start optional WW commissioning against the selected board
+  -> complete the immutable WW form with its explicit safety gate satisfied
+  -> when board/type context exists, app opens the stable meter's assignment editor
+  -> capture available channel mappings, preserving exact channel ownership
   -> add site assets as encountered and classify Metered / Unmetered / TBC
   -> reconcile supply, channel, and metering issues in Data View
-  -> Cloud validate and complete only when no blocking readiness issues remain
+  -> Cloud validate and complete when no explicit TBC readiness states remain
 ```
 
 Physical containment answers “where is this record?” Electrical `FED_FROM` answers “what supplies
@@ -984,9 +1104,10 @@ directly measured immediate children); it never propagates through an already me
 
 `UNMETERED` is an explicit, valid asset classification, not an orphan or an incomplete record. A
 confirmed-unmetered asset stays in All-asset metering, and that metering state alone does not block installation completion;
-it may also show `VIRTUAL` coverage when an immediate-boundary residual exists. `TBC`, a declared
-`METERED` asset whose exact assignment is missing or contradictory, and every non-spare channel
-without a target remain blocking reconciliation states. A device with every channel explicitly
+it may also show `VIRTUAL` coverage when an immediate-boundary residual exists. Explicit `TBC`
+remains blocking. A declared `METERED` asset whose exact assignment is missing or contradictory,
+and a non-spare channel without a target, remain visible quality diagnostics rather than implicit
+TBC or blanket completion blockers. A device with every channel explicitly
 marked `SPARE` has no active measurements and does not create an unassigned-channel error. Web and
 iOS status surfaces must keep these cohorts visibly separate and must use “Confirmed unmetered,”
 “Mapping issue,” and “Unassigned active channel” rather than the ambiguous label “orphan.”
@@ -1025,3 +1146,29 @@ For every meaningful change:
 
 When no automated test covers a flow, report the manual path used. Do not claim camera, share-sheet,
 or signing behavior was verified from TypeScript alone.
+
+
+### Rejected metadata requests
+
+A proven precommit validation rejection is retained in the additive
+`cloudSync.rejected_metadata_attempts` history, keyed by attempt ID. It does not block a corrected
+request and never advances a full-backup confirmation. The original payload/tree/preimage and queue
+snapshots remain evidence owners across deletion and actor recovery. Retirement requires the exact
+fresh canonical preimage, or a strictly scoped absence response on a newly prepared first dispatch;
+ambiguous responses and replayed first-create absence remain pending. See
+[ios-web-parity-metadata-recovery.md](ios-web-parity-metadata-recovery.md) for the proof boundary.
+
+
+Previously conflicted metadata requests with an intact accepted receipt can be checked with GET only
+from Home. Exact canonical proof is applied on a detached store and the original is retained in
+`cloudSync.resolved_metadata_conflicts`; no full-backup marker advances. This history is inert,
+actor scoped and an evidence owner. Unaccepted/changed-server conflicts remain protected.
+
+The Settings manual backup action uses `retrySync()` to capture a frozen current-actor, visible,
+opted-in rejection descriptor before any await. A separate foreground flight waits behind automatic
+work, preserving the initiating session. Its exact-record permission is consumed once inside durable
+metadata preparation after payload/tree/preimage and rejection-proof validation. The original
+rejection history remains immutable; repeated400 restores suppression, and ambiguous responses use
+normal pending recovery. Automatic `triggerSync()` never acquires this permission. First-create
+retry requires a new exact scoped absence response. No permission is persisted, no full-backup
+marker advances from metadata alone, and no user answer must be changed merely to retry a server fix.

@@ -14,6 +14,7 @@ export interface InstallationSyncMetadata {
 export type InstallationPackServerTarget = {
   installationId: string;
   formSubmissionIds: string[];
+  recordVersionPayloadHash?: string;
   usesOriginalImportedRecord: boolean;
   reason:
     | 'original-import-provenance'

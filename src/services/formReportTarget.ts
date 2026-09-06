@@ -1,3 +1,4 @@
+import { resolveRetainedReportVersion, type RetainedVersionLookup } from './retainedReportVersion';
 import type { FormSubmission, Installation } from '../types';
 import {
   selectReportVersion,
@@ -9,6 +10,7 @@ export type FormReportServerTarget = {
   installationId: string;
   formId: string;
   usesOriginalImportedRecord: boolean;
+  recordVersionPayloadHash?: string;
 } & ReportVersionSelection;
 
 /**
@@ -49,5 +51,23 @@ export function resolveFormReportServerTarget(
       installation.record_version_number,
       installation.status === 'Completed',
     ),
+  };
+}
+
+/** Deleted-meter evidence may only exist in an older immutable snapshot. */
+export async function resolveHistoricalFormReportServerTarget(
+  target: FormReportServerTarget,
+  lookup: RetainedVersionLookup,
+): Promise<FormReportServerTarget> {
+  const pinned = await resolveRetainedReportVersion({
+    installationId: target.installationId,
+    formIds: [target.formId],
+    recordVersionNumber: target.recordVersionNumber,
+  }, lookup);
+  return {
+    installationId: target.installationId,
+    formId: target.formId,
+    usesOriginalImportedRecord: target.usesOriginalImportedRecord,
+    ...pinned,
   };
 }

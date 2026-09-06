@@ -1,6 +1,48 @@
-import type { Installation } from '../types';
+import type { AppDataStore, Installation } from '../types';
+import { searchMatch } from '../utils';
+import { assignedWorkInstallationIsVisibleToActor } from '../services/assignedWorkPolicy';
 
 export type DashboardJobGroup = 'scheduled' | 'unscheduled' | 'completed';
+export type DashboardStatusFilter = 'All' | Installation['status'];
+
+export interface DashboardEntityCounts {
+  zones: number;
+  boards: number;
+  siteAssets: number;
+  forms: number;
+}
+
+/** One local snapshot, limited to the same actor-visible cohort as the job list. */
+export function localDashboardSnapshot(store: AppDataStore, actorUserId: string | null | undefined) {
+  const items = store.installations
+    .filter((item) => assignedWorkInstallationIsVisibleToActor(item, actorUserId))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const countsByInstallation: Record<string, DashboardEntityCounts> = Object.create(null);
+  for (const item of items) countsByInstallation[item.id] = { zones: 0, boards: 0, siteAssets: 0, forms: 0 };
+  for (const zone of store.zones) {
+    const counts = countsByInstallation[zone.audit_id];
+    if (counts) counts.zones += 1;
+  }
+  for (const board of store.electricalAssets) {
+    const counts = countsByInstallation[board.audit_id];
+    if (counts) counts.boards += 1;
+  }
+  for (const asset of store.siteAssets) {
+    const counts = countsByInstallation[asset.audit_id];
+    if (counts) counts.siteAssets += 1;
+  }
+  for (const form of store.formSubmissions) {
+    const counts = countsByInstallation[form.installation_id];
+    if (counts) counts.forms += 1;
+  }
+  return { items, countsByInstallation };
+}
+
+export function filterDashboardJobs(items: Installation[], query: string, status: DashboardStatusFilter): Installation[] {
+  return sortDashboardJobs(items.filter((item) => item.thumbnail_status !== 'pending'
+    && (status === 'All' || item.status === status)
+    && searchMatch(`${item.site_name} ${item.client_name} ${item.site_address} ${item.inspector_name}`, query)));
+}
 
 export type DashboardJobTiming = {
   group: DashboardJobGroup;

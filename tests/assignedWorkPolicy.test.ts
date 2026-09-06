@@ -713,6 +713,21 @@ test('an unanchored older checkout does not advance across an unknown server rev
   assert.equal(local.server_tree_revision, 4);
 });
 
+test('identical conflict polls retain detection time while changed conflict content starts a new observation', () => {
+  const local = localInstallation({ server_tree_revision: 4, tree_revision: 10 });
+  const remote = { ...tree({ id: 'assigned', status: 'Draft', customerName: 'Server customer' }), treeRevision: 5 };
+  const first = mergeAssignedInstallationServerState(local, remote, '2026-09-05T10:00:00.000Z');
+  local.assigned_work_refresh_conflict = first.refreshConflict ?? undefined;
+  const second = mergeAssignedInstallationServerState(local, remote, '2026-09-05T10:01:00.000Z');
+  assert.deepEqual(second.refreshConflict, first.refreshConflict);
+  const changed = mergeAssignedInstallationServerState(local, {
+    ...remote, installation: { ...remote.installation, customerName: 'Changed server customer' }, treeRevision: 6,
+  }, '2026-09-05T10:02:00.000Z');
+  assert.equal(changed.refreshConflict?.detected_at, '2026-09-05T10:02:00.000Z');
+  assert.equal(changed.refreshConflict?.remote_tree_revision, 6);
+  assert.equal(first.refreshConflict?.detected_at, '2026-09-05T10:00:00.000Z');
+});
+
 test('remote completion metadata cannot advance the existing checkout CAS base', () => {
   const local = localInstallation({
     site_name: 'Unsynced local site edit',

@@ -65,6 +65,10 @@ function cloneFixtures(): AppDataStore {
       synced_at_by_installation: {},
       force_dirty_installation_ids: [],
       pending_complete_attempts: {},
+      pending_metadata_attempts: {},
+      conflicted_metadata_attempts: {},
+      rejected_metadata_attempts: {},
+      resolved_metadata_conflicts: {},
       conflicted_complete_attempts: {},
       upload_queue: [],
       thumbnail_queue: [],
@@ -76,14 +80,14 @@ function normalizeFormSubmission(form: FormSubmission): FormSubmission {
   const answers = { ...form.answers };
   if (['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(form.form_type)) {
     answers['device.id'] ??= answers['device.number'];
-    answers['device.number'] = answers['device.id'] ?? answers['device.number'];
+    answers['device.number'] ??= answers['device.id'];
   }
   if (form.form_type === 'comms-fault') {
     answers['existing.device_id'] ??= answers['existing.device_number'] ?? answers['existing.serial_number'];
-    answers['existing.device_number'] = answers['existing.device_id'] ?? answers['existing.device_number'];
+    answers['existing.device_number'] ??= answers['existing.device_id'];
     answers['works.new_device_id'] ??= answers['works.new_device_number'] ?? answers['works.new_serial'];
     if (answers['works.new_device_id']) {
-      answers['works.new_device_number'] = answers['works.new_device_id'];
+      answers['works.new_device_number'] ??= answers['works.new_device_id'];
     }
   }
   return {
@@ -134,6 +138,10 @@ export function normalizeStore(value: Partial<AppDataStore>): AppDataStore {
       synced_at_by_installation: syncedAtByInstallation,
       force_dirty_installation_ids: value.cloudSync?.force_dirty_installation_ids ?? [],
       pending_complete_attempts: value.cloudSync?.pending_complete_attempts ?? {},
+      pending_metadata_attempts: value.cloudSync?.pending_metadata_attempts ?? {},
+      conflicted_metadata_attempts: value.cloudSync?.conflicted_metadata_attempts ?? {},
+      rejected_metadata_attempts: value.cloudSync?.rejected_metadata_attempts ?? {},
+      resolved_metadata_conflicts: value.cloudSync?.resolved_metadata_conflicts ?? {},
       conflicted_complete_attempts: value.cloudSync?.conflicted_complete_attempts ?? {},
       upload_queue: value.cloudSync?.upload_queue ?? [],
       thumbnail_queue: value.cloudSync?.thumbnail_queue ?? [],

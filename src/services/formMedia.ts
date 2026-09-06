@@ -1,15 +1,23 @@
+import { resolveOwnedMediaUri, storedMediaIsReferenced } from './ownedMediaPaths';
 import * as ImagePicker from 'expo-image-picker';
+import { Platform } from 'react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import type { FormAttachment } from '../types';
 import { createId, nowIso } from '../utils';
 
 async function acquirePhoto(source: 'camera' | 'library'): Promise<string | null> {
-  const permission =
-    source === 'camera'
+  // iOS grants access to only the selected images through its system picker.
+  // Denying broad library access must not prevent choosing individual evidence.
+  if (source === 'camera' || Platform.OS !== 'ios') {
+    const permission = source === 'camera'
       ? await ImagePicker.requestCameraPermissionsAsync()
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) return null;
+    if (!permission.granted) {
+      if (source === 'camera') throw new Error('Camera access is required to take a photo. You can choose a photo instead.');
+      return null;
+    }
+  }
   const result =
     source === 'camera'
       ? await ImagePicker.launchCameraAsync({ quality: 0.9, allowsEditing: false })
@@ -51,7 +59,9 @@ export async function addFormPhoto(
 
 export function deleteFormPhoto(attachment: FormAttachment): void {
   try {
-    const file = new File(attachment.uri);
+    const { getStore } = require('../data/seed') as typeof import('../data/seed');
+    if (storedMediaIsReferenced(attachment.uri, getStore())) return;
+    const file = new File(resolveOwnedMediaUri(attachment.uri));
     if (file.exists) file.delete();
   } catch {
     // The form record can still drop an attachment whose local file is already gone.

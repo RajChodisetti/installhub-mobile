@@ -1,3 +1,4 @@
+import { mediaReferenceIdentity } from './ownedMediaPaths';
 import { File } from 'expo-file-system';
 import type { LocalDeletionEffects } from '../repositories/deletionIntegrity';
 import {
@@ -31,9 +32,9 @@ export function cleanupDeletedTreeStorage(
     removedThumbnailFiles: 0,
     warnings: forms.flatMap((item) => item.warnings),
   };
-  const protectedEntityMedia = new Set(effects.protectedEntityMediaUris);
+  const protectedEntityMedia = new Set(effects.protectedEntityMediaUris.map(mediaReferenceIdentity));
   for (const uri of effects.deletedEntityMediaUris) {
-    if (protectedEntityMedia.has(uri)) continue;
+    if (protectedEntityMedia.has(mediaReferenceIdentity(uri))) continue;
     if (deleteLocalPhoto(uri)) result.removedEntityMediaFiles += 1;
   }
   for (const uri of effects.orphanedThumbnailCacheUris) {

@@ -26,6 +26,7 @@ import {
   rememberedReportJob,
   reportJobMatchesSelection,
   resolveFormReportServerTarget,
+  resolveHistoricalFormReportServerTarget,
   shareFormPdf,
   waitForReportJob,
 } from '../services';
@@ -35,6 +36,7 @@ import { formatDate } from '../utils';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import type { FormSubmission } from '../types';
+import { RecordLoadState } from '../components/RecordLoadState';
 import { apiClient } from '../api/apiClient';
 import { useSyncStatus } from '../services/SyncStatusContext';
 
@@ -42,7 +44,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'FormsList'>;
 
 export function FormsListScreen({ navigation, route }: Props) {
   const { installationId } = route.params;
-  const { items, loading, refresh } = useForms(installationId);
+  const { items, loading, error, refresh } = useForms(installationId);
   const { colors } = useTheme();
   const { triggerSync } = useSyncStatus();
   const [pdfBusyFormId, setPdfBusyFormId] = useState<string | null>(null);
@@ -157,6 +159,14 @@ export function FormsListScreen({ navigation, route }: Props) {
         }
       }
 
+      if (currentForm.historical_meter_removed) {
+        setPdfStatus('Finding the retained version of this form…');
+        target = await resolveHistoricalFormReportServerTarget(target, {
+          list: apiClient.listInstallationVersions,
+          get: apiClient.getInstallationVersion,
+        });
+      }
+
       const legacyJobKey = formReportJobKey(form.id);
       const jobKey = formReportJobKey(
         form.id,
@@ -168,7 +178,7 @@ export function FormsListScreen({ navigation, route }: Props) {
       await clearRememberedReportJob(legacyJobKey);
       const remembered = await rememberedReportJob(jobKey);
       let jobId = remembered?.jobId ?? null;
-      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
+      let expectedPayloadHash = target.recordVersionPayloadHash ?? remembered?.recordVersionPayloadHash;
       if (jobId) {
         try {
           const existing = await apiClient.getExportJobStatus(jobId);
@@ -193,7 +203,7 @@ export function FormsListScreen({ navigation, route }: Props) {
           target.formId,
           target,
         );
-        if (!reportJobMatchesSelection(started, target)) {
+        if (!reportJobMatchesSelection(started, target, expectedPayloadHash)) {
           throw new Error('The report job did not preserve the requested record version.');
         }
         jobId = started.jobId;
@@ -289,9 +299,11 @@ export function FormsListScreen({ navigation, route }: Props) {
         style={{ marginTop: spacing.lg }}
         onPress={() => navigation.navigate('FormTypePicker', { installationId })}
       />
+      {error ? <RecordLoadState inline title="Could not load field forms" message={error}
+        onRetry={() => { void refresh().catch(() => undefined); }} onBack={() => navigation.goBack()} /> : null}
       <SectionHeader title={`${items.length} forms`} />
       {loading && !items.length ? <LoadingState /> : null}
-      {!loading && !items.length ? (
+      {!loading && !error && !items.length ? (
         <EmptyState title="No forms yet" subtitle="Start the first field record for this site." />
       ) : null}
       {items.map((form) => {
@@ -299,7 +311,7 @@ export function FormsListScreen({ navigation, route }: Props) {
         const thisPdfIsBusy = pdfBusyFormId === form.id;
         const anotherPdfIsBusy = pdfBusyFormId != null && !thisPdfIsBusy;
         return (
-          <Card key={form.id} style={{ marginBottom: spacing.md }}>
+          <Card key={form.id} testID={`form-record:${form.form_type}:${form.id}`} style={{ marginBottom: spacing.md }}>
             <View style={styles.row}>
               <View style={{ flex: 1, paddingRight: 12 }}>
                 <Text style={[typography.subheading, { color: colors.foreground }]}>
@@ -308,6 +320,7 @@ export function FormsListScreen({ navigation, route }: Props) {
                 <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
                   Updated {formatDate(form.updated_at)}
                   {form.supersedes_id ? ' · Amendment' : ''}
+                  {' · '}{form.attachments.length} evidence photos
                 </Text>
               </View>
               <Badge
@@ -315,8 +328,14 @@ export function FormsListScreen({ navigation, route }: Props) {
                 tone={form.status === 'Completed' ? 'success' : 'default'}
               />
             </View>
+            {form.historical_meter_removed ? (
+              <Text style={{ color: colors.mutedForeground, marginTop: spacing.md, lineHeight: 20 }}>
+                Historical commissioning evidence. The meter is no longer active; this completed record and its original evidence remain preserved.
+              </Text>
+            ) : null}
             <View style={{ gap: 8, marginTop: spacing.md }}>
               <Button
+                testID={`form-open:${form.form_type}:${form.id}`}
                 title={form.status === 'Completed' ? 'View record' : 'Continue draft'}
                 variant="secondary"
                 disabled={deletingDraftId === form.id}
@@ -349,7 +368,10 @@ export function FormsListScreen({ navigation, route }: Props) {
                     onPress={() => {
                       void formsRepo.cloneAmendment(form.id).then((draft) =>
                         navigation.navigate('FormEditor', { formId: draft.id, installationId }),
-                      );
+                      ).catch((error: unknown) => Alert.alert(
+                        'Amendment not created',
+                        error instanceof Error ? error.message : 'The amendment could not be created.',
+                      ));
                     }}
                   />
                 </>

@@ -1,10 +1,5 @@
 import type { Installation } from '../types';
-
-const SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
-
-function validInstallationSiteCode(value: string): boolean {
-  return value.length >= 1 && value.length <= 16 && SITE_CODE_PATTERN.test(value);
-}
+import { normalizedSiteCode, isValidInstallationSiteCode } from './installationSiteCode';
 
 export interface InstallationFieldError {
   field: 'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'timezone';
@@ -15,6 +10,30 @@ type InstallationIdentity = Pick<
   Installation,
   'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'timezone'
 >;
+
+/** Match portal defaults without changing an unchanged historical site code. */
+export function installationIdentityForWrite<T extends InstallationIdentity>(
+  values: T,
+  initial?: Partial<Installation>,
+  today = new Date().toISOString().slice(0, 10),
+): T {
+  const siteName = values.site_name.trim() || 'Untitled installation';
+  const preserveCode = typeof initial?.site_code === 'string'
+    && Boolean(initial.site_code.trim())
+    && values.site_code === initial.site_code;
+  return {
+    ...values,
+    client_name: values.client_name.trim(),
+    site_name: siteName,
+    site_address: values.site_address.trim(),
+    inspector_name: values.inspector_name.trim(),
+    audit_date: values.audit_date.trim() || today,
+    timezone: values.timezone?.trim() || 'Australia/Sydney',
+    site_code: preserveCode
+      ? initial.site_code
+      : values.site_code?.trim().toUpperCase() || normalizedSiteCode(siteName),
+  };
+}
 
 function validCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -34,30 +53,16 @@ export function validIanaTimezone(value: string): boolean {
 
 export function validateInstallationIdentity(
   installation: InstallationIdentity,
+  initial?: Partial<Installation>,
 ): InstallationFieldError[] {
   const errors: InstallationFieldError[] = [];
-  const required: Array<{
-    field: InstallationFieldError['field'];
-    label: string;
-    value: string | undefined;
-  }> = [
-    { field: 'client_name', label: 'Client name', value: installation.client_name },
-    { field: 'site_name', label: 'Site name', value: installation.site_name },
-    { field: 'site_code', label: 'Installation short code', value: installation.site_code },
-    { field: 'site_address', label: 'Site address', value: installation.site_address },
-    { field: 'inspector_name', label: 'Inspector', value: installation.inspector_name },
-    { field: 'audit_date', label: 'Audit date', value: installation.audit_date },
-    { field: 'timezone', label: 'Installation timezone', value: installation.timezone },
-  ];
-  for (const item of required) {
-    if (!item.value?.trim()) errors.push({ field: item.field, message: `${item.label} is required.` });
-  }
   if (installation.audit_date?.trim() && !validCalendarDate(installation.audit_date.trim())) {
     errors.push({ field: 'audit_date', message: 'Audit date must be a real date in YYYY-MM-DD format.' });
   }
   if (
     installation.site_code?.trim()
-    && !validInstallationSiteCode(installation.site_code.trim())
+    && installation.site_code !== initial?.site_code
+    && !isValidInstallationSiteCode(installation.site_code.trim())
   ) {
     errors.push({
       field: 'site_code',

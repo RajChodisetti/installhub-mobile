@@ -1,8 +1,8 @@
+import { FormScrollView } from '../components/ui';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -81,7 +81,9 @@ export function DailyRouteScreen({ navigation }: Props) {
   const { colors } = useTheme();
   const { user } = useAuth();
   const { triggerSync } = useSyncStatus();
-  const [date, setDate] = useState(() => schedulerRouteLocalCalendarDate());
+  // The API interprets this date in the saved technician timezone, which the
+  // authentication profile does not expose. Match the portal's explicit date.
+  const [date, setDate] = useState('');
   const [originMode, setOriginMode] = useState<OriginMode>('current');
   const [originQuery, setOriginQuery] = useState('');
   const [selectedOrigin, setSelectedOrigin] = useState<ClientAddressSuggestion | null>(null);
@@ -287,7 +289,7 @@ export function DailyRouteScreen({ navigation }: Props) {
     || startingAddress !== null;
 
   return (
-    <ScrollView
+    <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -313,6 +315,9 @@ export function DailyRouteScreen({ navigation }: Props) {
           error={date && !dateIsValid ? 'Use a real date in YYYY-MM-DD format.' : undefined}
           onChangeText={changeDate}
         />
+        <Text style={[styles.hint, { color: colors.mutedForeground }]}>
+          Enter the work date in your saved technician timezone. “Use device date” copies this device’s calendar date.
+        </Text>
         <View style={styles.threeButtonRow}>
           <Button
             title="Previous"
@@ -322,10 +327,11 @@ export function DailyRouteScreen({ navigation }: Props) {
             onPress={() => changeDate(schedulerRouteAddCalendarDays(date, -1))}
           />
           <Button
-            title="Today"
+            title="Use device date"
             variant="secondary"
             disabled={busy}
             style={styles.flexButton}
+            accessibilityHint="Copies this device’s date. Check it against your saved technician timezone."
             onPress={() => changeDate(schedulerRouteLocalCalendarDate())}
           />
           <Button
@@ -419,8 +425,8 @@ export function DailyRouteScreen({ navigation }: Props) {
             ))}
             {providerAvailable === false && originQuery.trim().length >= 2 ? (
               <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-                Address suggestions are unavailable, but you can still submit the typed address
-                for Australian geocoding.
+                Address suggestions are unavailable. You can enter an Australian address,
+                but route planning from it requires the server’s address lookup to be available.
               </Text>
             ) : null}
             {selectedOrigin ? (
@@ -490,7 +496,9 @@ export function DailyRouteScreen({ navigation }: Props) {
               Starting from {submittedOriginLabel || 'the selected point'}. Times use {result.timezone}.
             </Text>
             <Text style={[styles.bodyText, { color: colors.mutedForeground }]}>
-              {result.optimization === 'road_duration'
+              {!result.jobs.length
+                ? 'No travel estimates are needed for an empty route.'
+                : result.optimization === 'road_duration'
                 ? 'Ordered using road travel-time estimates.'
                 : 'Road routing is unavailable, so this order uses straight-line estimates.'}
             </Text>
@@ -580,7 +588,7 @@ export function DailyRouteScreen({ navigation }: Props) {
           ) : null}
         </>
       ) : null}
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

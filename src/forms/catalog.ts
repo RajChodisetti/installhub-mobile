@@ -32,6 +32,8 @@ export interface FormFieldDefinition {
   preserveLegacyValue?: boolean;
   /** Bounded historical choices accepted when preserveLegacyValue is enabled. */
   legacyOptions?: string[];
+  legacyOptionsWhen?: ConditionalOptions;
+  acceptUnlistedLegacyValue?: boolean;
   /** A numeric field may accept named observations for selected controller values. */
   nonNumericValuesWhen?: ConditionalOptions;
   scanModes?: ScanMode[];
@@ -127,16 +129,18 @@ const signalOptions = ['Low', 'Medium', 'High'];
 const antennaOptions = ['Internal', 'External', 'CSM550 - External High Gain', 'Other'];
 const legacySignalOptions = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'];
 const legacyAntennaOptions = ['N/A'];
-const legacySensorOptions = [
-  '3000A - 9cm',
-  '3000A - 20cm',
-  '3000A - 29cm',
-  '60A',
-  '120A',
-  '200A',
-  '400A',
-  '600A',
+const LEGACY_SENSOR_OPTIONS_BY_DEVICE = {
+  A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
+  A6M: ['60A', '120A', '200A', '400A', '600A'],
+};
+export const SWITCHBOARD_TYPES = [
+  'Main Switchboard', 'Sub / Distribution Board', 'HVAC DB', 'Lighting DB',
+  'Solar/PV DB', 'MCC', 'Other',
 ];
+function switchboardType(key: string): FormFieldDefinition {
+  return { key, label: 'Type of switchboard', kind: 'select', options: SWITCHBOARD_TYPES,
+    acceptUnlistedLegacyValue: true };
+}
 export const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 export const SENSOR_OPTIONS_BY_DEVICE: Record<(typeof DEVICE_TYPES)[number], string[]> = {
   A3RM: ['10cm-200A', '10cm-333mV', '20cm-3000A', '30cm-3000A', '45cm-3000A', 'Not Used'],
@@ -181,7 +185,7 @@ function sensorField(
       values: SENSOR_OPTIONS_BY_DEVICE,
     },
     preserveLegacyValue: true,
-    legacyOptions: legacySensorOptions,
+    legacyOptionsWhen: { key: deviceTypeKey, values: LEGACY_SENSOR_OPTIONS_BY_DEVICE },
   };
 }
 
@@ -248,10 +252,7 @@ function dynamicChannelFields(): FormSectionDefinition[] {
 }
 
 function channelFields(kind: 'A3RM' | 'A6M', count: number): FormSectionDefinition[] {
-  const ratings =
-    kind === 'A3RM'
-      ? ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm', 'Not Used']
-      : ['60A', '120A', '200A', '400A', '600A', 'Not Used'];
+  const ratings = SENSOR_OPTIONS_BY_DEVICE[kind];
   return Array.from({ length: count }, (_, index) => {
     const n = index + 1;
     const prefix = `channel.${n}`;
@@ -263,6 +264,8 @@ function channelFields(kind: 'A3RM' | 'A6M', count: number): FormSectionDefiniti
           label: kind === 'A3RM' ? 'Rogowski coil size' : 'CT rating',
           kind: 'select',
           options: ratings,
+          preserveLegacyValue: true,
+          legacyOptions: LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
           required: true,
         },
         { key: `${prefix}.load`, label: 'Load', kind: 'select', options: loads, required: true },
@@ -292,7 +295,7 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
         fields: [
           text('auditor.switchboard_name', 'Switchboard name', true),
           text('auditor.switchboard_location', 'Switchboard location', true),
-          text('auditor.switchboard_type', 'Type of switchboard', true),
+          switchboardType('auditor.switchboard_type'),
           text('auditor.site_nmi', 'Site NMI'),
           photo('auditor.location_before', 'Auditor location photos'),
           photo('auditor.sensor_before', `${sensor} location photos`),
@@ -343,22 +346,17 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
           number('commissioning.phase_c_voltage', 'Phase C voltage - multi meter', true),
           ...Array.from({ length: kind === 'A3RM' ? 3 : 6 }, (_, i) => {
             const n = i + 1;
-            const usedRatings =
-              kind === 'A3RM'
-                ? ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm']
-                : ['60A', '120A', '200A', '400A', '600A'];
+            const usedRatings = [
+              ...SENSOR_OPTIONS_BY_DEVICE[kind].filter((value) => value !== 'Not Used'),
+              ...LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
+            ];
             return [
               {
                 ...yes(`commissioning.channel_${n}_polarity`, `Channel ${n} polarity correct?`, false),
                 showWhen: { key: `channel.${n}.rating`, equals: usedRatings },
               },
               {
-                ...(kind === 'A6M'
-                  ? {
-                      ...text(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`),
-                      placeholder: 'e.g. 2.61 or Not Connected',
-                    }
-                  : number(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`)),
+                ...number(`commissioning.channel_${n}_current`, `Channel ${n} current - AC clamp tester`),
                 showWhen: { key: `channel.${n}.rating`, equals: usedRatings },
               },
             ];
@@ -388,7 +386,7 @@ function wattwatcherInstallationDefinition(): FormDefinition {
         fields: [
           text('auditor.switchboard_name', 'Switchboard name', true),
           text('auditor.switchboard_location', 'Switchboard location', true),
-          text('auditor.switchboard_type', 'Type of switchboard', true),
+          switchboardType('auditor.switchboard_type'),
           text('auditor.site_nmi', 'Site NMI'),
           text('auditor.address_map_locator', 'Address map locator (latitude / longitude)'),
           photo('auditor.location_before', 'Auditor location photos'),
@@ -398,7 +396,7 @@ function wattwatcherInstallationDefinition(): FormDefinition {
           scan('device.id', 'Device ID / serial'),
           scan(
             'device.number',
-            'Site / asset tag (optional; not the Device ID / serial)',
+            'Site / asset tag (optional — not the Device ID / serial)',
             ['barcode'],
             false,
           ),
@@ -486,7 +484,7 @@ function wattwatcherInstallationDefinition(): FormDefinition {
   };
 }
 
-export const FORM_DEFINITIONS: FormDefinition[] = [
+const AUTHORED_FORM_DEFINITIONS: FormDefinition[] = [
   wattwatcherInstallationDefinition(),
   auditorDefinition('A3RM'),
   auditorDefinition('A6M'),
@@ -504,11 +502,12 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
         title: 'Existing installation',
         fields: [
           text('existing.switchboard_location', 'Switchboard location', true),
-          text('existing.switchboard_type', 'Type of switchboard', true),
+          switchboardType('existing.switchboard_type'),
           text('existing.site_nmi', 'Site NMI'),
           photo('existing.switchboard_photos', 'Whole switchboard photos'),
           deviceTypeField('existing.device_type', 'Existing Meter / Device Type'),
           scan('existing.device_id', 'Existing Device ID / serial'),
+          scan('existing.device_number', 'Existing site / asset tag (optional — not the Device ID / serial)', ['barcode'], false),
           sensorField(
             'existing.sensor_rating',
             'existing.device_type',
@@ -538,7 +537,7 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           {
             ...scan(
               'works.new_device_number',
-              'New site / asset tag (optional; not the Device ID / serial)',
+              'New site / asset tag (optional — not the Device ID / serial)',
               ['barcode'],
               false,
             ),
@@ -669,7 +668,7 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
           yes('final.connectors_installed', 'Single-screw connectors installed?'),
           yes('final.connections_checked', 'All connections checked?'),
           yes('final.completed', 'Installation, testing and commissioning completed?'),
-          photo('final.completed_photo', 'Completed installation photos (include the antenna)'),
+          photo('final.completed_photo', 'Completed installation photos'),
         ],
       },
     ],
@@ -781,9 +780,34 @@ export const FORM_DEFINITIONS: FormDefinition[] = [
   },
 ];
 
+/** Capture fields are optional, as in the portal. Safety and replacement
+ * completion rules are enforced separately by validateForm. */
+export const FORM_DEFINITIONS: FormDefinition[] = AUTHORED_FORM_DEFINITIONS.map(
+  (definition) => ({
+    ...definition,
+    sections: definition.sections.map((section) => ({
+      ...section,
+      fields: section.fields.map((field) => ({ ...field, required: false })),
+    })),
+  }),
+);
+
 export const FORM_DEFINITION_BY_TYPE = Object.fromEntries(
   FORM_DEFINITIONS.map((definition) => [definition.type, definition]),
 ) as Record<FormType, FormDefinition>;
+
+/** Keep schema-v2 writes inside the API's per-family answer namespace. Legacy
+ * schema-v1 records remain readable and syncable without changing old answers. */
+export function supportedFormAnswers(
+  type: FormType,
+  answers: Record<string, FormValue>,
+  schemaVersion = FORM_DEFINITION_BY_TYPE[type].schemaVersion,
+): Record<string, FormValue> {
+  if (schemaVersion === 1) return { ...answers };
+  const keys = new Set(FORM_DEFINITION_BY_TYPE[type].sections.flatMap((section) =>
+    section.fields.filter((field) => field.kind !== 'photo').map((field) => field.key)));
+  return Object.fromEntries(Object.entries(answers).filter(([key]) => keys.has(key)));
+}
 
 export function createInitialFormAnswers(
   installation: Installation,
@@ -867,16 +891,37 @@ function authoredOptionsForField(
   return field.optionsWhen.values[String(answers[field.optionsWhen.key] ?? '')] ?? [];
 }
 
+function acceptedOptionsForField(
+  field: FormFieldDefinition,
+  answers: Record<string, FormValue>,
+): string[] {
+  const legacy = field.legacyOptionsWhen
+    ? field.legacyOptionsWhen.values[String(answers[field.legacyOptionsWhen.key] ?? '')] ?? []
+    : field.legacyOptions ?? [];
+  return [...authoredOptionsForField(field, answers), ...legacy];
+}
+
+/** Hidden evidence follows the same catalog conditions as its answer fields. */
+export function hiddenFormPhotoSlots(
+  definition: FormDefinition,
+  answers: Record<string, FormValue>,
+): string[] {
+  return definition.sections.flatMap((section) => section.fields
+    .filter((field) => field.kind === 'photo'
+      && (!isSectionVisible(section, answers) || !isFieldVisible(field, answers)))
+    .map((field) => field.key));
+}
+
 export function optionsForField(
   field: FormFieldDefinition,
   answers: Record<string, FormValue>,
 ): string[] {
   const options = authoredOptionsForField(field, answers);
-  if (!field.preserveLegacyValue) return options;
+  if (!field.preserveLegacyValue && !field.acceptUnlistedLegacyValue) return options;
   const saved = String(answers[field.key] ?? '').trim();
   return saved
     && !options.includes(saved)
-    && (field.legacyOptions?.includes(saved) ?? false)
+    && (field.acceptUnlistedLegacyValue || acceptedOptionsForField(field, answers).includes(saved))
     ? [...options, saved]
     : options;
 }
@@ -929,7 +974,7 @@ export function answersAfterChange(
       }
       if (field.optionsWhen?.key !== key) continue;
       const selected = String(next[field.key] ?? '');
-      if (selected && !authoredOptionsForField(field, next).includes(selected)) delete next[field.key];
+      if (selected && !acceptedOptionsForField(field, next).includes(selected)) delete next[field.key];
     }
   }
   if (!next['works.new_device_id']) delete next['works.new_device_number'];
@@ -956,53 +1001,21 @@ export function withMirroredDeviceIdentityAnswers(
 }
 
 export function validateForm(submission: FormSubmission): string[] {
-  const definition = FORM_DEFINITION_BY_TYPE[submission.form_type];
   const errors: string[] = [];
   const safetyError = visibleSafeToProceedCompletionError(submission);
   if (safetyError) errors.push(safetyError);
-  for (const section of definition.sections) {
-    if (!isSectionVisible(section, submission.answers)) continue;
-    for (const field of section.fields) {
-      if (!isFieldVisible(field, submission.answers)) continue;
-      if (field.key === SAFE_TO_PROCEED_FIELD_KEY) continue;
-      if (field.kind === 'photo') {
-        if (
-          field.required &&
-          !submission.attachments.some((item) => item.slot === field.key)
-        ) {
-          errors.push(`${section.title}: ${field.label}`);
-        }
-        continue;
-      }
-      const value = String(submission.answers[field.key] ?? '').trim();
-      if (!value) {
-        if (!field.required) continue;
-        errors.push(`${section.title}: ${field.label}`);
-      } else if (
-        field.kind === 'yesno' &&
-        ![
-          'yes',
-          'no',
-          ...(field.allowNotApplicable ? ['not_applicable'] : []),
-        ].includes(value)
-      ) {
-        errors.push(`${section.title}: ${field.label} has an invalid selection`);
-      } else if (
-        field.kind === 'number' &&
-        !Number.isFinite(Number(value)) &&
-        !nonNumericValuesForField(field, submission.answers).some(
-          (allowed) => allowed.toLocaleLowerCase() === value.toLocaleLowerCase(),
-        )
-      ) {
-        errors.push(`${section.title}: ${field.label} must be a number`);
-      } else if (
-        field.kind === 'select' &&
-        !optionsForField(field, submission.answers).includes(
-          value,
-        )
-      ) {
-        errors.push(`${section.title}: ${field.label} has an invalid selection`);
-      }
+  if (submission.form_type === 'comms-fault' && submission.answers['works.replace_device'] === 'yes') {
+    const type = String(submission.answers['works.new_device_type'] ?? '').trim();
+    const serial = String(submission.answers['works.new_device_id'] ?? '').trim();
+    const rating = String(submission.answers['works.new_sensor_rating'] ?? '').trim();
+    const validType = DEVICE_TYPES.includes(type as (typeof DEVICE_TYPES)[number]);
+    if (!validType) errors.push('On-site works: New Meter / Device Type must be selected');
+    if (!serial) errors.push('On-site works: New Device ID / serial must be entered or scanned');
+    const acceptedRatings = validType
+      ? [...SENSOR_OPTIONS_BY_DEVICE[type as 'A3RM' | 'A6M'], ...LEGACY_SENSOR_OPTIONS_BY_DEVICE[type as 'A3RM' | 'A6M']]
+      : [];
+    if (!rating || !acceptedRatings.includes(rating)) {
+      errors.push('On-site works: New CT / Rogowski coil rating must match the replacement device');
     }
   }
   return errors;

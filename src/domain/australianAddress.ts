@@ -233,9 +233,9 @@ export function manualAustralianAddressEdit(
   current: AustralianAddress,
   patch: Partial<Pick<AustralianAddress, 'display_address' | 'locality' | 'state' | 'postcode'>>,
 ): AustralianAddress {
-  return normalizeAustralianAddress({
-    ...current,
-    ...patch,
+  const draft = { ...current, ...patch };
+  const normalized = normalizeAustralianAddress({
+    ...draft,
     latitude: null,
     longitude: null,
     provider: null,
@@ -244,6 +244,16 @@ export function manualAustralianAddressEdit(
     geocoding_status: 'unresolved',
     fingerprint: '',
   });
+  // Controlled inputs must retain trailing spaces while the user types the
+  // next word. Normalize for equality here and at the write boundary, but
+  // preserve the authored parts in the editor until they are saved.
+  return {
+    ...normalized,
+    display_address: draft.display_address,
+    locality: draft.locality,
+    state: draft.state,
+    postcode: draft.postcode,
+  };
 }
 
 export function installationAddressFields(address: AustralianAddress): Pick<

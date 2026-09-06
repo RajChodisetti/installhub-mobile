@@ -1,3 +1,8 @@
+import { assertInstallationNotRecovering } from '../services/installationRecoveryFence';
+import { assertConflictRecoveryBaseline, conflictRecoveryHash, type ConflictRecoveryBaseline, type ConflictRecoveryProof } from '../services/assignedWorkConflictRecoveryState';
+import { preserveSameActorRecoveryCheckout } from '../services/assignedWorkRecovery';
+import { projectionIsScopedToInstallation } from '../services/assignedWorkCleanRefresh';
+import { discoverBackupMedia } from '../services/backupMedia';
 import {
   apiClient,
   assertCurrentCloudSessionAuthority,
@@ -42,6 +47,7 @@ import {
 import { copyName, nextCopyIndex } from './copyNaming';
 import {
   boardTypeCode,
+  canonicalJsonStringify,
   installationSiteCodeForNewCopy,
   siteAssetTypeCode,
 } from '../domain/installationV2';
@@ -72,6 +78,12 @@ import {
 } from '../services/assignedWorkPolicy';
 import { quarantineAssignedWorkCheckout } from '../services/assignedWorkRecovery';
 import {
+  applyCleanAssignedRefresh,
+  captureCleanAssignedRefreshBaseline,
+  captureConfirmedAssignedTreeBaseline,
+  type CleanAssignedRefreshBaseline,
+} from '../services/assignedWorkCleanRefresh';
+import {
   assignedWorkScheduleChangedFields,
   createAssignedWorkJobSummarySnapshot,
   reconcileAssignedWorkPrestartAcknowledgement,
@@ -95,6 +107,7 @@ export interface RemoteInstallationSummary {
   siteName: string;
   clientName: string;
   siteAddress: string;
+  inspectorName: string;
   status: string;
   updatedAt: string;
   createdByUserId?: string;
@@ -500,6 +513,7 @@ export async function listRemoteInstallations(): Promise<RemoteInstallationSumma
       siteName: text(installation, 'siteName', 'site_name'),
       clientName: text(installation, 'clientName', 'client_name'),
       siteAddress: text(installation, 'siteAddress', 'site_address'),
+      inspectorName: text(installation, 'inspectorName', 'inspector_name'),
       status: text(installation, 'status') || 'Draft',
       updatedAt: text(installation, 'updatedAt', 'updated_at'),
       createdByUserId: optionalText(installation, 'createdByUserId', 'created_by_user_id'),
@@ -522,6 +536,12 @@ type MaterializeOptions = {
   assignedWorkAuthority?: AssignedWorkMutationAuthority;
   cloudAuthority?: CloudSessionAuthority;
   pulledAt?: string;
+  cleanRefreshBaseline?: CleanAssignedRefreshBaseline;
+  conflictRecovery?: {
+    baseline: ConflictRecoveryBaseline;
+    proof: ConflictRecoveryProof;
+    assertLease: () => void;
+  };
 };
 
 export async function importRemoteInstallationAsCopy(
@@ -535,6 +555,8 @@ export async function importRemoteInstallationAsCopy(
   const materializationCloudAuthority = options.cloudAuthority
     ?? await captureCloudSessionAuthority();
   const assertAssignedMaterializationSession = () => {
+    if (options.conflictRecovery) options.conflictRecovery.assertLease();
+    else assertInstallationNotRecovering(serverInstallationId);
     if (!materializationActorUserId) {
       throw new Error('Cloud materialization requires an authenticated local owner.');
     }
@@ -809,6 +831,8 @@ export async function importRemoteInstallationAsCopy(
       : now,
   };
   if (isAssignedMaterialization) {
+    installation.last_synced_local_tree_revision = installation.tree_revision;
+    installation.last_synced_server_tree_revision = installation.server_tree_revision;
     installation.assigned_work_server_metadata_base =
       assignedWorkServerMetadataFromInstallation(installation);
     installation.assigned_work_server_tree_fingerprint =
@@ -1177,7 +1201,48 @@ export async function importRemoteInstallationAsCopy(
   await updateStore((store) => {
     assertAssignedMaterializationSession();
     const existing = store.installations.find((item) => item.id === installationId);
-    if (existing) {
+    if (options.conflictRecovery && !existing) throw new Error('The local checkout disappeared. Review recovery again.');
+    if (existing && options.conflictRecovery) {
+      const { baseline, proof } = options.conflictRecovery;
+      assertConflictRecoveryBaseline(store, baseline);
+      if (baseline.installationId !== installationId || baseline.actorUserId !== assignedActorUserId
+        || proof.localSnapshotSha256 !== baseline.snapshotSha256
+        || proof.serverTreeSha256 !== conflictRecoveryHash(tree)
+        || proof.serverTreeRevision !== serverTreeRevision
+        || installation.status !== 'Draft' || !canonicalV2 || !isAssignedMaterialization
+        || !Number.isSafeInteger(serverTreeRevision)
+        || (existing.server_tree_revision !== undefined && serverTreeRevision < existing.server_tree_revision)) {
+        throw new Error('The reviewed server version changed. Review both versions again.');
+      }
+      const projected = {
+        treeSchemaVersion: 2 as const, baseTreeRevision: serverTreeRevision,
+        installation, gridSupplies, zones, electricalAssets, siteAssets,
+        meterDevices, measurementAssignments, formSubmissions, watermark: now,
+      };
+      if (!projectionIsScopedToInstallation(store, projected) || discoverBackupMedia(projected).length) {
+        throw new Error('The server tree cannot safely replace this checkout.');
+      }
+      // Store persistence rolls back this whole mutation on failure. No media is deleted.
+      preserveSameActorRecoveryCheckout(store, installationId, baseline.actorUserId, proof);
+      installation.tree_revision = Math.max(existing.tree_revision ?? 0, installation.tree_revision ?? 0) + 1;
+      installation.last_synced_local_tree_revision = installation.tree_revision;
+      installation.last_synced_server_tree_revision = serverTreeRevision;
+      installation.display_code_sequences = existing.display_code_sequences;
+      installation.display_code_zone_sequences = existing.display_code_zone_sequences;
+      installation.assigned_work_prestart_acknowledgement = undefined;
+      installation.assigned_work_refresh_conflict = undefined;
+      installation.backup_conflict = { kind: 'NONE' };
+      installation.server_derived = undefined;
+    } else if (existing) {
+      if (options.cleanRefreshBaseline && canonicalV2) {
+        applyCleanAssignedRefresh(store, {
+          treeSchemaVersion: 2,
+          baseTreeRevision: serverTreeRevision,
+          installation, gridSupplies, zones, electricalAssets, siteAssets,
+          meterDevices, measurementAssignments, formSubmissions, watermark: now,
+        }, options.cleanRefreshBaseline, response.pulledAt);
+        return;
+      }
       if (
         !assignedActorUserId
         || !assignedWorkCheckoutBelongsToDifferentActor(
@@ -1254,6 +1319,10 @@ export async function syncAssignedInstallations(
   assertCurrentSession();
   await initStore();
   assertCurrentSession();
+  const cleanRefreshBaselines = new Map(getStore().installations.flatMap((installation) => {
+    const baseline = captureCleanAssignedRefreshBaseline(getStore(), installation.id, actorUserId);
+    return baseline ? [[installation.id, baseline] as const] : [];
+  }));
   const response = await apiClient.pull(
     '1970-01-01T00:00:00.000Z',
     undefined,
@@ -1270,6 +1339,18 @@ export async function syncAssignedInstallations(
     previouslyActiveIds,
   );
   plan.trees.forEach((tree) => validateCanonicalRemoteTreeIds(tree));
+  for (const tree of plan.trees) {
+    assertCurrentSession();
+    const id = text(tree.installation, 'id');
+    const baseline = cleanRefreshBaselines.get(id);
+    if (!baseline || text(tree.installation, 'status') !== 'Draft'
+      || Number(tree.treeRevision ?? tree.installation.treeRevision ?? tree.installation.tree_revision) <= baseline.serverTreeRevision) continue;
+    await importRemoteInstallationAsCopy(id, {
+      tree, assignedActorUserId: actorUserId, assignedWorkAuthority: authority,
+      cloudAuthority, pulledAt: response.pulledAt, cleanRefreshBaseline: baseline,
+    });
+    assertCurrentSession();
+  }
   const activeIds = new Set(plan.activeAssignedIds);
   const crossActorConflictIds = crossActorAssignedCheckoutConflictIds(
     getStore().installations,
@@ -1340,9 +1421,11 @@ export async function syncAssignedInstallations(
       plan.trees.forEach((tree) => {
         const remote = tree.installation;
         const id = text(remote, 'id');
+        assertInstallationNotRecovering(id);
         const local = store.installations.find((item) => item.id === id);
         if (!local) return;
         const previous = { ...local };
+        const confirmedBeforeMetadata = captureConfirmedAssignedTreeBaseline(store, id, actorUserId);
         if (assignedWorkCheckoutBelongsToDifferentActor(local, actorUserId)) {
           // The materialization transaction below snapshots and removes this
           // exact checkout before inserting a clean canonical tree for the
@@ -1363,6 +1446,15 @@ export async function syncAssignedInstallations(
         const nextAssignedJobSummary = isAssigned
           ? assignedWorkJobSummaryFromPull(remote, actorUserId, response.pulledAt)
           : undefined;
+        if (previous.assigned_work_job_summary && nextAssignedJobSummary) {
+          const { pulled_at: priorPulledAt, ...priorSummary } = previous.assigned_work_job_summary;
+          const { pulled_at: _nextPulledAt, ...nextSummary } = nextAssignedJobSummary;
+          if (canonicalJsonStringify(priorSummary) === canonicalJsonStringify(nextSummary)) {
+            // The timestamp belongs to this summary's first observation. An
+            // unchanged poll must not invalidate an exact conflict review.
+            nextAssignedJobSummary.pulled_at = priorPulledAt;
+          }
+        }
         const scheduleChangedFields = assignedWorkScheduleChangedFields(
           previous.assigned_work_job_summary,
           nextAssignedJobSummary,
@@ -1371,7 +1463,9 @@ export async function syncAssignedInstallations(
         local.cloud_backup_enabled = true;
         const hasPendingCompletion = Boolean(
           local.pending_completion
-          || store.cloudSync.pending_complete_attempts?.[id],
+          || store.cloudSync.pending_complete_attempts?.[id]
+          || store.cloudSync.pending_metadata_attempts?.[id]
+          || store.cloudSync.conflicted_metadata_attempts?.[id],
         );
         if (!hasPendingCompletion) {
           if (serverState.metadataPatch) Object.assign(local, serverState.metadataPatch);
@@ -1389,6 +1483,16 @@ export async function syncAssignedInstallations(
               local.server_derived = undefined;
             }
             local.server_tree_revision = serverState.serverTreeRevision;
+            // A normal three-way root merge may run while a retained editor
+            // prevents whole-tree replacement. Preserve an already-proven
+            // clean pair only when the server child projection is unchanged.
+            // This does not establish a baseline for legacy or dirty work.
+            if (confirmedBeforeMetadata && !serverState.refreshConflict
+              && local.status === 'Draft'
+              && previous.assigned_work_server_tree_fingerprint
+              && serverState.serverTreeFingerprint === previous.assigned_work_server_tree_fingerprint) {
+              local.last_synced_server_tree_revision = serverState.serverTreeRevision;
+            }
           }
           if (serverState.serverTreeFingerprint) {
             local.assigned_work_server_tree_fingerprint = serverState.serverTreeFingerprint;
@@ -1543,6 +1647,8 @@ export async function acceptAssignedWorkServerChanges(
     assertCurrentAssignedWorkAuthority(authority, actorUserId);
     if (
       store.cloudSync.pending_complete_attempts?.[installationId]
+      || store.cloudSync.pending_metadata_attempts?.[installationId]
+      || store.cloudSync.conflicted_metadata_attempts?.[installationId]
       || store.installations.find((item) => item.id === installationId)?.pending_completion
     ) {
       throw new Error('Finish the pending Cloud Backup confirmation first.');

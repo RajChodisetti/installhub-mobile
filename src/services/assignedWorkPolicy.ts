@@ -6,6 +6,7 @@ import type {
 } from '../types';
 import type { AuditWorkSuspensionReason } from './auditWorkTrackingResume';
 import { remoteInstallationWorkTreeFingerprint } from './remoteInstallationRevision';
+import { canonicalJsonStringify } from '../domain/installationV2';
 
 function text(record: Record<string, unknown>, camel: string, snake: string): string | null {
   const value = record[camel] ?? record[snake];
@@ -246,7 +247,7 @@ function completeStoredMetadataSnapshot(
   return completed;
 }
 
-function assignedWorkServerMetadataFromRemote(
+export function assignedWorkServerMetadataFromRemote(
   remote: Record<string, unknown>,
   fallback: AssignedWorkServerMetadataSnapshot,
 ): AssignedWorkServerMetadataSnapshot {
@@ -861,6 +862,18 @@ export function mergeAssignedInstallationServerState(
           refreshConflict: null,
         };
       }
+    }
+  }
+
+  const previousConflict = local.assigned_work_refresh_conflict;
+  const nextConflict = metadataState.refreshConflict;
+  if (previousConflict && nextConflict) {
+    const { detected_at: previousDetectedAt, ...previousContent } = previousConflict;
+    const { detected_at: _nextDetectedAt, ...nextContent } = nextConflict;
+    if (canonicalJsonStringify(previousContent) === canonicalJsonStringify(nextContent)) {
+      // Repeated polling observes the same conflict; it is not a new capture
+      // change. Keep the full recovery-review snapshot stable until data changes.
+      nextConflict.detected_at = previousDetectedAt;
     }
   }
 

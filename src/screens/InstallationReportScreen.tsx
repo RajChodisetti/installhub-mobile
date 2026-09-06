@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -17,7 +17,12 @@ import {
   Server,
   Smartphone,
 } from 'lucide-react-native';
-import { useInstallation } from '../hooks';
+import { useForms, useInstallation } from '../hooks';
+import { RecordLoadState } from '../components/RecordLoadState';
+import { captureAuthenticatedCloudActionLease, type AuthenticatedCloudActionLease } from '../services/authenticatedCloudAction';
+import { runLeasedCloudActionStep } from '../services/cloudActionLease';
+import { captureAssignedWorkMutationAuthority, actorForCurrentAssignedWorkAuthority, assertCurrentAssignedWorkAuthority } from '../services/assignedWorkMutationGuard';
+import { resolveHistoricalInstallationPackServerTarget } from '../services/installationPackHistory';
 import {
   FORM_PDF_TIERS,
   FormPdfGenerationError,
@@ -45,11 +50,9 @@ import { useTheme } from '../context/AppProviders';
 import { radii, spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import type {
-  FormSubmission,
   InstallationReportDetailMode,
 } from '../types';
 import {
-  formsRepo,
   getInstallationBackupTree,
   getInstallationSyncMetadata,
   installationsRepo,
@@ -91,42 +94,44 @@ function reportPathCopy(weight: InstallationReportWeight): {
   };
 }
 
-export function InstallationReportScreen({ route }: Props) {
+export function InstallationReportScreen({ navigation, route }: Props) {
   const { installationId } = route.params;
   const { colors } = useTheme();
   const { triggerSync } = useSyncStatus();
-  const { item, zones, boards, siteAssets, loading } =
+  const { item, zones, boards, siteAssets, loading, error: installationError, refresh: refreshInstallation } =
     useInstallation(installationId);
+  const mounted = useRef(true);
+  const currentInstallationId = useRef(installationId);
+  currentInstallationId.current = installationId;
+  const serverActionVersion = useRef(0);
+  const serverActionAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    setBusy(false);
+    setPdfStatus('');
+    return () => {
+      mounted.current = false; serverActionVersion.current += 1; serverActionAbort.current?.abort();
+    };
+  }, [installationId]);
   const [busy, setBusy] = useState(false);
   const [pdfStatus, setPdfStatus] = useState('');
-  const [forms, setForms] = useState<FormSubmission[]>([]);
-  const [selectedFormIds, setSelectedFormIds] = useState<string[]>([]);
+  const { items: forms, loading: formsLoading, loaded: formsLoaded, error: formsError, refresh: refreshForms } = useForms(installationId);
+  const [selection, setSelection] = useState<{ installationId: string; ids: string[] } | null>(null);
   const [detailMode, setDetailMode] =
     useState<InstallationReportDetailMode>('by-electrical-hierarchy');
   const [weight, setWeight] = useState<InstallationReportWeight | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setForms([]);
-    setSelectedFormIds([]);
-    void formsRepo.listByInstallation(installationId).then((loaded) => {
-      if (cancelled) return;
-      setForms(loaded);
-      setSelectedFormIds(
-        loaded
-          .filter((form) => form.status === 'Completed')
-          .map((form) => form.id),
-      );
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [installationId]);
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const [weightLoading, setWeightLoading] = useState(false);
+  const [weightRetry, setWeightRetry] = useState(0);
 
   const completedForms = useMemo(
     () => forms.filter((form) => form.status === 'Completed'),
     [forms],
   );
+  const selectedFormIds = useMemo(() => selection?.installationId === installationId
+    ? selection.ids : completedForms.map((form) => form.id), [selection, installationId, completedForms]);
+  const setSelectedFormIds = (ids: string[]) => setSelection({ installationId, ids });
   const selectedFormIdSet = useMemo(
     () => new Set(selectedFormIds),
     [selectedFormIds],
@@ -136,32 +141,33 @@ export function InstallationReportScreen({ route }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    if (formSelectionInvalid) {
-      setWeight(null);
-      return () => {
-        cancelled = true;
-      };
+    if (formSelectionInvalid || loading || formsLoading || installationError || formsError) {
+      setWeightLoading(false);
+      return () => { cancelled = true; };
     }
+    setWeightLoading(true);
+    setWeightError(null);
     void getInstallationBackupTree(installationId).then((tree) => {
-      if (cancelled || !tree) return;
-      try {
-        setWeight(installationReportWeight(tree, selectedFormIds));
-      } catch {
-        setWeight(null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [formSelectionInvalid, installationId, selectedFormIds]);
+      if (cancelled) return;
+      if (!tree) throw new Error('The installation report data is no longer available.');
+      setWeight(installationReportWeight(tree, selectedFormIds));
+    }).catch((caught: unknown) => {
+      if (!cancelled) setWeightError(caught instanceof Error ? caught.message : 'The installation report could not be loaded.');
+    }).finally(() => { if (!cancelled) setWeightLoading(false); });
+    return () => { cancelled = true; };
+  }, [formSelectionInvalid, loading, formsLoading, installationError, formsError, installationId, selectedFormIds, weightRetry]);
 
-  const toggleForm = (formId: string) => {
-    setSelectedFormIds((current) =>
-      current.includes(formId)
-        ? current.filter((id) => id !== formId)
-        : [...current, formId],
-    );
+  const readError = installationError ?? formsError ?? weightError;
+  const readPending = loading || formsLoading || weightLoading;
+  const retry = () => {
+    setWeightRetry((current) => current + 1);
+    void Promise.all([refreshInstallation(), refreshForms()]).catch(() => undefined);
   };
+  const toggleForm = (formId: string) => setSelectedFormIds(
+    selectedFormIds.includes(formId)
+      ? selectedFormIds.filter((id) => id !== formId)
+      : [...selectedFormIds, formId],
+  );
 
   const confirmCloudBackupOptIn = (
     isImportedLocalCopy: boolean,
@@ -185,8 +191,11 @@ export function InstallationReportScreen({ route }: Props) {
       );
     });
 
-  const shareDownloaded = async (uri: string) => {
-    if (!await Sharing.isAvailableAsync()) {
+  const shareDownloaded = async (uri: string, assertCurrent: () => void) => {
+    assertCurrent();
+    const available = await Sharing.isAvailableAsync();
+    assertCurrent();
+    if (!available) {
       throw new Error('Sharing is not available on this device.');
     }
     await Sharing.shareAsync(uri, {
@@ -197,20 +206,46 @@ export function InstallationReportScreen({ route }: Props) {
   };
 
   const generateServerPack = async () => {
-    if (!item || formSelectionInvalid) return;
+    if (!item || formSelectionInvalid || readError || readPending) return;
+    const actionVersion = ++serverActionVersion.current;
+    const controller = new AbortController();
+    serverActionAbort.current?.abort();
+    serverActionAbort.current = controller;
+    const processAuthority = captureAssignedWorkMutationAuthority();
+    const actorUserId = actorForCurrentAssignedWorkAuthority(processAuthority);
+    let lease: AuthenticatedCloudActionLease | undefined;
+    const assertCurrent = () => {
+      if (!mounted.current || currentInstallationId.current !== installationId
+        || serverActionVersion.current !== actionVersion || controller.signal.aborted) {
+        throw new Error('The report screen changed. Open the report again to continue.');
+      }
+      if (!actorUserId) throw new Error('Sign in before generating a server report.');
+      assertCurrentAssignedWorkAuthority(processAuthority, actorUserId);
+      lease?.assertCurrent();
+    };
+    const step = async <T,>(operation: () => Promise<T>): Promise<T> => {
+      assertCurrent();
+      const result = await runLeasedCloudActionStep(lease!, operation);
+      assertCurrent();
+      return result;
+    };
+    const progress = (message: string) => { assertCurrent(); setPdfStatus(message); };
     setBusy(true);
     setPdfStatus('Checking report provenance…');
     try {
-      const latest = await installationsRepo.getById(item.id);
+      assertCurrent();
+      lease = await captureAuthenticatedCloudActionLease();
+      assertCurrent();
+      const latest = await step(() => installationsRepo.getById(item.id));
       if (!latest) throw new Error('Installation not found.');
-      let tree = await getInstallationBackupTree(latest.id);
+      let tree = await step(() => getInstallationBackupTree(latest.id));
       if (!tree) throw new Error('Installation tree not found.');
-      let syncMetadata = await getInstallationSyncMetadata(latest.id);
+      let syncMetadata = await step(() => getInstallationSyncMetadata(latest.id));
       const localImportProvenanceIsIntact =
         hasIntactImportedSourceProvenance(tree, syncMetadata);
       const remoteSourceRevisionMatches =
         localImportProvenanceIsIntact &&
-        await importedSourceRevisionStillMatches(tree.installation);
+        await step(() => importedSourceRevisionStillMatches(tree!.installation));
       let target = resolveInstallationPackServerTarget(
         tree,
         syncMetadata,
@@ -220,24 +255,24 @@ export function InstallationReportScreen({ route }: Props) {
 
       if (!target.usesOriginalImportedRecord) {
         if (!latest.cloud_backup_enabled) {
-          if (!await confirmCloudBackupOptIn(Boolean(latest.is_imported_copy))) {
+          if (!await step(() => confirmCloudBackupOptIn(Boolean(latest.is_imported_copy)))) {
             return;
           }
-          await installationsRepo.setCloudBackupEnabled(latest.id, true);
+          await step(() => installationsRepo.setCloudBackupEnabled(latest.id, true, lease!.processAuthority));
         }
-        setPdfStatus('Backing up the latest installation and original evidence…');
-        const sync = await triggerSync();
+        progress('Backing up the latest installation and original evidence…');
+        const sync = await step(() => triggerSync());
         if (sync.phase !== 'done') {
           throw new Error(
             sync.lastError ||
               'Cloud Backup did not complete. The server pack was not started with stale data.',
           );
         }
-        tree = await getInstallationBackupTree(latest.id);
+        tree = await step(() => getInstallationBackupTree(latest.id));
         if (!tree) {
           throw new Error('Installation tree not found after Cloud Backup.');
         }
-        syncMetadata = await getInstallationSyncMetadata(latest.id);
+        syncMetadata = await step(() => getInstallationSyncMetadata(latest.id));
         if (!isInstallationTreeBackedUpCurrent(tree, syncMetadata)) {
           throw new Error(
             'Cloud Backup changed or remained pending while the pack was prepared. Run backup again before generating the server pack.',
@@ -254,6 +289,16 @@ export function InstallationReportScreen({ route }: Props) {
         }
       }
 
+      const selectedIncludesHistoricalForm = tree.formSubmissions.some((form) =>
+        selectedFormIds.includes(form.id) && form.historical_meter_removed);
+      if (target.recordVersionNumber !== undefined && selectedIncludesHistoricalForm) {
+        progress('Finding the retained version for the selected forms…');
+        target = await step(() => resolveHistoricalInstallationPackServerTarget(target, {
+          list: (id) => step(() => apiClient.listInstallationVersions(id, lease!.cloudAuthority, controller.signal)),
+          get: (id, version) => step(() => apiClient.getInstallationVersion(id, version, lease!.cloudAuthority, controller.signal)),
+        }));
+      }
+
       const legacyJobKey = installationReportJobKey(latest.id);
       const jobKey = installationReportJobKey(
         latest.id,
@@ -263,14 +308,14 @@ export function InstallationReportScreen({ route }: Props) {
         detailMode,
         target.formSubmissionIds,
       );
-      await clearRememberedReportJob(legacyJobKey);
-      const remembered = await rememberedReportJob(jobKey);
+      await step(() => clearRememberedReportJob(legacyJobKey));
+      const remembered = await step(() => rememberedReportJob(jobKey));
       let jobId = remembered?.jobId ?? null;
-      let expectedPayloadHash = remembered?.recordVersionPayloadHash;
+      let expectedPayloadHash = target.recordVersionPayloadHash ?? remembered?.recordVersionPayloadHash;
       let expectedVariantKey = remembered?.reportVariantKey;
       if (jobId) {
         try {
-          const existing = await apiClient.getExportJobStatus(jobId);
+          const existing = await step(() => apiClient.getExportJobStatus(jobId!, lease!.cloudAuthority, controller.signal));
           if (
             existing.status === 'failed' ||
             !installationReportJobMatchesSelection(
@@ -281,27 +326,29 @@ export function InstallationReportScreen({ route }: Props) {
               expectedVariantKey,
             )
           ) {
-            await clearRememberedReportJob(jobKey);
+            await step(() => clearRememberedReportJob(jobKey));
             jobId = null;
           } else {
             expectedPayloadHash = existing.recordVersionPayloadHash;
             expectedVariantKey = existing.reportVariantKey;
           }
         } catch {
-          await clearRememberedReportJob(jobKey);
+          await step(() => clearRememberedReportJob(jobKey));
           jobId = null;
         }
       }
       if (!jobId) {
-        setPdfStatus('Queuing installation pack on the API server…');
-        const started = await apiClient.startInstallationPdfJob(
+        progress('Queuing installation pack on the API server…');
+        const started = await step(() => apiClient.startInstallationPdfJob(
           target.installationId,
           target.formSubmissionIds,
           target,
           detailMode,
-        );
+          lease!.cloudAuthority,
+          controller.signal,
+        ));
         if (
-          !installationReportJobMatchesSelection(started, target, detailMode)
+          !installationReportJobMatchesSelection(started, target, detailMode, expectedPayloadHash)
         ) {
           throw new Error(
             'The report job did not preserve the requested grouping and record version.',
@@ -310,16 +357,17 @@ export function InstallationReportScreen({ route }: Props) {
         jobId = started.jobId;
         expectedPayloadHash = started.recordVersionPayloadHash;
         expectedVariantKey = started.reportVariantKey;
-        await rememberReportJob(jobKey, jobId, started);
+        await step(() => rememberReportJob(jobKey, jobId!, started));
       }
 
-      const ready = await waitForReportJob(jobId, (status) => {
+      const ready = await step(() => waitForReportJob(jobId!, (status) => {
         const progress =
           status.progressCurrent != null && status.progressTotal
             ? ` (${status.progressCurrent}/${status.progressTotal})`
             : '';
+        assertCurrent();
         setPdfStatus(`${status.phase || 'Generating pack…'}${progress}`);
-      });
+      }, controller.signal, { authority: lease!.cloudAuthority, assertCurrent }));
       if (
         !installationReportJobMatchesSelection(
           ready,
@@ -333,14 +381,16 @@ export function InstallationReportScreen({ route }: Props) {
           'The completed report no longer matches the selected grouping or record version.',
         );
       }
-      setPdfStatus('Downloading installation pack securely…');
-      const uri = await downloadReportJob(
+      progress('Downloading installation pack securely…');
+      const uri = await step(() => downloadReportJob(
         jobId,
         ready.filename || `${item.site_name}-installation-pack.pdf`,
-      );
-      await clearRememberedReportJob(jobKey);
-      await shareDownloaded(uri);
+        { authority: lease!.cloudAuthority, assertCurrent },
+      ));
+      await step(() => clearRememberedReportJob(jobKey));
+      await step(() => shareDownloaded(uri, assertCurrent));
     } catch (error) {
+      try { assertCurrent(); } catch { return; }
       Alert.alert(
         'API Server PDF Error',
         error instanceof Error
@@ -348,13 +398,13 @@ export function InstallationReportScreen({ route }: Props) {
           : 'The installation pack could not be generated.',
       );
     } finally {
-      setBusy(false);
-      setPdfStatus('');
+      try { assertCurrent(); setBusy(false); setPdfStatus(''); } catch { /* The originating screen or session is no longer current. */ }
+      if (serverActionAbort.current === controller) serverActionAbort.current = null;
     }
   };
 
   const generateLocalPack = async (qualityTier = 0) => {
-    if (!item || formSelectionInvalid) return;
+    if (!item || formSelectionInvalid || readError || readPending) return;
     setBusy(true);
     setPdfStatus(
       `Preparing ${FORM_PDF_TIERS[qualityTier]?.label.toLowerCase() || 'pack'}…`,
@@ -413,13 +463,17 @@ export function InstallationReportScreen({ route }: Props) {
     }
   };
 
-  if (loading || !item) {
+  if ((loading && !item) || (formsLoading && !formsLoaded)) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <LoadingState />
       </View>
     );
   }
+
+  if (!item || (!formsLoaded && formsError)) return <RecordLoadState
+    title="Installation report unavailable" message={readError ?? 'This installation is no longer available. Return to My jobs and refresh assigned work.'}
+    onRetry={retry} onBack={() => navigation.goBack()} />;
 
   const weightCopy = weight ? reportPathCopy(weight) : null;
   const preferServer =
@@ -435,6 +489,8 @@ export function InstallationReportScreen({ route }: Props) {
         Installation Report
       </Text>
 
+      {readError ? <RecordLoadState inline title="Could not refresh installation report" message={`${readError} Previously loaded information remains visible. Retry before generating a report.`}
+        onRetry={retry} onBack={() => navigation.goBack()} /> : null}
       <Card>
         <Text style={[typography.heading, { color: colors.foreground }]}>
           {item.site_name}
@@ -568,7 +624,7 @@ export function InstallationReportScreen({ route }: Props) {
           variant={preferServer ? 'secondary' : 'primary'}
           style={{ marginTop: spacing.lg }}
           disabled={
-            busy || formSelectionInvalid || weight?.path === 'API_REQUIRED'
+            busy || formSelectionInvalid || readPending || Boolean(readError) || weight?.path === 'API_REQUIRED'
           }
           accessibilityHint="Generates and shares the PDF locally using the current installation snapshot."
           onPress={() => void generateLocalPack()}
@@ -577,7 +633,7 @@ export function InstallationReportScreen({ route }: Props) {
           title={busy ? 'Preparing PDF…' : 'Generate through API server'}
           variant={preferServer ? 'primary' : 'secondary'}
           style={{ marginTop: spacing.sm }}
-          disabled={busy || formSelectionInvalid}
+          disabled={busy || formSelectionInvalid || readPending || Boolean(readError)}
           accessibilityHint="Backs up current data when needed, generates the PDF in the background, then securely downloads it."
           onPress={() => void generateServerPack()}
         />

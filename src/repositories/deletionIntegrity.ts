@@ -1,3 +1,5 @@
+import { mediaReferenceIdentity } from '../services/ownedMediaPaths';
+import { metadataHistoryLocalMediaReferences } from '../services/metadataBackupRejection';
 import type {
   AppDataStore,
   FormSubmission,
@@ -58,7 +60,9 @@ export function assertLocalDeletionPlanStillAllowed(
   if (!installation) throw new Error('Installation not found.');
 
   assertLocalDeletionLifecycleAllowed(installation.status, plan.target);
-  if (store.cloudSync.pending_complete_attempts?.[plan.installationId]) {
+  if (store.cloudSync.pending_complete_attempts?.[plan.installationId]
+    || store.cloudSync.pending_metadata_attempts?.[plan.installationId]
+    || store.cloudSync.conflicted_metadata_attempts?.[plan.installationId]) {
     throw new Error(
       'Confirm or resolve the pending cloud backup before deleting from this installation.',
     );
@@ -111,9 +115,9 @@ function descendantFormIds(
 
 /**
  * Resolves the complete local tree affected by an entity deletion. Forms are
- * selected by every formal relationship, not just the relationship exposed by
- * the screen that initiated the deletion. Amendment descendants are included
- * so a surviving form can never retain an invalid supersedes_id.
+ * selected for installation/zone deletion and explicit draft deletion. Individual
+ * board/asset deletion retains completed history and detaches draft context, as
+ * in the portal. Amendment descendants are included only when forms are deleted.
  */
 export function planLocalDeletion(
   store: AppDataStore,
@@ -206,6 +210,7 @@ export function planLocalDeletion(
         if (item.installation_id !== installationId) return false;
         if (target.kind === 'installation') return true;
         if (target.kind === 'form_draft') return item.id === target.id;
+        if (target.kind === 'electrical_asset' || target.kind === 'site_asset') return false;
         return Boolean(
           (item.zone_id && zoneIds.has(item.zone_id)) ||
           (item.board_id && electricalAssetIds.has(item.board_id)) ||
@@ -418,6 +423,19 @@ export function applyLocalDeletionPlan(
   store.formSubmissions = store.formSubmissions.filter(
     (item) => !formIds.has(item.id),
   );
+  if (plan.target.kind === 'electrical_asset' || plan.target.kind === 'site_asset') {
+    store.formSubmissions = store.formSubmissions.map((form) => {
+      if (form.installation_id !== plan.installationId || form.status !== 'Draft') return form;
+      if (plan.target.kind === 'electrical_asset'
+        && (electricalAssetIds.has(form.board_id ?? '') || meterIds.has(form.meter_id ?? ''))) {
+        return { ...form, board_id: undefined, meter_id: undefined, updated_at: updatedAt };
+      }
+      if (plan.target.kind === 'site_asset' && siteAssetIds.has(form.site_asset_id ?? '')) {
+        return { ...form, site_asset_id: undefined, updated_at: updatedAt };
+      }
+      return form;
+    });
+  }
   store.gridSupplies = store.gridSupplies.filter(
     (item) => !installationIds.has(item.installationId),
   );
@@ -534,11 +552,12 @@ export function applyLocalDeletionPlan(
       ...(store.assignedWorkRecoveryCheckouts ?? []).flatMap(
         (item) => item.formSubmissions,
       ),
-    ].flatMap((item) => item.attachments.map((attachment) => attachment.uri)),
+    ].flatMap((item) => item.attachments.map((attachment) => attachment.uri)).concat(metadataHistoryLocalMediaReferences(store)),
     deletedEntityMediaUris,
     protectedEntityMediaUris: [
       ...entityMediaUris(store),
       ...recoveryEntityMediaUris(store),
+      ...metadataHistoryLocalMediaReferences(store),
     ],
     orphanedThumbnailCacheUris: orphanedThumbnailCacheUris(
       removedThumbnails,
@@ -548,7 +567,9 @@ export function applyLocalDeletionPlan(
           (item) => item.cloudSync.thumbnail_queue,
         ),
       ],
-    ),
+    ).filter((uri) => !metadataHistoryLocalMediaReferences(store).some(
+      (retained) => mediaReferenceIdentity(retained) === mediaReferenceIdentity(uri),
+    )),
   };
 }
 

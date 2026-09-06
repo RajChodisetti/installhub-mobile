@@ -1,3 +1,7 @@
+import type { ElectricalMapLayoutDocument, ElectricalMapViewResponse, SaveElectricalMapLayoutResult } from '../domain/electricalMapLayout';
+import type { MeterHistoryResponse, MeterHistoryRollbackInput, MeterHistoryRollbackResult } from './meterHistoryTypes';
+import type { FinancialSummary, FinanceHeader, UpsertFinanceHeaderInput, CostLine, CostLineInput, Invoice, InvoiceListItem, QuickInvoiceInput, UpdateDraftInvoiceInput } from '../types/commercial';
+import type { UnifiedPortalUsersResponse } from '../types/unifiedUsers';
 import * as SecureStore from 'expo-secure-store';
 import { SYNC_API_URL } from '../constants/syncConfig';
 import type {
@@ -65,6 +69,7 @@ export class ApiError extends Error {
 }
 
 export interface ManagedCloudUser {
+  isMaintainer?: boolean;
   id: string;
   email: string;
   fullName: string | null;
@@ -331,7 +336,7 @@ export interface InstallationVersionRecord extends InstallationVersionSummary {
   app: 'installhub';
   entityType: 'installation';
   entityId: string;
-  snapshot: RemoteInstallationTree;
+  snapshot: unknown;
 }
 
 function normalizeCloudUser(user: CloudUser): CloudUser {
@@ -901,6 +906,7 @@ export interface RemoteInstallationTree {
 }
 
 export interface InstallationMappingResponse {
+  contentHash: string;
   schema: 'installation-mapping/v1';
   authority?: 'SERVER_PINNED' | 'LOCAL_ADVISORY';
   installation: Record<string, unknown> & { recordVersionNumber: number };
@@ -967,6 +973,44 @@ export interface InstallHubPullResponse {
 }
 
 export const apiClient = {
+  getMeterHistory: (
+    installationId: string, meterId: string, offset = 0, authority?: CloudSessionAuthority,
+  ) => request<MeterHistoryResponse>(
+    'GET', `/v1/installhub/installations/${encodeURIComponent(installationId)}/meters/${encodeURIComponent(meterId)}/history?offset=${offset}&limit=20`,
+    undefined, false, undefined, undefined, authority,
+  ),
+
+  rollbackMeterHistory: (
+    installationId: string, meterId: string, input: MeterHistoryRollbackInput,
+    authority?: CloudSessionAuthority,
+  ) => request<MeterHistoryRollbackResult>(
+    'POST', `/v1/installhub/installations/${encodeURIComponent(installationId)}/meters/${encodeURIComponent(meterId)}/history/rollback`,
+    input, false, undefined, undefined, authority,
+  ),
+
+  getFinancialSummary: (installationId: string, authority?: CloudSessionAuthority) =>
+    request<FinancialSummary>('GET', `/v1/installhub/installations/${encodeURIComponent(installationId)}/financial-summary`, undefined, false, undefined, undefined, authority),
+  updateFinanceHeader: (installationId: string, input: UpsertFinanceHeaderInput, authority: CloudSessionAuthority) =>
+    request<FinanceHeader>('PUT', `/v1/installhub/installations/${encodeURIComponent(installationId)}/finance`, input, false, undefined, undefined, authority),
+  createCostLine: (installationId: string, input: CostLineInput, authority: CloudSessionAuthority) =>
+    request<CostLine>('POST', `/v1/installhub/installations/${encodeURIComponent(installationId)}/cost-lines`, input, false, undefined, undefined, authority),
+  updateCostLine: (installationId: string, lineId: string, input: Partial<CostLineInput>, authority: CloudSessionAuthority) =>
+    request<CostLine>('PATCH', `/v1/installhub/installations/${encodeURIComponent(installationId)}/cost-lines/${encodeURIComponent(lineId)}`, input, false, undefined, undefined, authority),
+  deleteCostLine: (installationId: string, lineId: string, authority: CloudSessionAuthority) =>
+    request<void>('DELETE', `/v1/installhub/installations/${encodeURIComponent(installationId)}/cost-lines/${encodeURIComponent(lineId)}`, undefined, false, undefined, undefined, authority),
+  listInvoices: (installationId: string, authority?: CloudSessionAuthority) =>
+    request<{ items: InvoiceListItem[] }>('GET', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices`, undefined, false, undefined, undefined, authority),
+  getInvoice: (installationId: string, invoiceId: string, authority?: CloudSessionAuthority) =>
+    request<Invoice>('GET', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices/${encodeURIComponent(invoiceId)}`, undefined, false, undefined, undefined, authority),
+  quickCreateInvoice: (installationId: string, input: QuickInvoiceInput, authority: CloudSessionAuthority) =>
+    request<Invoice>('POST', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices/quick`, input, false, undefined, undefined, authority),
+  updateDraftInvoice: (installationId: string, invoiceId: string, input: UpdateDraftInvoiceInput, authority: CloudSessionAuthority) =>
+    request<Invoice>('PATCH', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices/${encodeURIComponent(invoiceId)}`, input, false, undefined, undefined, authority),
+  issueInvoice: (installationId: string, invoiceId: string, authority: CloudSessionAuthority) =>
+    request<Invoice>('POST', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices/${encodeURIComponent(invoiceId)}/issue`, undefined, false, undefined, undefined, authority),
+  voidInvoice: (installationId: string, invoiceId: string, authority: CloudSessionAuthority) =>
+    request<Invoice>('POST', `/v1/installhub/installations/${encodeURIComponent(installationId)}/invoices/${encodeURIComponent(invoiceId)}/void`, undefined, false, undefined, undefined, authority),
+
   health: () => fetchJson<{ status: string }>(`${SYNC_API_URL}/health`, { method: 'GET' }),
 
   push: (payload: unknown, authority?: CloudSessionAuthority) =>
@@ -1033,11 +1077,19 @@ export const apiClient = {
     authority,
   ),
 
-  getInstallationMapping: (installationId: string, recordVersionNumber: number) => {
+  getInstallationElectricalMap: (installationId: string, recordVersionNumber?: number, authority?: CloudSessionAuthority) => {
+    const query = recordVersionNumber === undefined ? '' : `?recordVersionNumber=${recordVersionNumber}`;
+    return request<ElectricalMapViewResponse>('GET', `/v1/installhub/installations/${encodeURIComponent(installationId)}/electrical-tree${query}`, undefined, false, undefined, undefined, authority);
+  },
+  saveInstallationElectricalMapLayout: (installationId: string, input: { baseTreeRevision: number; baseLayoutRevision: number; layout: ElectricalMapLayoutDocument }, authority?: CloudSessionAuthority) =>
+    request<SaveElectricalMapLayoutResult>('PUT', `/v1/installhub/installations/${encodeURIComponent(installationId)}/electrical-map-layout`, input, false, undefined, undefined, authority),
+
+  getInstallationMapping: (installationId: string, recordVersionNumber: number, authority?: CloudSessionAuthority) => {
     const params = new URLSearchParams({ recordVersionNumber: String(recordVersionNumber) });
     return request<InstallationMappingResponse>(
       'GET',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/mapping?${params}`,
+      undefined, false, undefined, undefined, authority,
     );
   },
 
@@ -1245,6 +1297,8 @@ export const apiClient = {
     formSubmissionIds: string[] | undefined,
     version: ReportJobVersionInput,
     detailMode: InstallationReportDetailMode = 'by-electrical-hierarchy',
+    authority?: CloudSessionAuthority,
+    signal?: AbortSignal,
   ) =>
     request<ExportJobStartResponse>(
       'POST',
@@ -1256,13 +1310,14 @@ export const apiClient = {
             : undefined,
         detailMode,
         ...installationReportVersionFields(version),
-      },
+      }, false, undefined, signal, authority,
     ),
 
-  getExportJobStatus: (jobId: string) =>
+  getExportJobStatus: (jobId: string, authority?: CloudSessionAuthority, signal?: AbortSignal) =>
     request<ExportJobStatus>(
       'GET',
       `/v1/export/jobs/${encodeURIComponent(jobId)}`,
+      undefined, false, undefined, signal, authority,
     ),
 
   getLatestExportJob: (entityId: string) => {
@@ -1273,30 +1328,37 @@ export const apiClient = {
     );
   },
 
-  listUsers: () =>
-    request<{ data: ManagedCloudUser[] }>('GET', '/v1/installhub/users'),
+  listUnifiedUsers: () => request<UnifiedPortalUsersResponse>('GET', '/v1/portal/users'),
 
-  getInventoryAccess: () =>
-    request<{ userId: string; isMaintainer: boolean }>('GET', '/v1/installhub/inventory/me'),
+  updateUserMaintainer: (id: string, isMaintainer: boolean, authority?: CloudSessionAuthority) =>
+    request<ManagedCloudUser>('PATCH', `/v1/installhub/users/${encodeURIComponent(id)}/maintainer`, { isMaintainer }, false, undefined, undefined, authority),
 
-  listInventoryMeters: (scope: 'mine' | 'company' = 'mine', q = '') => {
+  listUsers: (authority?: CloudSessionAuthority) =>
+    request<{ data: ManagedCloudUser[] }>('GET', '/v1/installhub/users', undefined, false, undefined, undefined, authority),
+
+  getInventoryAccess: (authority?: CloudSessionAuthority) =>
+    request<{ userId: string; isMaintainer: boolean }>('GET', '/v1/installhub/inventory/me', undefined, false, undefined, undefined, authority),
+
+  listInventoryMeters: (scope: 'mine' | 'company' = 'mine', q = '', authority?: CloudSessionAuthority) => {
     const params = new URLSearchParams({ scope });
     if (q.trim()) params.set('q', q.trim());
     return request<{ data: InventoryMeter[]; total: number; truncated: boolean }>(
       'GET',
       `/v1/installhub/inventory/meters?${params}`,
+      undefined, false, undefined, undefined, authority,
     );
   },
 
-  scanInventoryMeter: (input: InventoryMeterInput) =>
-    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/scan', input),
+  scanInventoryMeter: (input: InventoryMeterInput, authority?: CloudSessionAuthority) =>
+    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/scan', input, false, undefined, undefined, authority),
 
-  claimInventoryMeterByDeviceId: (deviceId: string) =>
-    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/claim-by-device', { deviceId }),
+  claimInventoryMeterByDeviceId: (deviceId: string, authority?: CloudSessionAuthority) =>
+    request<InventoryMeter>('POST', '/v1/installhub/inventory/meters/claim-by-device', { deviceId }, false, undefined, undefined, authority),
 
   createInventoryMeter: (
     input: InventoryMeterInput & { custodianUserId?: string | null },
-  ) => request<InventoryMeter>('POST', '/v1/installhub/inventory/meters', input),
+    authority?: CloudSessionAuthority,
+  ) => request<InventoryMeter>('POST', '/v1/installhub/inventory/meters', input, false, undefined, undefined, authority),
 
   updateInventoryMeter: (
     id: string,
@@ -1304,15 +1366,17 @@ export const apiClient = {
       expectedRevision: number;
       custodianUserId?: string | null;
     },
+    authority?: CloudSessionAuthority,
   ) => request<InventoryMeter>(
     'PATCH',
     `/v1/installhub/inventory/meters/${encodeURIComponent(id)}`,
-    input,
+    input, false, undefined, undefined, authority,
   ),
 
-  deleteInventoryMeter: (id: string) => request<void>(
+  deleteInventoryMeter: (id: string, authority?: CloudSessionAuthority) => request<void>(
     'DELETE',
     `/v1/installhub/inventory/meters/${encodeURIComponent(id)}`,
+    undefined, false, undefined, undefined, authority,
   ),
 
   createUser: (input: {
@@ -1355,10 +1419,11 @@ export const apiClient = {
       `/v1/installhub/users/${encodeURIComponent(id)}`,
     ),
 
-  getInstallationAccess: (installationId: string) =>
+  getInstallationAccess: (installationId: string, authority?: CloudSessionAuthority) =>
     request<InstallationAccess>(
       'GET',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/access`,
+      undefined, false, undefined, undefined, authority,
     ),
 
   setInstallationAccess: (
@@ -1382,7 +1447,7 @@ export const apiClient = {
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/files`,
     ),
 
-  listInstallationVersions: (installationId: string) =>
+  listInstallationVersions: (installationId: string, authority?: CloudSessionAuthority, signal?: AbortSignal) =>
     request<{
       app: 'installhub';
       entityType: 'installation';
@@ -1391,15 +1456,19 @@ export const apiClient = {
     }>(
       'GET',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/versions`,
+      undefined, false, undefined, signal, authority,
     ),
 
   getInstallationVersion: (
     installationId: string,
     versionNumber: number,
+    authority?: CloudSessionAuthority,
+    signal?: AbortSignal,
   ) =>
     request<InstallationVersionRecord>(
       'GET',
       `/v1/installhub/installations/${encodeURIComponent(installationId)}/versions/${versionNumber}`,
+      undefined, false, undefined, signal, authority,
     ),
 };
 

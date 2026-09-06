@@ -1,5 +1,6 @@
+import { FormScrollView } from '../components/ui';
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text } from 'react-native';
+import { Alert, StyleSheet, Text } from 'react-native';
 import { apiClient, cloudConnectionErrorMessage } from '../api/apiClient';
 import { Button, Card, TextField } from '../components/ui';
 import { useAuth, useTheme } from '../context/AppProviders';
@@ -70,7 +71,7 @@ export function ChangePasswordScreen() {
   };
 
   return (
-    <ScrollView
+    <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -125,7 +126,7 @@ export function ChangePasswordScreen() {
           </>
         )}
       </Card>
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

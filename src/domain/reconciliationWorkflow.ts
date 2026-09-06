@@ -24,10 +24,8 @@ export interface ExplicitReconciliationContext {
   measurementAssignments: Array<Pick<MeasurementAssignment, 'id' | 'status' | 'target'>>;
 }
 
-/** Reconciliation is reserved for states the installer deliberately left
- * unresolved. Broken confirmed references and other validation failures still
- * block readiness, but appear in completion checks instead of being described
- * as TBC work. */
+/** Reconciliation is reserved for deliberately unresolved relationships.
+ * Optional quality diagnostics never become completion gates. */
 export function isExplicitReconciliationIssue(
   issue: ReadinessIssue,
   context: ExplicitReconciliationContext,
@@ -49,11 +47,11 @@ export function isExplicitReconciliationIssue(
   if (
     issue.code === 'MEASUREMENT_TARGET_TBC' &&
     issue.entityType === 'measurement_assignment' &&
-    issue.field === 'targetConfirmation'
+    (issue.field === 'targetConfirmation' || issue.field === 'target')
   ) {
     const assignment = context.measurementAssignments.find((item) => item.id === issue.entityId);
     return Boolean(
-      assignment && (assignment.status === 'TBC' || assignment.target.kind === 'TBC'),
+      assignment && assignment.target.kind === 'TBC',
     );
   }
   return false;

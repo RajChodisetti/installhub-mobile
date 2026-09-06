@@ -1,7 +1,9 @@
+import { FormScrollView } from '../components/ui';
+import { captureAuthenticatedCloudActionLease } from '../services/authenticatedCloudAction';
+import { runLeasedCloudActionStep } from '../services/cloudActionLease';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -55,6 +57,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
   const [saving, setSaving] = useState(false);
   const [changingAccess, setChangingAccess] = useState(false);
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [changingMaintainer, setChangingMaintainer] = useState(false);
 
   useEffect(() => {
     navigation.setOptions({
@@ -245,7 +248,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
   );
 
   return (
-    <ScrollView
+    <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -261,6 +264,27 @@ export function UserEditorScreen({ navigation, route }: Props) {
           />
         </View>
       ) : null}
+
+      {loadedUser && currentUser?.role === 'admin' ? <Card style={{ marginBottom: spacing.md }}>
+        <Text style={[typography.heading, { color: colors.foreground }]}>Inventory access</Text>
+        <Text style={{ color: colors.mutedForeground, marginVertical: spacing.md }}>
+          {loadedUser.isMaintainer ? 'This user can manage company meter stock.' : 'This user has access to their own inventory.'}
+          {' '}Company inventory maintainer is independent of the account role.
+        </Text>
+        <Button title={changingMaintainer ? 'Updating…' : loadedUser.isMaintainer ? 'Revoke maintainer access' : 'Grant maintainer access'}
+          variant="secondary" disabled={changingMaintainer || saving || changingAccess || resettingPassword || !loadedUser.isActive}
+          onPress={() => {
+            const pending = captureAuthenticatedCloudActionLease();
+            const target = loadedUser;
+            setChangingMaintainer(true);
+            void (async () => {
+              const lease = await pending;
+              const updated = await runLeasedCloudActionStep(lease, () => apiClient.updateUserMaintainer(target.id, !target.isMaintainer, lease.cloudAuthority));
+              setLoadedUser(updated);
+            })().catch((error) => Alert.alert('Could not update inventory access', cloudConnectionErrorMessage(error)))
+              .finally(() => setChangingMaintainer(false));
+          }} />
+      </Card> : null}
 
       {sourceManaged ? (
         <Card style={{ marginBottom: spacing.md }}>
@@ -397,7 +421,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
 
             <Button
               title={saving ? 'Saving…' : isEditing ? 'Save changes' : 'Create user'}
-              disabled={saving || changingAccess || resettingPassword}
+              disabled={saving || changingAccess || resettingPassword || changingMaintainer}
               accessibilityState={{ busy: saving }}
               onPress={() => void save()}
               style={{ marginTop: spacing.lg }}
@@ -466,7 +490,7 @@ export function UserEditorScreen({ navigation, route }: Props) {
               <Button
                 title={resettingPassword ? 'Resetting…' : 'Reset password'}
                 variant="secondary"
-                disabled={saving || changingAccess || resettingPassword}
+                disabled={saving || changingAccess || resettingPassword || changingMaintainer}
                 accessibilityState={{ busy: resettingPassword }}
                 onPress={() => void resetAnotherUserPassword()}
               />
@@ -494,13 +518,13 @@ export function UserEditorScreen({ navigation, route }: Props) {
                   : 'Reactivate user'
             }
             variant={loadedUser.isActive ? 'danger' : 'secondary'}
-            disabled={saving || changingAccess || resettingPassword}
+            disabled={saving || changingAccess || resettingPassword || changingMaintainer}
             accessibilityState={{ busy: changingAccess }}
             onPress={confirmAccessChange}
           />
         </Card>
       ) : null}
-    </ScrollView>
+    </FormScrollView>
   );
 }
 

@@ -37,6 +37,25 @@ function contentTypeMatches(actual: string, expected: string): boolean {
     : actual === normalizedExpected;
 }
 
+/** Fetch exposes decoded bytes; Content-Length describes the encoded HTTP representation. */
+function downloadLengthPolicy(response: DownloadResponseLike) {
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+  // Unknown codings may pass through fetch undecoded. Never publish those bytes
+  // as a PDF/image/CSV just because the server supplied its underlying MIME type.
+  if (encoding !== undefined && !['identity', 'gzip', 'x-gzip', 'deflate', 'br'].includes(encoding)) {
+    throw new Error('Authenticated download returned an unsupported content encoding.');
+  }
+  const contentLength = response.headers.get('content-length');
+  let expectedLength: number | undefined;
+  if (contentLength !== null) {
+    expectedLength = Number(contentLength.trim());
+    if (!/^\d+$/.test(contentLength.trim()) || !Number.isSafeInteger(expectedLength) || expectedLength < 1) {
+      throw new Error('Authenticated download returned an invalid content length.');
+    }
+  }
+  return { expectedLength, encoded: encoding !== undefined && encoding !== 'identity' };
+}
+
 /** Streams a bearer response to an isolated partial and exposes it only after validation. */
 export async function authenticatedDownloadToFile(input: {
   url: string;
@@ -58,25 +77,38 @@ export async function authenticatedDownloadToFile(input: {
     });
     if (response.redirected) throw new Error('Authenticated downloads cannot follow redirects.');
     if (!response.ok) throw new Error(`Authenticated download failed with status ${response.status}.`);
+    if (response.status === 206 || response.headers.get('content-range') !== null) {
+      throw new Error('Authenticated download returned a partial response.');
+    }
     if (!response.body) throw new Error('Authenticated download returned no response body.');
     const contentType = normalizedContentType(response);
     if (!contentType || !contentTypeMatches(contentType, input.expectedContentType)) {
       throw new Error(`Authenticated download returned unexpected content type ${contentType || '(missing)'}.`);
     }
+    const { expectedLength, encoded } = downloadLengthPolicy(response);
 
     partial = input.createPartialFile();
     partial.create({ intermediates: true, overwrite: true });
-    await response.body.pipeTo(partial.writableStream());
+    let streamedBytes = 0;
+    await response.body.pipeThrough(new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>({
+      transform(chunk, controller) {
+        streamedBytes += chunk.byteLength;
+        if (!Number.isSafeInteger(streamedBytes)) throw new Error('Authenticated download is too large.');
+        controller.enqueue(chunk);
+      },
+    })).pipeTo(partial.writableStream());
     const size = partial.info().size;
     if (!Number.isSafeInteger(size) || (size ?? 0) < 1) {
       throw new Error('Authenticated download returned an empty file.');
     }
-    const contentLength = response.headers.get('content-length');
-    if (contentLength !== null) {
-      const expectedLength = Number(contentLength);
-      if (!Number.isSafeInteger(expectedLength) || expectedLength < 1 || expectedLength !== size) {
-        throw new Error('Authenticated download content length did not match the streamed file.');
-      }
+    // Successful pipe completion includes native transport/decompression EOF and
+    // the file writer's close. Independently verify every decoded byte reached
+    // disk even when a compressed wire length cannot describe the saved file.
+    if (streamedBytes !== size) {
+      throw new Error('Authenticated download file size did not match the streamed bytes.');
+    }
+    if (!encoded && expectedLength !== undefined && expectedLength !== streamedBytes) {
+      throw new Error('Authenticated download content length did not match the streamed file.');
     }
     // The final name is unique and move is deliberately non-overwriting.
     // Expo iOS implements overwrite by deleting the destination first, which

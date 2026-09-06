@@ -94,6 +94,30 @@ test('legacy and invalid suggested addresses remain valid manual Australian reco
   assert.equal(outsideAustralia.geocoding_status, 'unresolved');
 });
 
+test('typing a multiword manual address retains spaces until the save boundary', () => {
+  let draft = normalizeAustralianAddress({ display_address: '' });
+  const authored = ' QA TEST DATA - iPad origin, not a customer site ';
+  for (const character of authored) {
+    draft = manualAustralianAddressEdit(draft, {
+      display_address: draft.display_address + character,
+    });
+  }
+  assert.equal(draft.display_address, authored);
+  let locality = '';
+  for (const character of ' Port Melbourne ') {
+    draft = manualAustralianAddressEdit(draft, { locality: locality + character });
+    locality = draft.locality ?? '';
+  }
+  assert.equal(locality, ' Port Melbourne ');
+  assert.equal(draft.display_address, authored, 'editing another part preserves the address draft');
+  const saved = installationAddressFields(draft);
+  assert.equal(saved.site_address, authored.trim());
+  assert.equal(saved.site_locality, 'Port Melbourne');
+  assert.equal(saved.site_address_fingerprint, australianAddressFingerprint(draft));
+  assert.equal(saved.site_latitude, null);
+  assert.equal(saved.site_geocoding_status, 'unresolved');
+});
+
 test('installation mapping carries every additive wire field without requiring coordinates', () => {
   const fields = installationAddressFields(normalizeAustralianAddress({
     display_address: '9 Manual Street',

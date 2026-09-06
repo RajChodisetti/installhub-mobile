@@ -1,3 +1,4 @@
+import { assertInstallationNotRecovering } from './installationRecoveryFence';
 import type { Installation } from '../types';
 import { assignedWorkPrestartActionIsLocked } from './assignedWorkPrestart';
 import type { AuditWorkResumeAuthority } from './auditWorkTrackingResume';
@@ -234,6 +235,7 @@ export function assertAssignedWorkMutationAllowed(
   installation: Installation,
   authority: AssignedWorkMutationAuthority,
 ): void {
+  assertInstallationNotRecovering(installation.id);
   runtime.assertMutationAllowed(installation, authority);
 }
 
