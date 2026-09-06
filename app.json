@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tuvi.installhub",
-      "buildNumber": "15",
+      "buildNumber": "16",
       "appleTeamId": "8UK885C5V8",
       "config": {
         "usesNonExemptEncryption": false
