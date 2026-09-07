@@ -38,6 +38,7 @@ import { loadElectricalMapLayout, prepareElectricalMapLayoutAttempt, executeElec
 import { pinnedMappingCanonicalJson } from '../services/pinnedInstallationMapping';
 import type { ElectricalMapLayoutDocument } from '../domain/electricalMapLayout';
 import { sharePinnedInstallationMapping } from '../services/installationMappingFiles';
+import { shareInstallationElectricalMap, type ElectricalMapFileFormat } from '../services/electricalMapFiles';
 import { RecordLoadState } from '../components/RecordLoadState';
 import { useAuth, useTheme } from '../context/AppProviders';
 import { assignedWorkActionIsLocked } from '../services/assignedWorkMutationGuard';
@@ -118,9 +119,11 @@ export function DataViewScreen({ navigation, route }: Props) {
     return true;
   };
   const [mappingExportBusy, setMappingExportBusy] = useState(false);
+  const [mapFileBusy, setMapFileBusy] = useState<ElectricalMapFileFormat | null>(null);
   const exportGeneration = useRef(0);
   useEffect(() => {
     setMappingExportBusy(false);
+    setMapFileBusy(null);
     return () => { exportGeneration.current += 1; };
   }, [installationId]);
   const [rowsError, setRowsError] = useState<string | null>(null);
@@ -460,7 +463,7 @@ export function DataViewScreen({ navigation, route }: Props) {
   );
 
   const downloadPinnedMapping = async () => {
-    if (mappingExportBusy || !item.record_version_number) return;
+    if (mappingExportBusy || mapFileBusy || !item.record_version_number) return;
     const generation = ++exportGeneration.current;
     setMappingExportBusy(true);
     try {
@@ -473,6 +476,31 @@ export function DataViewScreen({ navigation, route }: Props) {
       if (exportGeneration.current === generation) setMappingExportBusy(false);
     }
   };
+
+  const downloadElectricalMap = async (format: ElectricalMapFileFormat) => {
+    if (mappingExportBusy || mapFileBusy || item.is_imported_copy) return;
+    const generation = ++exportGeneration.current;
+    setMapFileBusy(format);
+    try {
+      await shareInstallationElectricalMap({
+        installationId,
+        siteCode: item.site_code,
+        format,
+        installationStatus: item.status,
+        recordVersionNumber: item.record_version_number,
+        assertScreenCurrent: () => {
+          if (exportGeneration.current !== generation) throw new Error('The electrical map screen changed. Download cancelled.');
+        },
+      });
+    } catch (caught) {
+      if (exportGeneration.current === generation) Alert.alert('Map download unavailable', caught instanceof Error ? caught.message : 'The electrical map could not be downloaded.');
+    } finally {
+      if (exportGeneration.current === generation) setMapFileBusy(null);
+    }
+  };
+
+  const completedMapVersionMissing = item.status === 'Completed'
+    && (!Number.isSafeInteger(item.record_version_number) || (item.record_version_number ?? 0) < 1);
 
   const header = (
     <View>
@@ -604,7 +632,20 @@ export function DataViewScreen({ navigation, route }: Props) {
         <>
           <Card style={{ marginBottom: spacing.md }}>
             <Text accessibilityRole="summary" style={[typography.subheading, { color: colors.foreground }]}>Supply and measurement stay separate</Text>
-            <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>FED_FROM builds the electrical supply hierarchy. MEASURES shows which installed device channels measure a target and never changes that target's supply parent.</Text>
+            <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>Every known item stays visible. Only safe FED_FROM links build the supply forest; MEASURES shows confirmed channels and never changes a target's supply parent.</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm }}>
+              <Button title={mapFileBusy === 'png' ? 'Downloading PNG…' : 'Share PNG'} variant="secondary"
+                disabled={Boolean(mappingExportBusy || mapFileBusy || item.is_imported_copy || completedMapVersionMissing)} style={{ flexGrow: 1 }}
+                onPress={() => void downloadElectricalMap('png')} />
+              <Button title={mapFileBusy === 'svg' ? 'Downloading SVG…' : 'Share SVG'} variant="secondary"
+                disabled={Boolean(mappingExportBusy || mapFileBusy || item.is_imported_copy || completedMapVersionMissing)} style={{ flexGrow: 1 }}
+                onPress={() => void downloadElectricalMap('svg')} />
+            </View>
+            <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12 }}>
+              {completedMapVersionMissing
+                ? 'This Completed job has no authoritative record version, so its map cannot be downloaded as mutable live data.'
+                : 'Downloads use the authenticated portal renderer and the same schematic symbol catalog.'}
+            </Text>
           </Card>
           {layoutLoading ? <Text testID="electrical-map-layout-loading" style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>Loading saved electrical arrangement…</Text> : null}
           {layoutLoadError ? <Card style={{ marginBottom: spacing.sm }}>
@@ -863,7 +904,7 @@ export function DataViewScreen({ navigation, route }: Props) {
               }}
             />
           ) : (
-            <EmptyState title="No confirmed electrical map" />
+            <EmptyState title="No electrical items" subtitle="Add or import an electrical item to build the diagram." />
           )}
         </FormScrollView>
       ) : mode === 'ELECTRICAL' ? (

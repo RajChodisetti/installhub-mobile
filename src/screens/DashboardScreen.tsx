@@ -130,30 +130,19 @@ export function DashboardScreen({ navigation }: Props) {
     }
   };
 
-  return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+  const listHeader = (
+    <View>
       <View style={styles.hero}>
-        <Text style={[typography.title, { color: colors.foreground }]}>
-          Field App Complete
-        </Text>
-        <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+        <Text style={[typography.title, { color: colors.foreground }]}>Field App Complete</Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 2 }}>
           Site installations & Wattwatcher metering
         </Text>
       </View>
-      <Card style={{ marginBottom: spacing.md }} accessibilityRole="summary">
-        <Text style={{ color: colors.foreground, fontWeight: '800' }}>Matching jobs on this device</Text>
-        <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
-          {filtered.length} installations · {filtered.length - jobCounts.completed} Draft · {jobCounts.completed} Completed ·{' '}
-          {filtered.reduce((total, item) => total + (countsByInstallation[item.id]?.forms ?? 0), 0)} field forms
-        </Text>
-        <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>
-          {jobCounts.scheduled} scheduled · {jobCounts.unscheduled} unscheduled · {jobCounts.completed} completed
-        </Text>
-        <Text style={{ color: colors.mutedForeground, marginTop: 4, fontSize: 12, lineHeight: 18 }}>
-          Scheduled work is ordered by the nearest scheduled start or deadline. Unscheduled work stays below it.
-        </Text>
-      </Card>
-      <SearchBar value={query} onChangeText={setQuery} placeholder="Search site, client, address, or installer" />
+      <SearchBar
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search any part of a job name, reference, client, or address"
+      />
       <View style={styles.statusFilters} accessibilityRole="radiogroup" accessibilityLabel="Filter installations by status">
         {(['All', 'Draft', 'Completed'] as const).map((value) => (
           <Button
@@ -167,76 +156,97 @@ export function DashboardScreen({ navigation }: Props) {
           />
         ))}
       </View>
-      <Button
-        title="Start New Site Installation"
-        onPress={() => navigation.navigate('InstallationForm')}
-        style={{ marginBottom: spacing.md }}
-      />
-      <Button
-        title="Plan My Route"
-        variant="secondary"
-        onPress={() => navigation.navigate('DailyRoute')}
-        style={{ marginBottom: spacing.md }}
-      />
+      <Card style={styles.summaryCard} accessibilityRole="summary">
+        <Text style={{ color: colors.foreground, fontWeight: '800' }}>Matching jobs</Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 3, lineHeight: 19 }}>
+          {filtered.length} jobs · {jobCounts.scheduled} scheduled · {jobCounts.unscheduled} unscheduled · {jobCounts.completed} completed
+        </Text>
+        <Text style={{ color: colors.mutedForeground, marginTop: 3, fontSize: 12, lineHeight: 17 }}>
+          {filtered.reduce((total, item) => total + (countsByInstallation[item.id]?.forms ?? 0), 0)} field forms · scheduled work appears first
+        </Text>
+      </Card>
+      <View style={styles.primaryActions}>
+        <Button
+          title="New Installation"
+          onPress={() => navigation.navigate('InstallationForm')}
+          style={{ flex: 1 }}
+        />
+        <Button
+          title="Plan Route"
+          variant="secondary"
+          onPress={() => navigation.navigate('DailyRoute')}
+          style={{ flex: 1 }}
+        />
+      </View>
       <Button
         title="Browse Cloud Backups"
         variant="ghost"
         onPress={() => navigation.navigate('RemoteInstallations')}
-        style={{ marginBottom: spacing.md }}
+        style={{ marginBottom: spacing.sm }}
       />
-      {loading && !items.length ? (
-        <LoadingState />
-      ) : (
-        <FlatList
-          data={filtered}
-          keyExtractor={(item) => item.id}
-          refreshControl={(
-            <RefreshControl
-              refreshing={loading}
-              onRefresh={() => { void triggerSync().finally(refresh); }}
-              tintColor={colors.primary}
-            />
-          )}
-          ListEmptyComponent={
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <FlatList
+        data={filtered}
+        keyExtractor={(item) => item.id}
+        ListHeaderComponent={listHeader}
+        refreshControl={(
+          <RefreshControl
+            refreshing={loading}
+            onRefresh={() => { void triggerSync().finally(refresh); }}
+            tintColor={colors.primary}
+          />
+        )}
+        ListEmptyComponent={loading && !items.length
+          ? <LoadingState />
+          : (
             <EmptyState
               title={items.length ? 'No installations match' : 'No installations'}
-              subtitle={items.length ? 'Try another search or status.' : 'Create a site installation to get started.'}
+              subtitle={items.length ? 'Try partial words from the job title, reference, client, or address.' : 'Create a site installation to get started.'}
             />
-          }
-          renderItem={({ item, index }) => {
-            const group = dashboardJobTiming(item).group;
-            const previousGroup = index > 0
-              ? dashboardJobTiming(filtered[index - 1]).group
-              : undefined;
-            return (
-              <View>
-                {group !== previousGroup ? (
-                  <SectionHeader title={dashboardJobGroupLabel(group)} />
-                ) : null}
-                <InstallationCard
-                  item={item}
-                  counts={countsByInstallation[item.id]}
-                  onPress={() => { if (!recoveringId) navigation.navigate('InstallationDetail', { installationId: item.id }); }}
-                  onDelete={() => { void deleteInstallation(item); }}
-                  deleteDisabled={Boolean(deletingId || recoveringId)}
-                />
-                {item.assigned_work_refresh_conflict || item.backup_conflict?.kind === 'CONFLICT' ? (
-                  <Button title={recoveringId === item.id ? 'Reviewing recovery…' : 'Review sync conflict'}
-                    variant="secondary" disabled={Boolean(recoveringId || deletingId)}
-                    onPress={() => { void recoverInstallation(item.id); }} style={{ marginBottom: spacing.md }} />
-                ) : null}
-              </View>
-            );
-          }}
-          ListFooterComponent={<View style={{ height: 24 }} />}
-        />
-      )}
+          )}
+        renderItem={({ item, index }) => {
+          const group = dashboardJobTiming(item).group;
+          const previousGroup = index > 0
+            ? dashboardJobTiming(filtered[index - 1]).group
+            : undefined;
+          return (
+            <View>
+              {group !== previousGroup ? (
+                <SectionHeader title={dashboardJobGroupLabel(group)} />
+              ) : null}
+              <InstallationCard
+                item={item}
+                counts={countsByInstallation[item.id]}
+                onPress={() => { if (!recoveringId) navigation.navigate('InstallationDetail', { installationId: item.id }); }}
+                onDelete={() => { void deleteInstallation(item); }}
+                deleteDisabled={Boolean(deletingId || recoveringId)}
+              />
+              {item.assigned_work_refresh_conflict || item.backup_conflict?.kind === 'CONFLICT' ? (
+                <Button title={recoveringId === item.id ? 'Reviewing recovery…' : 'Review sync conflict'}
+                  variant="secondary" disabled={Boolean(recoveringId || deletingId)}
+                  onPress={() => { void recoverInstallation(item.id); }} style={{ marginBottom: spacing.md }} />
+              ) : null}
+            </View>
+          );
+        }}
+        ListFooterComponent={<View style={{ height: 24 }} />}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: spacing.lg },
-  hero: { marginBottom: spacing.lg, marginTop: spacing.sm },
+  container: { flex: 1 },
+  content: { padding: spacing.lg, paddingBottom: 40 },
+  hero: { marginBottom: spacing.md, marginTop: spacing.xs },
   statusFilters: { flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.md },
+  summaryCard: { marginBottom: spacing.md, paddingVertical: spacing.md },
+  primaryActions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm },
 });

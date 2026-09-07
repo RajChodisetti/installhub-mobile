@@ -45,19 +45,13 @@ export function validateElectricalMapLayout(value: unknown, expectedIds?: Iterab
   return { version: 1, canvas, nodes };
 }
 
-/** Mirrors the API clientElectricalMapNodeIds: only confirmed grid-reachable symbols. */
-export function confirmedElectricalMapNodeIds(view: ElectricalMapViewResponse): Set<string> {
-  const excluded = new Set(view.unresolved.filter((item) => item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET').map((item) => item.subjectId));
-  view.nodes.filter((node) => node.kind === 'SITE_ASSET' && (node.coverageState === 'TBC' || node.coverageState === 'INVALID')).forEach((node) => excluded.add(node.id));
-  const included = new Set(view.nodes.filter((node) => node.kind === 'GRID' && !excluded.has(node.id)).map((node) => node.id));
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of view.edges) if (edge.relationship === 'FED_FROM' && included.has(edge.sourceNodeId) && !included.has(edge.targetNodeId) && !excluded.has(edge.targetNodeId)) { included.add(edge.targetNodeId); changed = true; }
-    for (const node of view.nodes) if (node.kind === 'VIRTUAL_RESIDUAL' && node.parentNodeId && included.has(node.parentNodeId) && !included.has(node.id) && !excluded.has(node.id)) { included.add(node.id); changed = true; }
-  }
-  return included;
+/** Mirrors the API clientElectricalMapNodeIds: every known symbol is layoutable. */
+export function electricalMapNodeIds(view: ElectricalMapViewResponse): Set<string> {
+  return new Set(view.nodes.map((node) => node.id));
 }
+
+/** Compatibility alias for callers written before safe partial forests. */
+export const confirmedElectricalMapNodeIds = electricalMapNodeIds;
 
 export function electricalMapDocumentFromLayout(layout: ElectricalDiagramLayout): ElectricalMapLayoutDocument {
   return validateElectricalMapLayout({ version: 1, canvas: { width: Math.max(320, layout.width), height: Math.max(320, layout.height) },

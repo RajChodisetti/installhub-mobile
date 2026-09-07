@@ -1,6 +1,6 @@
 import { apiClient, type RemoteInstallationTree } from '../api/apiClient';
 import { updateStore } from '../data/seed';
-import { confirmedElectricalMapNodeIds, validateElectricalMapLayout, type ElectricalMapLayoutDocument, type SavedElectricalMapLayout, type SaveElectricalMapLayoutResult } from '../domain/electricalMapLayout';
+import { electricalMapNodeIds, validateElectricalMapLayout, type ElectricalMapLayoutDocument, type SavedElectricalMapLayout, type SaveElectricalMapLayoutResult } from '../domain/electricalMapLayout';
 import { captureAuthenticatedCloudActionLease, type AuthenticatedCloudActionLease } from '../services/authenticatedCloudAction';
 import { runLeasedCloudActionStep } from '../services/cloudActionLease';
 import { assertAssignedWorkMutationAllowed } from '../services/assignedWorkMutationGuard';
@@ -46,8 +46,8 @@ export async function loadElectricalMapLayout(installationId: string, nodeIds: s
   assertViewCurrent();
   if (view.installationId !== installationId || view.treeRevision !== baseline.installation.server_tree_revision
     || (pin !== undefined && view.recordVersionNumber !== pin)) throw new Error('The saved electrical map belongs to a different cloud revision. Refresh the installation first.');
-  const confirmedIds = confirmedElectricalMapNodeIds(view);
-  if (confirmedIds.size !== nodeIds.length || nodeIds.some((id) => !confirmedIds.has(id))) throw new Error('The local and cloud electrical symbols differ. Save and back up the installation, then reload its arrangement.');
+  const cloudNodeIds = electricalMapNodeIds(view);
+  if (cloudNodeIds.size !== nodeIds.length || nodeIds.some((id) => !cloudNodeIds.has(id))) throw new Error('The local and cloud electrical symbols differ. Save and back up the installation, then reload its arrangement.');
   let baseLayoutRevision = view.mapLayout?.layoutRevision ?? 0;
   if (baseline.installation.status === 'Draft') {
     // GET omits mapLayout when an older saved layout no longer matches the node set.

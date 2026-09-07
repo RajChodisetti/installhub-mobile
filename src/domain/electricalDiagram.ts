@@ -66,6 +66,8 @@ export interface ElectricalDiagramNode {
   zoneName: string;
   coverageState?: ElectricalDiagramCoverage;
   parentNodeId?: string;
+  /** Known record rendered as a safe component root because its upstream edge is unavailable. */
+  partialRoot?: boolean;
   devices: ElectricalDiagramDevice[];
 }
 
@@ -322,10 +324,40 @@ function assetTypeCode(asset: SiteAsset): SiteAssetTypeCode {
   return asset.type_code ?? siteAssetTypeCode(asset.asset_type);
 }
 
+function cycleNodeIds(edges: readonly ElectricalDiagramEdge[]): Set<string> {
+  const parentById = new Map<string, string>();
+  for (const edge of edges
+    .filter((item) => item.relationship === 'FED_FROM')
+    .sort((left, right) => left.targetNodeId.localeCompare(right.targetNodeId)
+      || left.sourceNodeId.localeCompare(right.sourceNodeId))) {
+    if (!parentById.has(edge.targetNodeId)) parentById.set(edge.targetNodeId, edge.sourceNodeId);
+  }
+  const cycleIds = new Set<string>();
+  for (const startId of [...parentById.keys()].sort()) {
+    const path: string[] = [];
+    const pathIndex = new Map<string, number>();
+    let currentId: string | undefined = startId;
+    while (currentId && parentById.has(currentId)) {
+      const cycleIndex = pathIndex.get(currentId);
+      if (cycleIndex !== undefined) {
+        for (const nodeId of path.slice(cycleIndex)) {
+          cycleIds.add(nodeId);
+          parentById.delete(nodeId);
+        }
+        break;
+      }
+      pathIndex.set(currentId, path.length);
+      path.push(currentId);
+      currentId = parentById.get(currentId);
+    }
+  }
+  return cycleIds;
+}
+
 /**
- * Builds the same confirmed FED_FROM hierarchy and independent MEASURES
- * overlay used by the portal/server report. Unresolved records stay available
- * in the reconciliation UI but do not become misleading roots in the map.
+ * Builds a safe partial forest: every known record remains visible, while only
+ * confirmed valid FED_FROM and MEASURES edges are drawn. Missing/unsafe links
+ * never become invented parent relationships.
  */
 export function buildElectricalDiagramModel(
   input: ElectricalDiagramInput,
@@ -414,7 +446,7 @@ export function buildElectricalDiagramModel(
   ];
 
   const unresolved: ElectricalDiagramUnresolvedRelationship[] = [];
-  const edges: ElectricalDiagramEdge[] = [];
+  let edges: ElectricalDiagramEdge[] = [];
   for (const entity of [
     ...input.boards.map((item) => ({ item, subjectType: 'BOARD' as const })),
     ...input.siteAssets.map((item) => ({
@@ -427,7 +459,7 @@ export function buildElectricalDiagramModel(
       boardIds,
       gridIds,
     );
-    if (sourceId) {
+    if (sourceId && sourceId !== entity.item.id) {
       edges.push({
         id: `supplies:${sourceId}:${entity.item.id}`,
         sourceNodeId: sourceId,
@@ -443,6 +475,44 @@ export function buildElectricalDiagramModel(
         missingEnd: 'SOURCE',
         reason:
           entity.item.electrical_source?.kind === 'TBC' ? 'TBC' : 'INVALID',
+      });
+    }
+  }
+
+  const supplyEdgesByTarget = new Map<string, ElectricalDiagramEdge[]>();
+  for (const edge of edges.filter((item) => item.relationship === 'FED_FROM')) {
+    const targetEdges = supplyEdgesByTarget.get(edge.targetNodeId) ?? [];
+    if (!targetEdges.some((candidate) => candidate.sourceNodeId === edge.sourceNodeId)) targetEdges.push(edge);
+    supplyEdgesByTarget.set(edge.targetNodeId, targetEdges);
+  }
+  const ambiguousTargets = new Set([...supplyEdgesByTarget]
+    .filter(([, targetEdges]) => targetEdges.length > 1)
+    .map(([targetId]) => targetId));
+  edges = edges.filter((edge) => edge.relationship !== 'FED_FROM'
+    || (!ambiguousTargets.has(edge.targetNodeId)
+      && supplyEdgesByTarget.get(edge.targetNodeId)?.[0]?.id === edge.id));
+  for (const subjectId of [...ambiguousTargets].sort()) {
+    unresolved.push({
+      id: `unresolved:supply-ambiguous:${subjectId}`,
+      subjectType: boardIds.has(subjectId) ? 'BOARD' : 'SITE_ASSET',
+      subjectId,
+      relation: 'SUPPLY',
+      missingEnd: 'SOURCE',
+      reason: 'INVALID',
+    });
+  }
+
+  const cycleTargets = cycleNodeIds(edges);
+  if (cycleTargets.size) {
+    edges = edges.filter((edge) => edge.relationship !== 'FED_FROM' || !cycleTargets.has(edge.targetNodeId));
+    for (const subjectId of [...cycleTargets].sort()) {
+      unresolved.push({
+        id: `unresolved:supply-cycle:${subjectId}`,
+        subjectType: boardIds.has(subjectId) ? 'BOARD' : 'SITE_ASSET',
+        subjectId,
+        relation: 'SUPPLY',
+        missingEnd: 'SOURCE',
+        reason: 'INVALID',
       });
     }
   }
@@ -539,24 +609,13 @@ export function buildElectricalDiagramModel(
     });
   }
 
-  const resolvedNodeIds = new Set<string>(input.gridSupplies.map((grid) => grid.id));
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of edges) {
-      if (
-        (edge.relationship === 'FED_FROM' ||
-          edge.relationship === 'CALCULATED_RESIDUAL') &&
-        resolvedNodeIds.has(edge.sourceNodeId) &&
-        !resolvedNodeIds.has(edge.targetNodeId)
-      ) {
-        resolvedNodeIds.add(edge.targetNodeId);
-        changed = true;
-      }
-    }
-  }
+  const topologyChildIds = new Set(edges
+    .filter((edge) => edge.relationship === 'FED_FROM' || edge.relationship === 'CALCULATED_RESIDUAL')
+    .map((edge) => edge.targetNodeId));
   const nodes = allNodes
-    .filter((node) => resolvedNodeIds.has(node.id))
+    .map((node) => node.kind !== 'GRID' && !topologyChildIds.has(node.id)
+      ? { ...node, partialRoot: true }
+      : node)
     .sort(
       (left, right) =>
         NODE_KIND_ORDER[left.kind] - NODE_KIND_ORDER[right.kind] ||

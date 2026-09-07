@@ -76,6 +76,31 @@ test('status and installer search combine while pending imports remain hidden', 
   assert.equal(items.length, 4);
 });
 
+test('job search matches partial tokens across titles, references, clients and addresses', () => {
+  const referenced = installation('referenced', {
+    client_name: 'AutoNexus Australia',
+    site_name: 'Essendon workshop',
+    site_address: '12 Industrial Avenue',
+    custom_job_number: 'IH-70418',
+    fergus_job_number: 'FER-8129',
+    quote_number: 'Q-5591',
+    assigned_work_job_summary: {
+      actor_user_id: 'actor', assigned_inspector_user_id: 'actor',
+      client_name: 'AutoNexus Australia', site_name: 'Essendon workshop',
+      site_address: '12 Industrial Avenue', audit_date: '2026-08-20',
+      inspector_name: 'Technician', schedule_title: 'Replace metering hardware',
+      pulled_at: '2026-08-01T00:00:00.000Z',
+    },
+  });
+  const other = installation('other', { site_name: 'Altona warehouse' });
+
+  assert.deepEqual(filterDashboardJobs([other, referenced], 'ess 812', 'All').map((item) => item.id), ['referenced']);
+  assert.deepEqual(filterDashboardJobs([other, referenced], 'rep hard', 'All').map((item) => item.id), ['referenced']);
+  assert.deepEqual(filterDashboardJobs([other, referenced], '704 559', 'All').map((item) => item.id), ['referenced']);
+  assert.deepEqual(filterDashboardJobs([other, referenced], 'auto ave', 'All').map((item) => item.id), ['referenced']);
+  assert.deepEqual(filterDashboardJobs([other, referenced], 'ess missing', 'All'), []);
+});
+
 test('dashboard entity counts share the actor-visible local cohort and exclude hidden or foreign work', () => {
   const mine = installation('mine', { local_owner_user_id: 'actor', assigned_work_state: 'none' });
   const foreign = installation('foreign', { local_owner_user_id: 'other', assigned_work_state: 'none' });

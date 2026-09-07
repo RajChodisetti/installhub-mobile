@@ -10,21 +10,11 @@ import {
 } from 'react-native';
 import Svg, { Polyline } from 'react-native-svg';
 import {
-  Activity,
-  BatteryCharging,
-  Building2,
-  Cable,
-  CircuitBoard,
-  Droplets,
-  Fan,
-  Gauge,
-  Lightbulb,
-  PlugZap,
-  Snowflake,
-  Sun,
-  Wrench,
-  Zap,
-} from 'lucide-react-native';
+  ELECTRICAL_MAP_LOAD_SYMBOLS,
+  ELECTRICAL_MAP_NODE_SYMBOLS,
+  electricalMapSymbolForNode,
+  electricalMapSymbolLabel,
+} from '../../domain/electricalMapSymbols';
 import type {
   ElectricalDiagramCoverage,
   ElectricalDiagramModel,
@@ -36,18 +26,12 @@ import {
 } from '../../domain/electricalDiagram';
 import {
   buildElectricalDiagramLayout,
-  electricalDiagramOrthogonalPoints,
 } from '../../domain/electricalDiagramLayout';
 import { applyElectricalMapLayout, electricalMapDocumentFromLayout, moveElectricalMapNode, type ElectricalMapLayoutDocument, type SavedElectricalMapLayout } from '../../domain/electricalMapLayout';
 import { useTheme } from '../../context/AppProviders';
 import { radii, spacing, typography } from '../../theme';
 import { Button, Card, EmptyState } from '../ui';
-
-type DiagramIcon = React.ComponentType<{
-  color?: string;
-  size?: number;
-  strokeWidth?: number;
-}>;
+import { ElectricalMapSymbol } from './ElectricalMapSymbol';
 
 export type ElectricalMapDraft = { document: ElectricalMapLayoutDocument; modelIdentity: string };
 
@@ -78,29 +62,6 @@ const COVERAGE_LABELS: Record<ElectricalDiagramCoverage, string> = {
   INVALID: 'Issue',
 };
 
-const LOAD_LEGEND: Array<{
-  icon: DiagramIcon;
-  label: string;
-  codes: string[];
-}> = [
-  { icon: Snowflake, label: 'HVAC and refrigeration', codes: ['HVAC', 'REFRIGERATION'] },
-  { icon: Lightbulb, label: 'Lighting', codes: ['LIGHTING'] },
-  { icon: Sun, label: 'Solar / PV', codes: ['PV'] },
-  { icon: PlugZap, label: 'EV charging and outlets', codes: ['EV_CHARGER', 'POWER_OUTLET'] },
-  { icon: BatteryCharging, label: 'Forklifts and batteries', codes: ['FORKLIFT'] },
-  { icon: Fan, label: 'Exhaust and fans', codes: ['EXHAUST_FAN_SYSTEM'] },
-  { icon: Wrench, label: 'Vehicle hoists', codes: ['VEHICLE_HOIST'] },
-  { icon: Droplets, label: 'Hot water and heaters', codes: ['HEATER_GEYSER'] },
-  { icon: Gauge, label: 'Compressed air', codes: ['COMPRESSED_AIR'] },
-  { icon: Building2, label: 'Other site assets', codes: ['OTHER'] },
-];
-
-function nodeIcon(node: ElectricalDiagramNode): DiagramIcon {
-  if (node.kind === 'GRID') return Zap;
-  if (node.kind === 'BOARD') return CircuitBoard;
-  if (node.kind === 'VIRTUAL_RESIDUAL') return Activity;
-  return LOAD_LEGEND.find((item) => item.codes.includes(node.typeCode ?? 'OTHER'))?.icon ?? Building2;
-}
 
 function coverageColors(
   coverage: ElectricalDiagramCoverage,
@@ -259,8 +220,8 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
     return (
       <Card>
         <EmptyState
-          title="No confirmed electrical map"
-          subtitle="Resolve the incoming supply and electrical relationships to build the diagram."
+          title="No electrical items"
+          subtitle="Add or import an electrical item to build the diagram."
         />
       </Card>
     );
@@ -291,6 +252,17 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
     const node = layoutById.get(id)?.node;
     return node ? node.displayCode || node.name : id;
   };
+  const symbolChannels = (node: ElectricalDiagramNode) => node.devices.flatMap((device) => (
+    device.channels.map((channel) => ({
+      id: channel.id,
+      ordinal: channel.ordinal,
+      meterLabel: device.name,
+      purpose: channel.purpose,
+      assigned: model.edges.some((edge) => edge.relationship === 'MEASURES'
+        && edge.meterId === device.id
+        && edge.channelOrdinals?.includes(channel.ordinal)),
+    }))
+  ));
   const scaleValue = (value: number) => value * scale;
   const compactOverview = scale < 0.56;
 
@@ -390,21 +362,23 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                   accessibilityElementsHidden
                   importantForAccessibility="no-hide-descendants"
                 >
-                  {layout.edges.map((edge, edgeIndex) => {
+                  {layout.edges.map((edge) => {
                     const source = layoutById.get(edge.sourceNodeId);
                     const target = layoutById.get(edge.targetNodeId);
                     if (!source || !target) return null;
-                    const measurementOffset = edge.relationship === 'MEASURES'
-                      ? ((edgeIndex % 5) - 2) * 4
-                      : 0;
-                    const points = electricalDiagramOrthogonalPoints(source, target, {
-                      sourceYOffset: measurementOffset,
-                      targetYOffset: measurementOffset,
-                      trunkRatio: edge.relationship === 'MEASURES' ? 0.62 : 0.46,
-                    })
-                      .map((point) => `${scaleValue(point.x)},${scaleValue(point.y)}`)
-                      .join(' ');
                     const isMeasurement = edge.relationship === 'MEASURES';
+                    // Self-measurement stays available in the semantic model
+                    // and details, but a self connector adds no useful signal.
+                    // Like the portal, measurement overlays are shown only for
+                    // the selected node; supply and residual paths stay visible.
+                    if (isMeasurement && (
+                      edge.sourceNodeId === edge.targetNodeId
+                      || (edge.sourceNodeId !== selected.id && edge.targetNodeId !== selected.id)
+                    )) return null;
+                    const points = [
+                      `${scaleValue(source.x + source.width)},${scaleValue(source.y + source.height / 2)}`,
+                      `${scaleValue(target.x)},${scaleValue(target.y + target.height / 2)}`,
+                    ].join(' ');
                     const isResidual = edge.relationship === 'CALCULATED_RESIDUAL';
                     return (
                       <Polyline
@@ -422,7 +396,9 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                 </Svg>
                 {layout.nodes.map((item) => {
                   const node = item.node;
-                  const Icon = nodeIcon(node);
+                  const symbol = electricalMapSymbolForNode(node);
+                  const symbolLabel = electricalMapSymbolLabel(symbol);
+                  const branchRoot = node.kind !== 'GRID' && !item.parentId;
                   const selectedNode = selected.id === node.id;
                   const searchMatch = matchingNodeIds.has(node.id);
                   const board = node.kind === 'BOARD';
@@ -467,8 +443,8 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                     >
                       {compactOverview ? (
                         <View style={styles.compactNode}>
-                          <View style={[styles.nodeIcon, { width: 18, height: 18, borderRadius: 6, backgroundColor: accentColor }]}> 
-                            <Icon color={colors.primaryForeground} size={12} strokeWidth={2.2} />
+                          <View style={styles.nodeIcon}>
+                            <ElectricalMapSymbol name={symbol} size={20} channels={board ? symbolChannels(node) : undefined} />
                           </View>
                           <Text numberOfLines={2} style={[styles.compactNodeLabel, { color: colors.foreground }]}> 
                             {node.kind === 'GRID' ? 'GRID' : node.displayCode || node.name}
@@ -476,12 +452,13 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                           {coverage ? (
                             <View accessibilityLabel={`${COVERAGE_LABELS[node.coverageState!]} coverage`} style={[styles.compactCoverageDot, { backgroundColor: coverage.color }]} />
                           ) : null}
+                          {branchRoot ? <View accessibilityLabel="Branch root — upstream not shown" style={[styles.compactRootDot, { backgroundColor: colors.tbcForeground }]} /> : null}
                         </View>
                       ) : (
                         <>
                           <View style={styles.nodeHeader}>
-                            <View style={[styles.nodeIcon, { width: Math.max(24, scaleValue(32)), height: Math.max(24, scaleValue(32)), borderRadius: Math.max(8, scaleValue(10)), backgroundColor: accentColor }]}> 
-                              <Icon color={colors.primaryForeground} size={Math.max(14, scaleValue(18))} strokeWidth={2.1} />
+                            <View style={styles.nodeIcon}>
+                              <ElectricalMapSymbol name={symbol} size={Math.max(30, scaleValue(38))} channels={board ? symbolChannels(node) : undefined} />
                             </View>
                             <View style={{ flex: 1 }}>
                               <Text numberOfLines={1} style={[styles.nodeKind, { color: colors.mutedForeground, fontSize: Math.max(8, scaleValue(9)) }]}> 
@@ -494,11 +471,19 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                               ) : null}
                             </View>
                           </View>
+                          <Text numberOfLines={1} style={{ color: accentColor, fontWeight: '800', fontSize: Math.max(8, scaleValue(9)), marginTop: 2 }}>
+                            {symbolLabel}
+                          </Text>
                           <Text numberOfLines={2} style={{ color: colors.foreground, fontWeight: '800', fontSize: Math.max(10, scaleValue(12)), lineHeight: Math.max(13, scaleValue(15)), marginTop: Math.max(4, scaleValue(6)) }}> 
                             {node.displayCode || node.name}
                           </Text>
                           {node.displayCode && node.name !== node.displayCode ? (
                             <Text numberOfLines={1} style={{ color: colors.mutedForeground, fontSize: Math.max(8, scaleValue(9.5)), marginTop: 2 }}>{node.name}</Text>
+                          ) : null}
+                          {branchRoot ? (
+                            <Text numberOfLines={1} style={{ color: colors.tbcForeground, fontSize: Math.max(7.5, scaleValue(8.5)), fontWeight: '700', marginTop: 2 }}>
+                              Branch root — upstream not shown
+                            </Text>
                           ) : null}
                         </>
                       )}
@@ -508,7 +493,7 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
                             const activeOrdinals = device.channels.filter((channel) => channel.purpose !== 'SPARE').map((channel) => channel.ordinal);
                             return (
                               <View key={device.id} style={[styles.deviceModule, { borderColor: colors.success, backgroundColor: colors.card, padding: Math.max(3, scaleValue(5)), borderRadius: Math.max(5, scaleValue(7)) }]}>
-                                <Cable color={colors.success} size={Math.max(10, scaleValue(12))} strokeWidth={2} />
+                                <ElectricalMapSymbol name="node-meter" size={Math.max(14, scaleValue(18))} />
                                 <View style={{ flex: 1 }}>
                                   <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: Math.max(7.5, scaleValue(8.5)), fontWeight: '700' }}>{device.name}</Text>
                                   <Text numberOfLines={1} style={{ color: colors.mutedForeground, fontSize: Math.max(6.8, scaleValue(7.5)) }}>{compactChannelLabel(activeOrdinals)}{device.serialNumber && device.serialNumber !== device.name ? ` · ${device.serialNumber}` : ''}</Text>
@@ -534,16 +519,16 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
           </ScrollView>
         </View>
         <View style={[styles.mapFooter, { borderTopColor: colors.border, backgroundColor: colors.muted }]}>
-          <Text style={[typography.caption, { color: colors.mutedForeground }]}>Confirmed topology only · {layout.nodes.length} symbols · {Math.round(scale * 100)}%</Text>
+          <Text style={[typography.caption, { color: colors.mutedForeground }]}>Safe partial electrical map · {layout.nodes.length} symbols · {layout.nodes.filter((node) => node.node.kind !== 'GRID' && !node.parentId).length} branch roots · {Math.round(scale * 100)}%</Text>
           {model.unresolved.length ? (
-            <Text style={[typography.caption, { color: colors.tbcForeground, marginTop: 3 }]}>{model.unresolved.length} unresolved relationship{model.unresolved.length === 1 ? '' : 's'} remain in Reconcile and are intentionally outside this diagram.</Text>
+            <Text style={[typography.caption, { color: colors.tbcForeground, marginTop: 3 }]}>{model.unresolved.length} relationship{model.unresolved.length === 1 ? '' : 's'} need follow-up. Known records and safe downstream connections remain visible.</Text>
           ) : null}
         </View>
       </Card>
 
       <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
         <View style={styles.detailTitleRow}>
-          {React.createElement(nodeIcon(selected), { color: selected.kind === 'BOARD' ? colors.diagramMeasure : selected.kind === 'SITE_ASSET' ? colors.success : colors.foreground, size: 22, strokeWidth: 2.1 })}
+          <ElectricalMapSymbol name={electricalMapSymbolForNode(selected)} size={34} channels={selected.kind === 'BOARD' ? symbolChannels(selected) : undefined} />
           <View style={{ flex: 1 }}>
             <Text style={[typography.subheading, { color: colors.foreground }]}>{selected.displayCode || selected.name}</Text>
             {selected.displayCode && selected.name !== selected.displayCode ? (
@@ -556,6 +541,11 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
             </View>
           ) : null}
         </View>
+        {selected.kind === 'GRID' ? (
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, fontWeight: '700' }}>Grid root</Text>
+        ) : !layoutById.get(selected.id)?.parentId ? (
+          <Text style={{ color: colors.tbcForeground, marginTop: spacing.sm, fontWeight: '700' }}>Branch root — upstream not shown</Text>
+        ) : null}
         <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>{selected.typeLabel} · {selected.zoneName}{selected.zoneCode ? ` (${selected.zoneCode})` : ''}</Text>
         {selected.devices.map((device) => (
           <View key={device.id} style={[styles.deviceDetail, { borderColor: colors.border }]}>
@@ -586,23 +576,18 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
         <Text style={[typography.subheading, { color: colors.foreground }]}>Diagram key</Text>
         <Text style={[styles.legendHeading, { color: colors.mutedForeground }]}>NODE SYMBOLS</Text>
         <View style={styles.legendWrap}>
-          {[
-            { icon: Zap, label: 'Incoming grid', color: colors.foreground },
-            { icon: CircuitBoard, label: 'Switchboard', color: colors.diagramMeasure },
-            { icon: Cable, label: 'Installed meter', color: colors.success },
-            { icon: Activity, label: 'Virtual residual', color: colors.diagramResidual },
-          ].map(({ icon: Icon, label, color }) => (
+          {ELECTRICAL_MAP_NODE_SYMBOLS.map(({ symbol, label }) => (
             <View key={label} style={styles.legendRow}>
-              <Icon color={color} size={17} strokeWidth={2} />
+              <ElectricalMapSymbol name={symbol} size={28} />
               <Text style={[styles.legendText, { color: colors.foreground }]}>{label}</Text>
             </View>
           ))}
         </View>
         <Text style={[styles.legendHeading, { color: colors.mutedForeground }]}>LOAD SYMBOLS</Text>
         <View style={styles.legendWrap}>
-          {LOAD_LEGEND.map(({ icon: Icon, label }) => (
+          {ELECTRICAL_MAP_LOAD_SYMBOLS.map(({ symbol, label }) => (
             <View key={label} style={styles.legendRow}>
-              <Icon color={colors.success} size={17} strokeWidth={2} />
+              <ElectricalMapSymbol name={symbol} size={28} />
               <Text style={[styles.legendText, { color: colors.foreground }]}>{label}</Text>
             </View>
           ))}
@@ -611,6 +596,7 @@ export function ElectricalSingleLineDiagram({ model, search = '', onOpenNode, sa
         <DiagramLegendLine color={colors.diagramSupply} label="Supply · confirmed FED_FROM cable path" />
         <DiagramLegendLine color={colors.diagramMeasure} dashed label="Measures · confirmed device channels; never changes supply" />
         <DiagramLegendLine color={colors.diagramResidual} dotted label="Residual · calculation, not a physical cable" />
+        <Text style={[styles.legendText, { color: colors.tbcForeground, marginTop: spacing.sm }]}>Branch root — upstream not shown · known record retained without inventing a supply link</Text>
         <Text style={[styles.legendHeading, { color: colors.mutedForeground }]}>COVERAGE</Text>
         <View style={styles.legendWrap}>
           {(Object.keys(COVERAGE_LABELS) as ElectricalDiagramCoverage[]).map((coverage) => {
@@ -645,6 +631,7 @@ const styles = StyleSheet.create({
   compactNode: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 },
   compactNodeLabel: { width: '100%', textAlign: 'center', fontSize: 6.5, lineHeight: 7, fontWeight: '800' },
   compactCoverageDot: { position: 'absolute', top: 0, right: 0, width: 7, height: 7, borderRadius: 4 },
+  compactRootDot: { position: 'absolute', top: 0, left: 0, width: 7, height: 7, borderRadius: 4 },
   nodeHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   nodeIcon: { alignItems: 'center', justifyContent: 'center' },
   nodeKind: { fontWeight: '800', letterSpacing: 0.35 },

@@ -5,6 +5,7 @@ import ts from 'typescript';
 import * as diagram from '../src/domain/electricalDiagram';
 import * as geometry from '../src/domain/electricalDiagramLayout';
 import * as layouts from '../src/domain/electricalMapLayout';
+import * as symbols from '../src/domain/electricalMapSymbols';
 
 type Node = { type: unknown; props: Record<string, unknown> };
 const code = ts.transpileModule(readFileSync(new URL('../src/components/domain/ElectricalSingleLineDiagram.tsx', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -25,6 +26,7 @@ function harness(rejectSave = false) {
     'react-native': { Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', View: 'View', Alert: { alert: (_title: string, _message: string, options: typeof buttons) => { buttons = options; } }, StyleSheet: { create: (value: unknown) => value } },
     'react-native-svg': { default: 'Svg', Polyline: 'Polyline' }, 'lucide-react-native': new Proxy({}, { get: (_target, key) => key }),
     '../../domain/electricalDiagram': diagram, '../../domain/electricalDiagramLayout': geometry, '../../domain/electricalMapLayout': layouts,
+    '../../domain/electricalMapSymbols': symbols, './ElectricalMapSymbol': { ElectricalMapSymbol: 'ElectricalMapSymbol' },
     '../../context/AppProviders': { useTheme: () => ({ colors: {} }) }, '../../theme': { radii: {}, spacing: { md: 12, sm: 8 }, typography: {} },
     '../ui': { Button: 'Button', Card: 'Card', EmptyState: 'EmptyState' },
   };

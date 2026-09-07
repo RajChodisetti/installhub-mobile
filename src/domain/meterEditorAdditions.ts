@@ -64,7 +64,8 @@ export function insertStagedMeterSiteAssets(
     const copy = structuredClone(asset);
     copy.display_code_meta = provisionalDisplayCodeV2(installation, namingInventoryForInstallation(store, installation.id), {
       zoneId: copy.zone_id, customName: copy.asset_name,
-      fallbackType: SITE_ASSET_TYPE_LABELS[copy.type_code ?? 'OTHER'], excludeId: copy.id,
+      fallbackType: SITE_ASSET_TYPE_LABELS[copy.type_code ?? 'OTHER'],
+      entityKind: 'site_asset', entityTypeCode: copy.type_code ?? 'OTHER', excludeId: copy.id,
     });
     copy.display_code = copy.display_code_meta.value;
     store.siteAssets.push(copy);

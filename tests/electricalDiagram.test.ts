@@ -11,7 +11,7 @@ test('electrical diagram keeps confirmed supply and measurement semantics separa
 
   assert.ok(model.nodes.some((node) => node.id === 'grid-1'));
   assert.ok(model.nodes.some((node) => node.id === 'board-mssb'));
-  assert.ok(!model.nodes.some((node) => node.id === 'asset-tbc'));
+  assert.equal(model.nodes.find((node) => node.id === 'asset-tbc')?.partialRoot, true);
   assert.ok(
     model.edges.some(
       (edge) =>
@@ -29,6 +29,56 @@ test('electrical diagram keeps confirmed supply and measurement semantics separa
         edge.channelOrdinals?.join(',') === '4',
     ),
   );
+  assert.ok(model.edges.some((edge) => edge.relationship === 'MEASURES'
+    && edge.sourceNodeId === 'board-mssb'
+    && edge.targetNodeId === 'board-mssb'), 'same-board main-supply measurement remains semantic data');
+});
+
+test('safe forest drops every cycle-member supply edge and retains downstream branches', () => {
+  const input = electricalDiagramFixture();
+  input.boards.find((board) => board.id === 'board-msb')!.electrical_source = {
+    kind: 'BOARD', boardId: 'board-mssb',
+  };
+  input.boards.find((board) => board.id === 'board-mssb')!.electrical_source = {
+    kind: 'BOARD', boardId: 'board-msb',
+  };
+  const model = buildElectricalDiagramModel(input);
+
+  assert.ok(model.nodes.some((node) => node.id === 'board-msb'));
+  assert.ok(model.nodes.some((node) => node.id === 'board-mssb'));
+  assert.ok(!model.edges.some((edge) => edge.relationship === 'FED_FROM'
+    && (edge.targetNodeId === 'board-msb' || edge.targetNodeId === 'board-mssb')));
+  assert.ok(model.edges.some((edge) => edge.relationship === 'FED_FROM'
+    && edge.sourceNodeId === 'board-mssb' && edge.targetNodeId === 'asset-pac'));
+  assert.equal(model.nodes.find((node) => node.id === 'board-msb')?.partialRoot, true);
+  assert.equal(model.nodes.find((node) => node.id === 'board-mssb')?.partialRoot, true);
+  assert.ok(model.unresolved.some((item) => item.id === 'unresolved:supply-cycle:board-msb'));
+  assert.ok(model.unresolved.some((item) => item.id === 'unresolved:supply-cycle:board-mssb'));
+});
+
+test('safe forest rejects self supply without removing the known board', () => {
+  const input = electricalDiagramFixture();
+  input.boards.find((board) => board.id === 'board-msb')!.electrical_source = {
+    kind: 'BOARD', boardId: 'board-msb',
+  };
+  const model = buildElectricalDiagramModel(input);
+  assert.ok(model.nodes.some((node) => node.id === 'board-msb'));
+  assert.ok(!model.edges.some((edge) => edge.relationship === 'FED_FROM'
+    && edge.sourceNodeId === 'board-msb' && edge.targetNodeId === 'board-msb'));
+  assert.ok(model.unresolved.some((item) => item.subjectId === 'board-msb'
+    && item.relation === 'SUPPLY' && item.reason === 'INVALID'));
+});
+
+test('electrical diagram keeps useful downstream components when an upstream link is unknown', () => {
+  const input = electricalDiagramFixture();
+  input.gridSupplies = [];
+  const model = buildElectricalDiagramModel(input);
+
+  assert.equal(model.nodes.length > 0, true);
+  assert.equal(model.nodes.find((node) => node.id === 'board-msb')?.partialRoot, true);
+  assert.ok(model.edges.some((edge) => edge.relationship === 'FED_FROM'
+    && edge.sourceNodeId === 'board-msb' && edge.targetNodeId === 'board-mssb'));
+  assert.ok(model.unresolved.some((relationship) => relationship.subjectId === 'board-msb'));
 });
 
 test('direct asset measurement requires the device on the immediate supply board', () => {

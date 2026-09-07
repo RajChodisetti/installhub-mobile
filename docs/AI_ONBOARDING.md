@@ -79,7 +79,12 @@ The Dashboard groups active work into Scheduled, Unscheduled/local, and Complete
 sections. Scheduled jobs are ordered by the earliest Scheduler start or deadline and
 show both timestamps; unscheduled/local Drafts stay below scheduled work. The assigned
 work pull carries the active Scheduler event ID, start, finish, deadline, and status as
-local-only job-summary metadata rather than canonical installation fields.
+local-only job-summary metadata rather than canonical installation fields. On compact
+iPhones the hero, search, filters, counts, and compact `New Installation` / `Plan Route`
+actions are part of the same scrolling list as the jobs, so no fixed header consumes the
+working viewport. Home search splits whitespace into tokens and requires every token to
+partially match any job title, site, reference, client, address, technician, device, or
+service field; tokens may match different fields and in any order.
 
 ## 2. Repository tree
 
@@ -379,6 +384,21 @@ targets. Missing optional data or unassigned active channels can remain visible 
 diagnostics without becoming completion blockers. Present data still obeys structural validation;
 authoring choices such as installation scope and an Other label retain their existing UI checks.
 
+`Open Electrical Map` enters `DataView` directly in Electrical mode; Reconcile remains an adjacent
+tab. The map is a safe partial forest: every known grid, board, site asset, and residual stays
+visible, while only endpoint-valid, unambiguous, acyclic `FED_FROM` links are drawn. A non-grid root
+selected by the final layout is labelled exactly `Branch root — upstream not shown`; actual grid
+roots are labelled `Grid root`. Self `MEASURES` assignments remain in channel state and details but
+never draw a self-loop, and measurement overlays are limited to the selected node. Reconciliation
+counts are non-blocking map follow-up rather than a reason to hide otherwise useful branches.
+
+Native map symbols use the portal's complete 25-name, 64-unit schematic registry, including distinct
+board types and HVAC indoor/condenser variants plus real switchboard channel slots. Authenticated
+`Share PNG` and `Share SVG` actions call `GET /v1/installhub/installations/:id/electrical-map`, so a
+portal-rendered image/file remains available when native presentation is unsuitable. Completed jobs
+require and request their positive immutable `recordVersionNumber`; a malformed Completed record
+fails closed rather than falling back to mutable live data. Draft jobs request the current cloud tree.
+
 Meter deletion is Draft-only for the active installation tree: the meter and its assignments are
 retired and affected assets return to explicit `TBC`. Immutable Completed forms and their evidence
 remain readable with the original meter ID. That historical exception is deliberately narrow—a
@@ -387,8 +407,12 @@ is a valid ISO timestamp.
 
 Offline generated-name allocations are provisional. A successful push alone cannot finalize them:
 the app fetches and reconciles the exact canonical server tree. Once a code is server-confirmed it
-is immutable across later site/type/rule changes; only the explicit custom-name action may alter it.
-Rule-version metadata is preserved. Virtual/residual definitions and mapping exports are
+is preserved across later site/type/rule changes; an explicit current board-name edit may refresh
+a generated rule-v3/v4 code, while overridden and older confirmed identities stay frozen.
+Current provisional metadata uses portal rule version 4 and the formula
+`<INSTALL>-<ZONE>-<NN>-<TYPE>-<CUSTOMNAME>`; if the custom-name segments already contain the type,
+the type is not duplicated. Stable persisted record IDs are never derived again or changed by this
+display-code logic. Virtual/residual definitions and mapping exports are
 server-owned; local residuals are advisory shared/unallocated previews with no per-asset quantity.
 
 ### Cloud backup architecture
@@ -767,10 +791,12 @@ preserving:
   Parent-board search includes name/type/zone and excludes the edited board and every
   descendant, preventing cycles.
 - Zones own an editable uppercase `zone_code` (maximum 16 characters). New boards,
-  site assets, and meters share one per-zone naming-rule-v2 sequence and receive
-  `<INSTALL>-<ZONE>-<NN>-<CUSTOMNAME>` codes. `NN` is at least two digits and the
+  site assets, and meters share one per-zone naming-rule-v4 sequence and receive
+  `<INSTALL>-<ZONE>-<NN>-<TYPE>-<CUSTOMNAME>` codes (without repeating TYPE when the
+  custom-name segments already contain it). `NN` is at least two digits and the
   local high-water mark prevents reuse after an offline delete; the server resolves
-  concurrent-device collisions. Rule-v1 and server-confirmed codes stay frozen.
+  concurrent-device collisions. Stable record IDs, overridden codes, and confirmed legacy
+  identities remain unchanged.
 - Installations own an editable uppercase `site_code` (maximum 16 characters). A blank value is
   derived from the site name/default during save and becomes the `<INSTALL>` naming prefix;
   existing unchanged legacy codes remain preserved.

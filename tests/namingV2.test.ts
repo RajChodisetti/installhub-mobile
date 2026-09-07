@@ -36,7 +36,7 @@ test('new short zone codes stay within the contract and use a two-character base
   assert.ok([...codes.values()].every((code) => code.length <= 16));
 });
 
-test('v2 display codes share a two-digit sequence across entity kinds in a zone', () => {
+test('v4 display codes share a two-digit sequence and include entity type plus name', () => {
   const zones = [zone('zone', 'Level 1', 'L1')];
   const generated = generatedDisplayCodeV2(installation, {
     zones,
@@ -51,8 +51,29 @@ test('v2 display codes share a two-digit sequence across entity kinds in a zone'
       created_at: '', updated_at: '',
     }],
     meterDevices: [],
-  }, { zoneId: 'zone', customName: 'Distribution Board', fallbackType: 'DB' });
-  assert.equal(generated, 'GOLD-L1-03-DISTRIBUTION-BOARD');
+  }, {
+    zoneId: 'zone', customName: 'Distribution Board', fallbackType: 'DB',
+    entityKind: 'board', entityTypeCode: 'DB',
+  });
+  assert.equal(generated, 'GOLD-L1-03-DB-DISTRIBUTION-BOARD');
+
+  const emptyInventory = { zones, electricalAssets: [], siteAssets: [], meterDevices: [] };
+  assert.equal(generatedDisplayCodeV2(installation, emptyInventory, {
+    zoneId: 'zone', customName: 'Workshop incomer', fallbackType: 'Main switchboard',
+    entityKind: 'board', entityTypeCode: 'MSB',
+  }), 'GOLD-L1-01-MSB-WORKSHOP-INCOMER');
+  assert.equal(generatedDisplayCodeV2(installation, emptyInventory, {
+    zoneId: 'zone', customName: 'Air handler 1', fallbackType: 'AC / HVAC',
+    entityKind: 'site_asset', entityTypeCode: 'HVAC',
+  }), 'GOLD-L1-01-HVAC-AIR-HANDLER-1');
+  assert.equal(generatedDisplayCodeV2(installation, emptyInventory, {
+    zoneId: 'zone', customName: 'Main incomer', fallbackType: 'A3RM Meter',
+    entityKind: 'meter', entityTypeCode: 'A3RM',
+  }), 'GOLD-L1-01-A3RM-MAIN-INCOMER');
+  assert.equal(generatedDisplayCodeV2(installation, emptyInventory, {
+    zoneId: 'zone', customName: 'A3RM Meter', fallbackType: 'A3RM Meter',
+    entityKind: 'meter', entityTypeCode: 'A3RM',
+  }), 'GOLD-L1-01-A3RM-METER');
 });
 
 test('custom suffixes are normalized and generated codes stay within 64 characters', () => {
@@ -60,10 +81,13 @@ test('custom suffixes are normalized and generated codes stay within 64 characte
   const generated = generatedDisplayCodeV2(
     { ...installation, site_code: 'INSTALLATION-CODE' },
     { zones: [zone('zone', 'Long', 'VERY-LONG-ZONE')], electricalAssets: [], siteAssets: [], meterDevices: [] },
-    { zoneId: 'zone', customName: 'Café air handling unit with a very long installer supplied description', fallbackType: 'HVAC' },
+    {
+      zoneId: 'zone', customName: 'Café air handling unit with a very long installer supplied description',
+      fallbackType: 'HVAC', entityKind: 'site_asset', entityTypeCode: 'HVAC',
+    },
   );
   assert.ok(generated.length <= 64);
-  assert.match(generated, /^INSTALLATION-COD-VERY-LONG-ZONE-01-CAFE-AIR-HANDLING/);
+  assert.match(generated, /^INSTALLATION-COD-VERY-LONG-ZONE-01-HVAC-CAFE-AIR-HANDLING/);
 });
 
 test('offline v2 allocations share a durable zone high-water mark and do not reuse deletes', () => {
@@ -75,56 +99,59 @@ test('offline v2 allocations share a durable zone high-water mark and do not reu
     meterDevices: [],
   };
   const first = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Main Switchboard', fallbackType: 'MSB',
+    zoneId: 'zone', customName: 'Main Switchboard', fallbackType: 'MSB', entityKind: 'board', entityTypeCode: 'MSB',
   });
   const second = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'A3RM Meter', fallbackType: 'A3RM Meter',
+    zoneId: 'zone', customName: 'A3RM Meter', fallbackType: 'A3RM Meter', entityKind: 'meter', entityTypeCode: 'A3RM',
   });
   const otherZone = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone-2', customName: 'Lighting', fallbackType: 'Lighting',
+    zoneId: 'zone-2', customName: 'Lighting', fallbackType: 'Lighting', entityKind: 'site_asset', entityTypeCode: 'LIGHTING',
   });
-  assert.equal(first.value, 'GOLD-L1-01-MAIN-SWITCHBOARD');
+  assert.equal(first.value, 'GOLD-L1-01-MSB-MAIN-SWITCHBOARD');
   assert.equal(second.value, 'GOLD-L1-02-A3RM-METER');
   assert.equal(otherZone.value, 'GOLD-L2-01-LIGHTING');
 
   // No entities were inserted into inventory: only the durable high-water mark
   // prevents reusing 01/02 after an offline delete.
   const afterDelete = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'HVAC', fallbackType: 'HVAC',
+    zoneId: 'zone', customName: 'HVAC', fallbackType: 'HVAC', entityKind: 'site_asset', entityTypeCode: 'HVAC',
   });
   assert.equal(afterDelete.value, 'GOLD-L1-03-HVAC');
 });
 
-test('editable v2 suffixes retain their ordinal while confirmed and legacy names stay frozen', () => {
+test('editable provisional names retain ordinals, confirmed names freeze, and legacy provisional names upgrade', () => {
   const local = { ...installation };
   const inventory = {
     zones: [zone('zone', 'Level 1', 'L1')],
     electricalAssets: [], siteAssets: [], meterDevices: [],
   };
   const original = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Distribution Board', fallbackType: 'DB',
+    zoneId: 'zone', customName: 'Distribution Board', fallbackType: 'DB', entityKind: 'board', entityTypeCode: 'DB',
   });
   const edited = provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Kitchen Board', fallbackType: 'DB', current: original,
+    zoneId: 'zone', customName: 'Kitchen Board', fallbackType: 'DB', entityKind: 'board', entityTypeCode: 'DB', current: original,
   });
-  assert.equal(edited.value, 'GOLD-L1-01-KITCHEN-BOARD');
+  assert.equal(edited.value, 'GOLD-L1-01-DB-KITCHEN-BOARD');
+  assert.equal(edited.ruleVersion, 4);
 
   const confirmed = { ...edited, provisional: false };
   assert.equal(provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Ignored', fallbackType: 'DB', current: confirmed,
+    zoneId: 'zone', customName: 'Ignored', fallbackType: 'DB', entityKind: 'board', entityTypeCode: 'DB', current: confirmed,
   }), confirmed);
   const serverConfirmedWithoutFlag = { ...edited, provisional: undefined };
   assert.equal(provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Ignored again', fallbackType: 'DB',
+    zoneId: 'zone', customName: 'Ignored again', fallbackType: 'DB', entityKind: 'board', entityTypeCode: 'DB',
     current: serverConfirmedWithoutFlag,
   }), serverConfirmedWithoutFlag);
   const legacy = {
     value: 'GOLD-DB-001', generatedValue: 'GOLD-DB-001', isOverridden: false,
     ruleVersion: 1, provisional: true,
   };
-  assert.equal(provisionalDisplayCodeV2(local, inventory, {
-    zoneId: 'zone', customName: 'Ignored', fallbackType: 'DB', current: legacy,
-  }), legacy);
+  const upgraded = provisionalDisplayCodeV2(local, inventory, {
+    zoneId: 'zone', customName: 'Upgraded', fallbackType: 'DB', entityKind: 'board', entityTypeCode: 'DB', current: legacy,
+  });
+  assert.equal(upgraded.value, 'GOLD-L1-02-DB-UPGRADED');
+  assert.equal(upgraded.ruleVersion, 4);
 });
 
 test('type-derived names advance only while pristine', () => {

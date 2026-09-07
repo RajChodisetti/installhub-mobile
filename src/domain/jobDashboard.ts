@@ -41,7 +41,36 @@ export function localDashboardSnapshot(store: AppDataStore, actorUserId: string 
 export function filterDashboardJobs(items: Installation[], query: string, status: DashboardStatusFilter): Installation[] {
   return sortDashboardJobs(items.filter((item) => item.thumbnail_status !== 'pending'
     && (status === 'All' || item.status === status)
-    && searchMatch(`${item.assigned_work_job_summary?.schedule_title ?? ''} ${item.site_name} ${item.client_name} ${item.site_address} ${item.inspector_name}`, query)));
+    && dashboardJobSearchMatch(item, query)));
+}
+
+/** Every typed fragment may partially match a different job field, in any order. */
+export function dashboardJobSearchMatch(item: Installation, query: string): boolean {
+  const summary = item.assigned_work_job_summary;
+  const searchable = [
+    summary?.schedule_title,
+    item.site_name,
+    item.client_name,
+    item.customer_name,
+    item.site_address,
+    item.site_locality,
+    item.site_state,
+    item.site_postcode,
+    item.inspector_name,
+    item.custom_job_number,
+    item.fergus_job_number,
+    item.quote_number,
+    item.existing_device_id,
+    item.service_type,
+    item.metering_solution_type,
+    item.external_key,
+    summary?.custom_job_number,
+    summary?.fergus_job_number,
+    summary?.quote_number,
+    summary?.existing_device_id,
+    summary?.service_type,
+  ].filter((value): value is string => Boolean(value?.trim())).join(' ');
+  return query.trim().split(/\s+/).every((fragment) => searchMatch(searchable, fragment));
 }
 
 export type DashboardJobTiming = {

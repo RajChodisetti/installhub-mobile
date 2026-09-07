@@ -19,7 +19,7 @@ export type RootStackParamList = {
   };
   DataView: {
     installationId: string;
-    initialMode?: 'RECONCILIATION' | 'VALIDATION';
+    initialMode?: 'RECONCILIATION' | 'VALIDATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
   };
   MeteringTable: { installationId: string };
   FinancialSummary: { installationId: string };

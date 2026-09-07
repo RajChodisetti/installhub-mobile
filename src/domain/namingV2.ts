@@ -11,6 +11,8 @@ import type {
 export const ZONE_CODE_MAX_LENGTH = 16;
 export const DISPLAY_CODE_MAX_LENGTH = 64;
 export const ZONE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+export const DISPLAY_CODE_RULE_VERSION = 4;
+export type DisplayCodeEntityKind = 'board' | 'site_asset' | 'meter';
 
 function identifierSegment(value: string, maxLength: number): string {
   return value
@@ -176,6 +178,8 @@ export function generatedDisplayCodeV2(
     zoneId: string;
     customName: string;
     fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
     excludeId?: string;
   },
 ): string {
@@ -198,13 +202,7 @@ export function generatedDisplayCodeV2(
     const match = value.match(sequencePattern);
     if (match) sequence = Math.max(sequence, Number(match[1]) + 1);
   }
-  const ordinal = String(sequence).padStart(2, '0');
-  const fixedPrefix = `${prefix}-${ordinal}-`;
-  const fallback = normalizedCustomName(input.fallbackType, 'ASSET');
-  const suffix = normalizedCustomName(input.customName, fallback)
-    .slice(0, Math.max(1, DISPLAY_CODE_MAX_LENGTH - fixedPrefix.length))
-    .replace(/-+$/g, '') || fallback.slice(0, Math.max(1, DISPLAY_CODE_MAX_LENGTH - fixedPrefix.length));
-  return `${fixedPrefix}${suffix}`.slice(0, DISPLAY_CODE_MAX_LENGTH).replace(/-+$/g, '');
+  return generatedWithSequence(installation, inventory, input, sequence);
 }
 
 function sequenceForPrefix(value: string, prefix: string): number | undefined {
@@ -260,7 +258,13 @@ export function synchronizeZoneSequenceHighWater(
 function generatedWithSequence(
   installation: Installation,
   inventory: NamingInventory,
-  input: { zoneId: string; customName: string; fallbackType: string },
+  input: {
+    zoneId: string;
+    customName: string;
+    fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
+  },
   sequence: number,
 ): string {
   const zoneCode = resolvedZoneCodes(inventory.zones, sitePrefix(installation)).get(input.zoneId) || 'ZONE';
@@ -269,7 +273,18 @@ function generatedWithSequence(
   const fixedPrefix = `${prefix}-${ordinal}-`;
   const fallback = normalizedCustomName(input.fallbackType, 'ASSET');
   const available = Math.max(1, DISPLAY_CODE_MAX_LENGTH - fixedPrefix.length);
-  const suffix = normalizedCustomName(input.customName, fallback)
+  const customName = normalizedCustomName(input.customName, fallback);
+  const typeCode = normalizedCustomName(input.entityTypeCode || input.fallbackType, fallback);
+  const customSegments = customName.split('-');
+  const typeSegments = typeCode.split('-');
+  const customNameContainsType = typeSegments.length <= customSegments.length
+    && customSegments.some((_, start) => typeSegments.every(
+      (segment, offset) => customSegments[start + offset] === segment,
+    ));
+  const identityName = input.entityKind
+    ? customNameContainsType ? customName : `${typeCode}-${customName}`
+    : customName;
+  const suffix = identityName
     .slice(0, available)
     .replace(/-+$/g, '') || fallback.slice(0, available);
   return `${fixedPrefix}${suffix}`.slice(0, DISPLAY_CODE_MAX_LENGTH).replace(/-+$/g, '');
@@ -282,16 +297,28 @@ export function provisionalDisplayCodeV2(
     zoneId: string;
     customName: string;
     fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
     excludeId?: string;
     current?: DisplayCode;
     /** Only supplied when the same zone's short code is being renamed. */
     previousZoneCode?: string;
+    refreshConfirmedGenerated?: boolean;
   },
 ): DisplayCode {
-  if (input.current && (
+  const refreshableConfirmedBoard = Boolean(
+    input.current
+    && input.entityKind === 'board'
+    && input.refreshConfirmedGenerated
+    && !input.current.isOverridden
+    && input.current.provisional !== true
+    && input.current.ruleVersion >= 3
+    && input.current.ruleVersion <= DISPLAY_CODE_RULE_VERSION,
+  );
+  if (input.current && !refreshableConfirmedBoard && (
     input.current.isOverridden
     || input.current.provisional !== true
-    || input.current.ruleVersion < 2
+    || input.current.ruleVersion > DISPLAY_CODE_RULE_VERSION
   )) {
     return input.current;
   }
@@ -320,7 +347,11 @@ export function provisionalDisplayCodeV2(
     value: generatedValue,
     generatedValue,
     isOverridden: false,
-    ruleVersion: 2,
+    ruleVersion: DISPLAY_CODE_RULE_VERSION,
     provisional: true,
   };
 }
+
+/** Current names; v2 aliases remain for compatible imports in older modules. */
+export const generatedDisplayCodeV4 = generatedDisplayCodeV2;
+export const provisionalDisplayCodeV4 = provisionalDisplayCodeV2;

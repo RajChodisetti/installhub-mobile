@@ -11,6 +11,18 @@ import {
   type ElectricalDiagramLayout,
   type ElectricalDiagramLayoutNode,
 } from '../domain/electricalDiagramLayout';
+import {
+  ELECTRICAL_MAP_LOAD_SYMBOLS,
+  ELECTRICAL_MAP_NODE_SYMBOLS,
+  electricalMapSymbolDefinition,
+  electricalMapSymbolForNode,
+  type ElectricalMapSymbolName,
+  type ElectricalMapSymbolPrimitive,
+} from '../domain/electricalMapSymbols';
+import {
+  electricalMapBoardChannelLayout,
+  type ElectricalMapBoardChannel,
+} from '../domain/electricalMapBoardChannels';
 
 export const ELECTRICAL_REPORT_WINDOW_WIDTH = 1080;
 export const ELECTRICAL_REPORT_WINDOW_HEIGHT = 720;
@@ -36,25 +48,6 @@ const COVERAGE_LABELS = {
   INVALID: 'Issue',
 } as const;
 
-const ICON_MARKUP = {
-  grid: '<path d="m13 2-8 12h7l-1 8 8-12h-7l1-8Z"/>',
-  board: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h3M13 11h3M8 15h3M13 15h3M9 18h6"/>',
-  meter: '<path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h3M14 15h2"/>',
-  hvac: '<path d="M12 2v20M4.9 6l14.2 12M19.1 6 4.9 18M9 4.5 12 7l3-2.5M9 19.5l3-2.5 3 2.5M5.5 9l.5-4 4 .5M18.5 15l-.5 4-4-.5M18.5 9l-.5-4-4 .5M5.5 15l.5 4 4-.5"/>',
-  lighting: '<path d="M9 18h6M10 21h4M8.4 14.5A6 6 0 1 1 15.6 14.5c-.9.7-1.4 1.7-1.4 2.5h-4.4c0-.8-.5-1.8-1.4-2.5Z"/><path d="M12 2V1M4.9 4.9l-.7-.7M19.1 4.9l.7-.7"/>',
-  solar: '<circle cx="7" cy="7" r="3"/><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.8 2.8l1.4 1.4M9.8 9.8l1.4 1.4M11.2 2.8 9.8 4.2M4.2 9.8l-1.4 1.4M5 15h14l2 7H3l2-7ZM8 15l-1 7M12 15v7M16 15l1 7M4 19h16"/>',
-  charger: '<rect x="3" y="6" width="12" height="12" rx="2"/><path d="M7 10h4M9 8v4M15 10h2a3 3 0 0 1 3 3v2M18 4v4M22 4v4M17 8h6M20 8v4"/>',
-  battery: '<rect x="3" y="6" width="17" height="12" rx="2"/><path d="M20 10h2v4h-2M7 9v6M4 12h6M14 9v6"/>',
-  fan: '<circle cx="12" cy="12" r="2"/><path d="M12 10c-1-5 1-7 3-7 3 0 4 4 1 7M14 12c5-1 7 1 7 3 0 3-4 4-7 1M12 14c1 5-1 7-3 7-3 0-4-4-1-7M10 12c-5 1-7-1-7-3 0-3 4-4 7-1"/>',
-  tool: '<path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-2.7a4 4 0 0 0 2 2ZM8.5 8.5 2 15v5h5l6.5-6.5"/>',
-  water: '<path d="M12 2s7 7.2 7 12a7 7 0 0 1-14 0c0-4.8 7-12 7-12Z"/><path d="M9 15a3 3 0 0 0 3 2"/>',
-  gauge: '<path d="M4 18a8 8 0 1 1 16 0M12 18l4-6M6 18h12"/>',
-  building: '<path d="M4 21V5l8-3v19M12 8h8v13M8 7h1M8 11h1M8 15h1M16 11h1M16 15h1M3 21h18"/>',
-  residual: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
-} as const;
-
-type IconName = keyof typeof ICON_MARKUP;
-
 function escapeXml(value: unknown): string {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -78,25 +71,46 @@ function truncate(value: string, length: number): string {
   return clean.length <= length ? clean : `${clean.slice(0, Math.max(1, length - 3))}...`;
 }
 
-function iconName(node: ElectricalDiagramNode): IconName {
-  if (node.kind === 'GRID') return 'grid';
-  if (node.kind === 'BOARD') return 'board';
-  if (node.kind === 'VIRTUAL_RESIDUAL') return 'residual';
-  if (node.typeCode === 'HVAC' || node.typeCode === 'REFRIGERATION') return 'hvac';
-  if (node.typeCode === 'LIGHTING') return 'lighting';
-  if (node.typeCode === 'PV') return 'solar';
-  if (node.typeCode === 'EV_CHARGER' || node.typeCode === 'POWER_OUTLET') return 'charger';
-  if (node.typeCode === 'FORKLIFT') return 'battery';
-  if (node.typeCode === 'EXHAUST_FAN_SYSTEM') return 'fan';
-  if (node.typeCode === 'VEHICLE_HOIST') return 'tool';
-  if (node.typeCode === 'HEATER_GEYSER') return 'water';
-  if (node.typeCode === 'COMPRESSED_AIR') return 'gauge';
-  return 'building';
+function symbolPrimitiveSvg(primitive: ElectricalMapSymbolPrimitive, accent: string): string {
+  const filled = 'fill' in primitive && primitive.fill;
+  const presentation = `fill="${filled ? accent : 'none'}"${filled ? ' fill-opacity="0.14"' : ''} stroke="${accent}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"${primitive.dashed ? ' stroke-dasharray="4 3"' : ''}`;
+  if (primitive.kind === 'path') return `<path d="${primitive.d}" ${presentation}/>`;
+  if (primitive.kind === 'rect') return `<rect x="${primitive.x}" y="${primitive.y}" width="${primitive.width}" height="${primitive.height}" rx="${primitive.rx ?? 0}" ${presentation}/>`;
+  if (primitive.kind === 'circle') return `<circle cx="${primitive.cx}" cy="${primitive.cy}" r="${primitive.r}" ${presentation}/>`;
+  if (primitive.kind === 'line') return `<line x1="${primitive.x1}" y1="${primitive.y1}" x2="${primitive.x2}" y2="${primitive.y2}" ${presentation}/>`;
+  return `<polyline points="${primitive.points}" ${presentation}/>`;
 }
 
-function svgIcon(name: IconName, x: number, y: number, size: number, color: string): string {
-  const scale = size / 24;
-  return `<g transform="translate(${x} ${y}) scale(${scale})" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON_MARKUP[name]}</g>`;
+function boardChannelsSvg(channels: readonly ElectricalMapBoardChannel[], accent: string): string {
+  const layout = electricalMapBoardChannelLayout(channels);
+  const twoColumns = layout.some((item) => item.portSide === 'left');
+  return layout.map((item) => `<g data-channel-id="${escapeXml(item.channel.id)}"><rect x="${item.x}" y="${item.y}" width="${item.columnWidth}" height="${item.cellHeight}" rx="1.2" fill="${item.state === 'assigned' ? accent : '#FFFFFF'}" fill-opacity="${item.state === 'assigned' ? 0.17 : 0.92}" stroke="${accent}" stroke-width="0.9"${item.state === 'spare' ? ' stroke-dasharray="2 1.5"' : ''}/>${svgText(item.label, item.x + 2, item.y + item.cellHeight / 2 + 1.15, { size: twoColumns ? 2.45 : 3.05, color: accent, weight: 800 })}<circle cx="${item.portX}" cy="${item.portY}" r="1.65" fill="${item.state === 'spare' ? '#FFFFFF' : accent}" stroke="${accent}" stroke-width="0.9"/></g>`).join('');
+}
+
+function svgSchematicSymbol(
+  name: ElectricalMapSymbolName,
+  x: number,
+  y: number,
+  size: number,
+  channels: readonly ElectricalMapBoardChannel[] = [],
+): string {
+  const definition = electricalMapSymbolDefinition(name);
+  const scale = size / 64;
+  const body = definition.category === 'board'
+    ? `<rect x="9" y="7" width="46" height="50" rx="4" fill="#FFFFFF" fill-opacity="0.94" stroke="${definition.accent}" stroke-width="2.4"/><path d="M9 18h46" fill="none" stroke="${definition.accent}" stroke-width="1.4"/><circle cx="49" cy="12.5" r="1.7" fill="${definition.accent}" opacity="0.88"/>${svgText(definition.boardCode ?? 'SWB', 14, 14.8, { size: 5.2, color: definition.accent, weight: 900, letterSpacing: 0.18 })}${channels.length ? boardChannelsSvg(channels, definition.accent) : ['L1', 'L2', 'L3'].map((phase, index) => { const railY = 27 + index * 10; return `${svgText(phase, 14, railY + 1.7, { size: 4.4, color: definition.accent, weight: 900 })}<line x1="23" y1="${railY}" x2="50" y2="${railY}" stroke="${definition.accent}" stroke-width="1.4"/><rect x="31" y="${railY - 3}" width="8" height="6" rx="1.2" fill="#DBEAFE" stroke="${definition.accent}" stroke-width="0.9"/><circle cx="51" cy="${railY}" r="1.6" fill="${definition.accent}"/>`; }).join('')}`
+    : definition.primitives.map((primitive) => symbolPrimitiveSvg(primitive, definition.accent)).join('');
+  return `<g data-electrical-map-symbol="${name}" transform="translate(${x} ${y}) scale(${scale})"><rect x="3" y="3" width="58" height="58" rx="15" fill="${definition.tint}"/>${body}</g>`;
+}
+
+function nodeSymbolChannels(node: ElectricalDiagramNode, model: ElectricalDiagramModel): ElectricalMapBoardChannel[] {
+  return node.devices.flatMap((device) => device.channels.map((channel) => ({
+    id: channel.id,
+    ordinal: channel.ordinal,
+    meterLabel: device.name,
+    purpose: channel.purpose,
+    assigned: model.edges.some((edge) => edge.relationship === 'MEASURES'
+      && edge.meterId === device.id && edge.channelOrdinals?.includes(channel.ordinal)),
+  })));
 }
 
 function compactChannelLabel(ordinals: number[]): string {
@@ -146,14 +160,14 @@ function coveragePresentation(coverage?: ElectricalDiagramNode['coverageState'])
   return { label: 'UNMETERED', fill: '#FEF3C7', text: '#92400E' };
 }
 
-function renderNode(item: ElectricalDiagramLayoutNode): string {
+function renderNode(item: ElectricalDiagramLayoutNode, model: ElectricalDiagramModel): string {
   const { node, x, y, width, height } = item;
   const board = node.kind === 'BOARD';
   const asset = node.kind === 'SITE_ASSET';
   const fill = board ? '#EEF2FF' : asset ? '#ECFDF5' : '#FFFFFF';
   const stroke = board ? '#2563EB' : asset ? '#2F855A' : '#64748B';
-  const iconFill = board ? '#1E40AF' : asset ? '#166534' : '#334155';
-  const icon = iconName(node);
+  const symbol = electricalMapSymbolForNode(node);
+  const branchRoot = node.kind !== 'GRID' && !item.parentId;
   const coverage = coveragePresentation(node.coverageState);
   const title = node.displayCode || node.name;
   const kindLabel = node.kind === 'GRID'
@@ -166,8 +180,7 @@ function renderNode(item: ElectricalDiagramLayoutNode): string {
   const parts = [
     `<g data-node-id="${escapeXml(node.id)}">`,
     `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="11" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`,
-    `<rect x="${x + 10}" y="${y + 10}" width="30" height="30" rx="9" fill="${iconFill}"/>`,
-    svgIcon(icon, x + 16, y + 16, 18, '#FFFFFF'),
+    svgSchematicSymbol(symbol, x + 9, y + 8, 34, board ? nodeSymbolChannels(node, model) : []),
     svgText(kindLabel, x + 48, y + 20, { size: 8, color: '#64748B', weight: 800, letterSpacing: 0.8 }),
   ];
   if (coverage) {
@@ -183,15 +196,18 @@ function renderNode(item: ElectricalDiagramLayoutNode): string {
   if (node.displayCode && node.name !== node.displayCode) {
     parts.push(svgText(truncate(node.name, board ? 35 : 25), x + 12, y + 73, { size: 8.5, color: '#475569', weight: 600 }));
   }
+  if (branchRoot) {
+    parts.push(svgText('Branch root — upstream not shown', x + 12, y + (node.displayCode ? 84 : 70), { size: 7, color: '#92400E', weight: 750 }));
+  }
   if (board) {
-    let moduleY = y + 84;
+    let moduleY = y + (branchRoot ? 94 : 84);
     for (const device of node.devices.slice(0, 3)) {
       const activeChannels = device.channels
         .filter((channel) => channel.purpose !== 'SPARE')
         .map((channel) => channel.ordinal);
       parts.push(
         `<rect x="${x + 10}" y="${moduleY}" width="${width - 20}" height="34" rx="7" fill="#FFFFFF" stroke="#86EFAC"/>`,
-        svgIcon('meter', x + 16, moduleY + 7, 15, '#166534'),
+        svgSchematicSymbol('node-meter', x + 14, moduleY + 4, 22),
         svgText(truncate(device.name, 29), x + 36, moduleY + 13, { size: 8, weight: 750 }),
         svgText(truncate(`${compactChannelLabel(activeChannels)}${device.serialNumber && device.serialNumber !== device.name ? ` - ${device.serialNumber}` : ''}`, 40), x + 36, moduleY + 26, { size: 7, color: '#64748B', weight: 500 }),
       );
@@ -203,7 +219,7 @@ function renderNode(item: ElectricalDiagramLayoutNode): string {
       parts.push(svgText(`+${node.devices.length - 3} more devices`, x + 12, y + height - 10, { size: 7.5, color: '#64748B' }));
     }
   } else {
-    parts.push(svgText(truncate(`${node.typeLabel} - ${node.zoneName}`, 34), x + 12, y + (node.displayCode ? 91 : 76), { size: 8, color: '#64748B' }));
+    parts.push(svgText(truncate(`${node.typeLabel} - ${node.zoneName}`, 34), x + 12, y + (branchRoot ? 101 : node.displayCode ? 91 : 76), { size: 8, color: '#64748B' }));
   }
   parts.push('</g>');
   return parts.join('');
@@ -217,6 +233,7 @@ function renderEdge(
   const source = layoutById.get(edge.sourceNodeId);
   const target = layoutById.get(edge.targetNodeId);
   if (!source || !target) return '';
+  if (edge.relationship === 'MEASURES' && edge.sourceNodeId === edge.targetNodeId) return '';
   const offset = edge.relationship === 'MEASURES' ? ((edgeIndex % 5) - 2) * 4 : 0;
   const points = electricalDiagramOrthogonalPoints(source, target, {
     sourceYOffset: offset,
@@ -234,7 +251,7 @@ export function renderElectricalDiagramSvg(
 ): string {
   const layout = buildElectricalDiagramLayout(model);
   if (!layout.nodes.length) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeXml(model.siteName)} electrical single-line diagram" viewBox="0 0 1080 520" preserveAspectRatio="xMidYMid meet"><rect width="1080" height="520" fill="#FFFFFF"/><rect x="160" y="130" width="760" height="240" rx="22" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="8 7"/>${svgIcon('board', 496, 168, 88, '#64748B')}${svgText('No confirmed electrical map', 540, 292, { size: 24, color: '#0E2240', weight: 850, anchor: 'middle' })}${svgText('Resolve the incoming supply and electrical relationships to build the diagram.', 540, 328, { size: 13, color: '#64748B', weight: 500, anchor: 'middle' })}</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeXml(model.siteName)} electrical single-line diagram" viewBox="0 0 1080 520" preserveAspectRatio="xMidYMid meet"><rect width="1080" height="520" fill="#FFFFFF"/><rect x="160" y="130" width="760" height="240" rx="22" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="8 7"/>${svgSchematicSymbol('board-other', 496, 168, 88)}${svgText('No electrical items', 540, 292, { size: 24, color: '#0E2240', weight: 850, anchor: 'middle' })}${svgText('Add or import an electrical item to build the diagram.', 540, 328, { size: 13, color: '#64748B', weight: 500, anchor: 'middle' })}</svg>`;
   }
   const window = options.window ?? {
     x: 0,
@@ -250,7 +267,7 @@ export function renderElectricalDiagramSvg(
   const titleHeight = options.includeTitle === false ? 0 : 40;
   const body = [
     ...layout.edges.map((edge, index) => renderEdge(edge, layoutById, index)),
-    ...layout.nodes.map(renderNode),
+    ...layout.nodes.map((item) => renderNode(item, model)),
   ].join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeXml(model.siteName)} electrical single-line diagram" viewBox="${window.x} ${window.y - titleHeight} ${window.width} ${window.height + titleHeight}" preserveAspectRatio="xMidYMid meet"><rect x="${window.x}" y="${window.y - titleHeight}" width="${window.width}" height="${window.height + titleHeight}" fill="#FFFFFF"/>${options.includeTitle === false ? '' : `${svgText(model.siteName, 8, 18, { size: 15, color: '#0E2240', weight: 850 })}${svgText('Electrical supply, metering and connected loads', 8, 34, { size: 8, color: '#64748B', weight: 500 })}`}${body}</svg>`;
 }
@@ -289,15 +306,16 @@ export function planElectricalReportWindows(
   return windows;
 }
 
-function legendSymbol(icon: IconName, label: string): string {
-  return `<span class="legend-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON_MARKUP[icon]}</svg>${escapeElectricalReportHtml(label)}</span>`;
+function legendSymbol(symbol: ElectricalMapSymbolName, label: string): string {
+  return `<span class="legend-symbol"><svg viewBox="0 0 64 64">${svgSchematicSymbol(symbol, 0, 0, 64)}</svg>${escapeElectricalReportHtml(label)}</span>`;
 }
 
 function legendHtml(): string {
   return `<div class="electrical-legend">
-    <div class="legend-group"><strong>Node symbols</strong>${legendSymbol('grid', 'Incoming grid')}${legendSymbol('board', 'Switchboard')}${legendSymbol('meter', 'Installed meter')}${legendSymbol('residual', 'Calculated residual')}</div>
-    <div class="legend-group"><strong>Load symbols</strong>${legendSymbol('hvac', 'HVAC / refrigeration')}${legendSymbol('lighting', 'Lighting')}${legendSymbol('solar', 'Solar / PV')}${legendSymbol('charger', 'EV charging / outlet')}${legendSymbol('battery', 'Forklift / battery')}${legendSymbol('fan', 'Exhaust / fan')}${legendSymbol('tool', 'Vehicle hoist')}${legendSymbol('water', 'Hot water / heater')}${legendSymbol('gauge', 'Compressed air')}${legendSymbol('building', 'Other asset')}</div>
+    <div class="legend-group"><strong>Node symbols</strong>${ELECTRICAL_MAP_NODE_SYMBOLS.map((item) => legendSymbol(item.symbol, item.label)).join('')}</div>
+    <div class="legend-group"><strong>Load symbols</strong>${ELECTRICAL_MAP_LOAD_SYMBOLS.map((item) => legendSymbol(item.symbol, item.label)).join('')}</div>
     <div class="legend-group connections"><strong>Connections</strong><span><i class="line supply"></i>Supply - confirmed FED_FROM cable path</span><span><i class="line measures"></i>Measures - confirmed channels; never changes supply</span><span><i class="line residual"></i>Residual - calculation, not a physical cable</span></div>
+    <div class="legend-group"><strong>Partial map</strong><span>Branch root — upstream not shown</span><span>Known record retained without inventing a supply link</span></div>
     <div class="legend-group coverage-group"><strong>Coverage</strong><span class="coverage direct">DIRECT</span><span class="coverage virtual">VIRTUAL</span><span class="coverage unmetered">UNMETERED</span><span class="coverage tbc">TBC</span><span class="coverage issue">ISSUE</span></div>
   </div>`;
 }
@@ -320,20 +338,26 @@ function nodeMeasurementDetails(
   return [...incoming, ...outgoing];
 }
 
-function detailRowHtml(node: ElectricalDiagramNode, model: ElectricalDiagramModel, depth = 0): string {
+function detailRowHtml(
+  node: ElectricalDiagramNode,
+  model: ElectricalDiagramModel,
+  depth = 0,
+  rootLabel?: string,
+): string {
   const devices = node.devices.flatMap((device) => {
     const channels = device.channels.map((channel) => `Ch ${channel.ordinal} (${channel.loadLabel || channel.purpose.replaceAll('_', ' ').toLocaleLowerCase()}${channel.description ? ` - ${channel.description}` : ''}${channel.sensorRating ? ` - ${channel.sensorRating}` : ''})`).join(', ');
     return [`Installed device: ${device.name} - ${device.model}${device.serialNumber ? ` - serial ${device.serialNumber}` : ''}${device.deviceNumber ? ` - device ${device.deviceNumber}` : ''}${channels ? ` - ${channels}` : ''}`];
   });
   const detail = [
     node.typeLabel,
+    rootLabel,
     node.zoneName ? `Physical zone: ${node.zoneName}${node.zoneCode ? ` (${node.zoneCode})` : ''}` : '',
     node.coverageState ? `Coverage: ${COVERAGE_LABELS[node.coverageState]}` : '',
     ...devices,
     ...nodeMeasurementDetails(node, model),
   ].filter(Boolean);
-  const icon = iconName(node);
-  return `<div class="electrical-detail-row" style="--depth:${Math.min(depth, 8)}"><div class="electrical-detail-name"><span class="detail-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON_MARKUP[icon]}</svg></span><span><strong>${escapeElectricalReportHtml(node.displayCode || node.name)}</strong>${node.displayCode && node.name !== node.displayCode ? `<small>${escapeElectricalReportHtml(node.name)}</small>` : ''}</span></div><div class="electrical-detail-copy">${detail.map((line) => `<span>${escapeElectricalReportHtml(line)}</span>`).join('')}</div></div>`;
+  const symbol = electricalMapSymbolForNode(node);
+  return `<div class="electrical-detail-row" style="--depth:${Math.min(depth, 8)}"><div class="electrical-detail-name"><span class="detail-icon"><svg viewBox="0 0 64 64">${svgSchematicSymbol(symbol, 0, 0, 64)}</svg></span><span><strong>${escapeElectricalReportHtml(node.displayCode || node.name)}</strong>${node.displayCode && node.name !== node.displayCode ? `<small>${escapeElectricalReportHtml(node.name)}</small>` : ''}</span></div><div class="electrical-detail-copy">${detail.map((line) => `<span>${escapeElectricalReportHtml(line)}</span>`).join('')}</div></div>`;
 }
 
 function hierarchyDetailsHtml(model: ElectricalDiagramModel): string {
@@ -353,15 +377,25 @@ function hierarchyDetailsHtml(model: ElectricalDiagramModel): string {
   const walk = (item: ElectricalDiagramLayoutNode, depth: number) => {
     if (emitted.has(item.node.id)) return;
     emitted.add(item.node.id);
-    rows.push(detailRowHtml(item.node, model, depth));
+    rows.push(detailRowHtml(
+      item.node,
+      model,
+      depth,
+      !item.parentId
+        ? item.node.kind === 'GRID' ? 'Grid root' : 'Branch root — upstream not shown'
+        : undefined,
+    ));
     for (const child of childrenById.get(item.node.id) ?? []) walk(child, depth + 1);
   };
   layout.nodes.filter((item) => !item.parentId).sort((left, right) => left.y - right.y).forEach((item) => walk(item, 0));
   layout.nodes.forEach((item) => walk(item, item.depth));
-  return `<section class="report-section"><h2>Details by electrical hierarchy</h2><h3>Incoming supply to connected loads</h3>${rows.length ? `<div class="electrical-details">${rows.join('')}</div>` : '<p>No confirmed electrical hierarchy is available.</p>'}</section>`;
+  return `<section class="report-section"><h2>Details by electrical hierarchy</h2><h3>Known supply branches and connected loads</h3>${rows.length ? `<div class="electrical-details">${rows.join('')}</div>` : '<p>No electrical items are available.</p>'}</section>`;
 }
 
 function zoneDetailsHtml(model: ElectricalDiagramModel): string {
+  const finalRoots = new Map(buildElectricalDiagramLayout(model).nodes
+    .filter((item) => !item.parentId)
+    .map((item) => [item.node.id, item.node.kind === 'GRID' ? 'Grid root' : 'Branch root — upstream not shown']));
   const zoneGroups = new Map<
     string,
     { zoneName: string; zoneCode?: string; nodes: ElectricalDiagramNode[] }
@@ -388,7 +422,7 @@ function zoneDetailsHtml(model: ElectricalDiagramModel): string {
       .sort((left, right) => (left.displayCode || left.name).localeCompare(right.displayCode || right.name))
       .map((node) => {
         emitted.add(node.id);
-        return detailRowHtml(node, model);
+        return detailRowHtml(node, model, 0, finalRoots.get(node.id));
       });
     const label = zone.zoneCode
       ? `${zone.zoneName} (${zone.zoneCode})`
@@ -397,9 +431,9 @@ function zoneDetailsHtml(model: ElectricalDiagramModel): string {
   });
   const shared = model.nodes.filter((node) => !emitted.has(node.id));
   if (shared.length) {
-    groups.push(`<h3>Shared / unassigned electrical infrastructure</h3><div class="electrical-details">${shared.map((node) => detailRowHtml(node, model)).join('')}</div>`);
+    groups.push(`<h3>Shared / unassigned electrical infrastructure</h3><div class="electrical-details">${shared.map((node) => detailRowHtml(node, model, 0, finalRoots.get(node.id))).join('')}</div>`);
   }
-  return `<section class="report-section"><h2>Details by physical zone</h2>${groups.length ? groups.join('') : '<p>No confirmed electrical records are available.</p>'}</section>`;
+  return `<section class="report-section"><h2>Details by physical zone</h2>${groups.length ? groups.join('') : '<p>No electrical items are available.</p>'}</section>`;
 }
 
 export function buildElectricalMapReportHtml(
@@ -408,7 +442,7 @@ export function buildElectricalMapReportHtml(
 ): string {
   const layout = buildElectricalDiagramLayout(model);
   const windows = planElectricalReportWindows(layout);
-  const overview = `<section class="report-section map-page"><h2>Installation electrical map</h2><div class="map-frame overview">${renderElectricalDiagramSvg(model)}</div>${legendHtml()}<p class="map-note">Solid copper lines show electrical supply. Blue dashed lines show measurements. Grey dotted lines show calculated residual relationships. Device names and active channels appear on their installed switchboards.</p></section>`;
+  const overview = `<section class="report-section map-page"><h2>Installation electrical map</h2><div class="map-frame overview">${renderElectricalDiagramSvg(model)}</div>${legendHtml()}<p class="map-note">Every known electrical item remains visible. Solid copper lines show safe FED_FROM supply links; blue dashed lines show measurements; grey dotted lines show calculated residual relationships. Branch roots have no invented upstream link.</p></section>`;
   const requestedWindowCount = windows[0]
     ? windows[0].rowCount * windows[0].columnCount
     : 0;
@@ -417,7 +451,7 @@ export function buildElectricalMapReportHtml(
   const details = detailMode === 'by-zone'
     ? zoneDetailsHtml(model)
     : hierarchyDetailsHtml(model);
-  const unresolved = `<section class="report-section"><h2>Unresolved relationships</h2>${model.unresolved.length ? `<p>${model.unresolved.length} unresolved relationship${model.unresolved.length === 1 ? '' : 's'} remain outside the confirmed electrical map.</p><table><thead><tr><th>Record</th><th>Relationship</th><th>Missing end</th><th>Reason</th></tr></thead><tbody>${model.unresolved.map((relationship) => `<tr><td>${escapeElectricalReportHtml(`${relationship.subjectType}: ${relationship.subjectId}`)}</td><td>${escapeElectricalReportHtml(relationship.relation)}</td><td>${escapeElectricalReportHtml(relationship.missingEnd)}</td><td>${escapeElectricalReportHtml(relationship.reason)}</td></tr>`).join('')}</tbody></table>` : '<p>No unresolved electrical relationships.</p>'}</section>`;
+  const unresolved = `<section class="report-section"><h2>Needs follow-up</h2>${model.unresolved.length ? `<p>${model.unresolved.length} relationship${model.unresolved.length === 1 ? '' : 's'} need follow-up. Known records and safe downstream branches remain in the map.</p><table><thead><tr><th>Record</th><th>Relationship</th><th>Missing end</th><th>Reason</th></tr></thead><tbody>${model.unresolved.map((relationship) => `<tr><td>${escapeElectricalReportHtml(`${relationship.subjectType}: ${relationship.subjectId}`)}</td><td>${escapeElectricalReportHtml(relationship.relation)}</td><td>${escapeElectricalReportHtml(relationship.missingEnd)}</td><td>${escapeElectricalReportHtml(relationship.reason)}</td></tr>`).join('')}</tbody></table>` : '<p>No electrical relationships need follow-up.</p>'}</section>`;
   return `${overview}${detailPages}${details}${unresolved}`;
 }
 

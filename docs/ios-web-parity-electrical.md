@@ -1,4 +1,4 @@
-# Field App electrical workflow parity — 2026-09-05
+# Field App electrical workflow parity — 2026-09-07
 
 This is a work-in-progress inventory of the portal `/installhub` electrical workflow against the native iOS app. Portal source is `sustainability-wise-api/apps/ecoaudit/src/modules/installhub`; API source is `sustainability-wise-api/src/routes/installhub`. Mobile counterparts are listed below. No page is marked PASS from source inspection or unit tests alone.
 
@@ -45,7 +45,7 @@ The current API contract (`src/routes/installhub/AGENTS.md` and canonical valida
 | Metering | Meter removal | Draft-only retire active meter; retain completed commissioning record; affected assets TBC | Existing canonical meter removal helper and screen confirmation | RETEST | Existing test covers preservation; server/native bidirectional lifecycle not yet run |
 | Data review | DataPage readiness | Only explicit TBC supply/metering/target blocks completion | Local installationV2 generated numerous obsolete optional blockers | FIXED | Local readiness filtered by actual stored tagged union; missing/invalid confirmed values do not masquerade as TBC |
 | Data review | DataPage checks | Readiness vs diagnostics and completion language | Mobile copy claimed other mapping diagnostics block completion | FIXED | TBC-only copy updated; quality diagnostics retained separately for coverage rows |
-| Data review | DataPage physical/electrical views | Physical zone, electrical supply, measurements separate; search/open actions | DataView diagram/list plus canonical rows exist | RETEST | Full source-to-display mapping and large/dark/native states need device comparison |
+| Data review | DataPage physical/electrical views | Safe partial supply forest, selected measurement overlay, exact schematic icons, search/open/export actions | `Open Electrical Map` enters Electrical directly; all known nodes remain, final non-grid roots say `Branch root — upstream not shown`, and all 25 portal symbols render natively | FIXED | Source/unit parity complete; large/dark/native device comparison remains RETEST |
 | Data review | MeteringTable | Direct, virtual, unmetered, TBC, mapping issue and unassigned channel cohorts | Existing all-asset rows/inventory preserve these distinctions | RETEST | Quality diagnostics kept available after readiness fix so invalid mapping never becomes direct coverage |
 | Device lookup | DeviceSearchPage | Search installation-wide name, serial, tag, board, zone; open/replace | DeviceSearchScreen/domain search exists | RETEST | Exact search option/result mapping and replacement walkthrough not device-tested |
 | Incoming supply | GridSupplyEditor | Add/edit NMI/default; remove unreferenced connection with default reassignment | Existing InstallationDetail grid editor identified | RETEST | Root default/name fixes source-reviewed. Native additionally retains existing, explicitly confirmed Convert-to-TBC removal of referenced supply; portal blocks that branch. This intentional extra is preserved, not removed for parity |
@@ -62,6 +62,15 @@ The current API contract (`src/routes/installhub/AGENTS.md` and canonical valida
 - Explicit TBC target -> remains blocking even if other optional values are absent.
 - Bad confirmed reference or malformed optional capture -> remains a diagnostic for mapping presentation, not a completion gate.
 - Completed installation -> canonical local export eligibility follows server completion/TBC policy; pinned server export requirements are still enforced by export API callers.
+
+## Safe-map, naming, and iPhone parity increment
+
+- Electrical layout uses all known node IDs. Exact duplicate supply pairs collapse; different-source competing parents, self-supply, missing endpoints, and every edge inside a cycle are omitted without removing nodes or safe downstream branches.
+- Same-board `MEASURES` remains semantic data but never draws a self-loop. Only measurement links incident to the selected symbol are shown; safe supply and residual paths remain visible.
+- Mobile and portal share the same 25 canonical symbol names, palettes, primitive geometry, board cabinet phases/channels, legacy selection fallbacks, and HVAC indoor/condenser variants.
+- `Share PNG` / `Share SVG` downloads the authenticated API renderer. Completed maps require their positive immutable `recordVersionNumber` and fail closed without it; Draft maps use the current cloud tree.
+- Provisional display codes use rule v4: `<INSTALL>-<ZONE>-<NN>-<TYPE>-<CUSTOMNAME>`, with contiguous type-segment deduplication. Existing stable record IDs and frozen/overridden display identities are preserved.
+- The Home list owns its complete header so all controls scroll on iPhone. Compact actions avoid truncation, and whitespace-separated search tokens partially match job references and other job fields independently.
 
 ## Verification evidence
 

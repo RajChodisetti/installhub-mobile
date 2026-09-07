@@ -40,9 +40,9 @@ test('native rendering preserves relative portal centres without clipping larger
   assert.deepEqual(auto.nodes.map((node) => node.nodeId), ['a', 'b']);
 });
 
-test('only grid-reachable confirmed board, asset and residual symbols belong to the saved client map', () => {
+test('every known safe-forest symbol belongs to the saved client map', () => {
   const view = { nodes: [{ id: 'g', kind: 'GRID' }, { id: 'b', kind: 'BOARD' }, { id: 'a', kind: 'SITE_ASSET', coverageState: 'DIRECT' }, { id: 't', kind: 'SITE_ASSET', coverageState: 'TBC' }, { id: 'v', kind: 'VIRTUAL_RESIDUAL', parentNodeId: 'b' }, { id: 'orphan', kind: 'BOARD' }], edges: [
     { sourceNodeId: 'g', targetNodeId: 'b', relationship: 'FED_FROM' }, { sourceNodeId: 'b', targetNodeId: 'a', relationship: 'FED_FROM' }, { sourceNodeId: 'b', targetNodeId: 't', relationship: 'FED_FROM' },
   ], unresolved: [] } as unknown as ElectricalMapViewResponse;
-  assert.deepEqual([...confirmedElectricalMapNodeIds(view)].sort(), ['a', 'b', 'g', 'v']);
+  assert.deepEqual([...confirmedElectricalMapNodeIds(view)].sort(), ['a', 'b', 'g', 'orphan', 't', 'v']);
 });

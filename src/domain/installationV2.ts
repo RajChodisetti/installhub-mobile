@@ -683,6 +683,8 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
               zoneId: board.zone_id,
               customName: board.asset_name,
               fallbackType: BOARD_TYPE_LABELS[board.type_code],
+              entityKind: 'board',
+              entityTypeCode: board.type_code,
               excludeId: board.id,
             },
           );
@@ -735,6 +737,8 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
               zoneId: asset.zone_id,
               customName: asset.asset_name,
               fallbackType: SITE_ASSET_TYPE_LABELS[asset.type_code],
+              entityKind: 'site_asset',
+              entityTypeCode: asset.type_code,
               excludeId: asset.id,
             },
           );
@@ -862,6 +866,8 @@ export function replaceBoardMetersFromLegacy(
         zoneId: board.zone_id,
         customName: canonical.customName,
         fallbackType: fallbackName,
+        entityKind: 'meter',
+        entityTypeCode: canonical.deviceModel,
         excludeId: canonical.id,
         current: existing?.displayName,
       },

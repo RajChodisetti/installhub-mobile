@@ -287,6 +287,8 @@ export function MeterFormScreen({ navigation, route }: Props) {
       zoneId: board.zone_id,
       customName: meterCustomName,
       fallbackType: defaultMeterCustomName(meter.device_type),
+      entityKind: 'meter',
+      entityTypeCode: meter.device_type === 'Other' ? 'OTHER' : meter.device_type,
       excludeId: meter.id,
       current: meterId ? previewDevice.displayName : undefined,
     },
@@ -295,10 +297,18 @@ export function MeterFormScreen({ navigation, route }: Props) {
     && assignmentApprovalSignature(prior) === assignmentApprovalSignature(assignment as MeasurementAssignment));
   const assetConflicts = (assetId: string) => allAssignments.filter((item) => item.meterId !== meter.id
     && item.target.kind === 'SITE_ASSET' && item.target.siteAssetId === assetId);
-  const quickAssetPreview = installation && quickAssetZoneId ? provisionalDisplayCodeV2(installation, {
+  // Preview allocation must stay pure: rerenders must not consume the durable
+  // per-zone sequence before the staged asset is actually saved.
+  const quickAssetPreview = installation && quickAssetZoneId ? provisionalDisplayCodeV2(structuredClone(installation), {
     zones, electricalAssets: boards, siteAssets: allAssets,
     meterDevices: boards.flatMap((item) => item.meters.map((device) => meterDeviceFromLegacy(installationId, item, device))),
-  }, { zoneId: quickAssetZoneId, customName: quickAssetName || quickAssetCustomType || SITE_ASSET_TYPE_LABELS[quickAssetType], fallbackType: SITE_ASSET_TYPE_LABELS[quickAssetType] }).value : '';
+  }, {
+    zoneId: quickAssetZoneId,
+    customName: quickAssetName || quickAssetCustomType || SITE_ASSET_TYPE_LABELS[quickAssetType],
+    fallbackType: SITE_ASSET_TYPE_LABELS[quickAssetType],
+    entityKind: 'site_asset',
+    entityTypeCode: quickAssetType,
+  }).value : '';
   const zoneName = (zoneId: string) => zones.find((item) => item.id === zoneId)?.zone_name ?? 'Unknown zone';
   const purposeFor = (assignment: AssignmentDraft): MeterChannelPurpose | null => {
     const purposes = new Set(

@@ -12,7 +12,7 @@ const navigatorSource = readFileSync(
 );
 
 const workspaceActions = [
-  ['Electrical map & reconciliation', 'DataView'],
+  ['Open Electrical Map', 'DataView'],
   ['Field forms & PDFs', 'FormsList'],
   ['Find devices', 'DeviceSearch'],
   ['Photo gallery', 'PhotoPreview'],

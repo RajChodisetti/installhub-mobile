@@ -536,7 +536,7 @@ test('accepted legacy taxonomy aliases normalize without losing deliberate custo
   assert.equal(store.gridSupplies.find((grid) => grid.isDefault)?.id, 'grid-a');
   assert.equal(
     store.siteAssets.find((asset) => asset.id === 'new-light')?.display_code,
-    'ESS-PLA-ESS-01-01-DIRECT-GRID-LOAD',
+    'ESS-PLA-ESS-01-01-LIGHTING-DIRECT-GRID-LOAD',
   );
   assert.equal(store.siteAssets.find((asset) => asset.id === 'refrigeration')?.custom_type_name, 'Refrigeration');
 });

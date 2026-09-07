@@ -27,7 +27,8 @@ test('PDF map is an icon-first vector diagram with exact devices, loads and line
   assert.match(html, /200A/);
   assert.match(html, /device WW-002/);
   assert.match(html, /Ch 4/);
-  assert.match(html, /HVAC \/ refrigeration/);
+  assert.match(html, /HVAC \(general\)/);
+  assert.match(html, /Refrigeration/);
   assert.match(html, /Installed meter/);
   assert.match(html, /Supply - confirmed FED_FROM cable path/);
   assert.match(html, /Measures - confirmed channels; never changes supply/);
@@ -144,13 +145,13 @@ test('on-device map detail pagination is deterministic and bounded', () => {
   assert.deepEqual(planElectricalReportWindows(layout), windows);
 });
 
-test('an unresolved installation still renders a useful empty-map page', () => {
+test('an unresolved installation still renders a useful partial forest', () => {
   const input = electricalDiagramFixture();
   input.gridSupplies = [];
   const model = buildElectricalDiagramModel(input);
   const html = buildElectricalMapReportHtml(model, 'by-electrical-hierarchy');
 
-  assert.equal(model.nodes.length, 0);
-  assert.match(html, /No confirmed electrical map/);
-  assert.match(html, /Resolve the incoming supply/);
+  assert.ok(model.nodes.length > 0);
+  assert.match(html, /Branch root/);
+  assert.match(html, /upstream not shown/);
 });

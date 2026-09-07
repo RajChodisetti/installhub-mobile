@@ -1345,10 +1345,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         </Text>
         <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
           <Button
-            title="Electrical map & reconciliation"
+            title="Open Electrical Map"
             variant="secondary"
             onPress={() => requestAssignedWorkAction(() => {
-              navigation.navigate('DataView', { installationId });
+              navigation.navigate('DataView', { installationId, initialMode: 'ELECTRICAL' });
             })}
           />
           <Button
