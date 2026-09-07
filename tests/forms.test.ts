@@ -25,7 +25,7 @@ import type {
   User,
 } from '../src/types';
 
-test('new forms prefer the installation customer over the contracting client', () => {
+test('new forms use the installation client name without exposing a separate customer name', () => {
   const user = {
     full_name: 'Field Technician',
   } as User;
@@ -38,7 +38,7 @@ test('new forms prefer the installation customer over the contracting client', (
 
   assert.equal(
     createInitialFormAnswers(baseInstallation, user)['site.customer_name'],
-    'End Customer',
+    'Contracting Client',
   );
   assert.equal(
     createInitialFormAnswers(
@@ -126,14 +126,14 @@ test('every field matches the audited portal capture contract', () => {
   // on 2026-09-05. Field ordering is presentation-only; identifiers, labels,
   // kinds, options, conditions, scanner modes and optionality are all pinned.
   const expected: Record<string, string> = {
-    "ww-installation": "c53deff86d0b5cc3147ca630e81f4c5024d986e46a6ae4df932131e28089eeac",
-    "a3rm-installation": "65f4c78a28644ff68df3c41749901ca70d5b9e5ceedb2a88ebc9747d081b3d43",
-    "a6m-installation": "a3474aab08e77a5cade9d3c71a300bcc0548ca5d34419d248614a3e184f4cba0",
-    "comms-fault": "892fc38f5bb7b8249e93bbb3a9631133970c1dbc16ee2cfc461eb5340a0d3598",
+    "ww-installation": "0a35e73316d33cdcf5a39a772386b7a695a0d26187e2da332cb7fb460bc31423",
+    "a3rm-installation": "155b4566c2c3ce9795b8a5938fda06b18fff77b72e732c377e62366d1432b262",
+    "a6m-installation": "8ed52ddbe43612c9014c82be7eba830d831ed297d81f9561b5b4f5860f2c059e",
+    "comms-fault": "cf1aeb4348accd4900fce39e93065997bf23e2b2c65c81a4e27ab4a79c9e2203",
     "ace-switchboard": "af9961e2a4ef7b5bf47aa816592efc00d593eac97e9c209a08f091f3f663ef12",
-    "honeywell-q400": "1db113e59034d1c70fb79fd7f9f10e96b066ef288cec7a3759b109707aad54a2",
-    "captis-logger": "10b9380dbef2bc7342b81ef887619d2695a2dd6074f99824d5100f9bba01fa9d",
-    "sums-logger": "e0d57aca02b5a6fa63d9b6d147844d45aa489a92594c9fe193da95dc435da21b"
+    "honeywell-q400": "12231839e5a4dd9cd65016d16544c71174632ed810de30189686e81878cd3e2a",
+    "captis-logger": "111719dd8c1e605b27d5699287df953f6737fb93775ccba4d20c0eb1d67c576c",
+    "sums-logger": "383a557c468b904826e6c34055e5359ec02befc87a0bde274f9439dbf6af6bde"
 };
   for (const definition of FORM_DEFINITIONS) {
     const contract = {
@@ -167,36 +167,29 @@ test('Installation form dynamically exposes exact A3RM and A6M options', () => {
   )!;
   assert.equal(channels.length, 6);
   assert.deepEqual(optionsForField(firstRating, { 'device.type': 'A3RM' }), [
-    '10cm-200A',
-    '10cm-333mV',
-    '20cm-3000A',
-    '30cm-3000A',
-    '45cm-3000A',
-    'Not Used',
+    '3000A – 9cm',
+    '3000A – 20cm',
+    '3000A – 29cm',
   ]);
   assert.deepEqual(optionsForField(firstRating, { 'device.type': 'A6M' }), [
-    'CT-60A',
-    'CT-120A',
-    'CT-250A',
-    'CT-400A',
-    'CT-600A',
-    'Not Used',
+    '60A',
+    '120A',
+    '200A',
+    '400A',
+    '600A',
   ]);
   assert.deepEqual(
     optionsForField(firstRating, {
       'device.type': 'A3RM',
       'channel.1.rating': '3000A - 9cm',
     }),
-    [
-      '10cm-200A', '10cm-333mV', '20cm-3000A', '30cm-3000A',
-      '45cm-3000A', 'Not Used', '3000A - 9cm',
-    ],
+    ['3000A – 9cm', '3000A – 20cm', '3000A – 29cm'],
   );
   assert.equal(isSectionVisible(channels[2], { 'device.type': 'A3RM' }), true);
   assert.equal(isSectionVisible(channels[3], { 'device.type': 'A3RM' }), false);
   assert.equal(isSectionVisible(channels[5], { 'device.type': 'A6M' }), true);
   assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, [
-    'CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used',
+    '60A', '120A', '200A', '400A', '600A',
   ]);
 });
 
@@ -431,7 +424,7 @@ test('Comms replacement rebuilds channel count and sensor representation', () =>
     'works.new_device_type': 'A3RM',
     'works.new_device_id': 'NEW-ID',
     'works.new_device_number': 'NEW-NUMBER',
-    'works.new_sensor_rating': '3000A - 20cm',
+    'works.new_sensor_rating': '3000A – 20cm',
   });
   assert.equal(replacement.device_name, 'A3RM - NEW-ID');
   assert.equal(replacement.device_type, 'A3RM');
@@ -439,7 +432,7 @@ test('Comms replacement rebuilds channel count and sensor representation', () =>
   assert.equal(replacement.device_number, 'NEW-NUMBER');
   assert.equal(replacement.ww_channels?.length, 3);
   assert.equal(replacement.ww_channels?.[0]?.load_type, 'Mains Supply');
-  assert.equal(replacement.ww_channels?.[0]?.rogowski_size, '3000A - 20cm');
+  assert.equal(replacement.ww_channels?.[0]?.rogowski_size, '3000A – 20cm');
   assert.equal(replacement.ww_channels?.[0]?.ct_ratio, undefined);
 
   const humanNamed = meterAfterCommsReplacement(existing, {
@@ -683,7 +676,7 @@ test('replacement completion needs valid new identity and model-specific sensor 
   assert.equal(validateForm(submission).length, 3);
   Object.assign(submission.answers, { 'works.new_device_type': 'A3RM', 'works.new_device_id': 'SERIAL', 'works.new_sensor_rating': '60A' });
   assert.equal(validateForm(submission).length, 1);
-  submission.answers['works.new_sensor_rating'] = '3000A - 9cm';
+  submission.answers['works.new_sensor_rating'] = '3000A – 9cm';
   assert.deepEqual(validateForm(submission), []);
   submission.answers['works.replace_device'] = 'no';
   delete submission.answers['works.new_device_id'];

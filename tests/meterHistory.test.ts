@@ -32,6 +32,7 @@ function fixture() {
   const restored = structuredClone(store.meterDevices[0]!);
   restored.serialNumber = 'HISTORICAL';
   restored.deviceModel = 'A6M';
+  restored.lifecycleState = 'INACTIVE';
   const remote = { treeSchemaVersion: 2, treeRevision: 4,
     installation: { id: 'installation', treeRevision: 4 }, meterDevices: [restored],
     measurementAssignments: [], electricalAssets: [], siteAssets: [], zones: [], formSubmissions: [],
@@ -49,8 +50,10 @@ test('restore only applies the exact device revision and preserves unrelated rec
   const originalForms = JSON.stringify(store.formSubmissions);
   applyConfirmedMeterHistoryRollback(store, baseline, result, remote, buildInstallationBackupTree(store, store.installations[0]!));
   assert.equal(store.meterDevices[0]!.serialNumber, 'HISTORICAL');
+  assert.equal(store.meterDevices[0]!.lifecycleState, 'INACTIVE');
   assert.equal(store.electricalAssets[0]!.meters[0]!.device_id, 'HISTORICAL');
   assert.equal(store.electricalAssets[0]!.meters[0]!.device_type, 'A6M');
+  assert.equal(store.electricalAssets[0]!.meters[0]!.lifecycle_state, 'INACTIVE');
   assert.equal(store.electricalAssets[0]!.comments, 'Keep current board');
   assert.equal(JSON.stringify(store.zones), originalZones);
   assert.equal(JSON.stringify(store.formSubmissions), originalForms);
@@ -94,6 +97,7 @@ test('restore checks identity, placement, display ID, and stable channel IDs bef
   const meter = store.meterDevices[0]!;
   for (const changed of [
     { id: 'another' }, { installationId: 'another' }, { installedOnBoardId: 'another' },
+    { lifecycleState: 'DECOMMISSIONED' },
     { displayName: { ...meter.displayName, value: 'Renamed' } },
     { channels: [{ id: 'dup', ordinal: 1, purpose: 'SPARE' }, { id: 'dup', ordinal: 2, purpose: 'SPARE' }] },
   ]) assert.throws(() => confirmedHistoryMeter({ ...meter, ...changed }, meter));

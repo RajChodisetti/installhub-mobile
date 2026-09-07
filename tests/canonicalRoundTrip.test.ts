@@ -77,6 +77,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
     deviceModel: 'A3RM',
     customName: 'Boiler Meter',
     serialNumber: 'SERIAL-1',
+    lifecycleState: 'INACTIVE',
     displayName: {
       value: 'GS-A3RM-001', generatedValue: 'GS-A3RM-001',
       isOverridden: false, ruleVersion: 1,
@@ -127,6 +128,7 @@ test('golden canonical tree preserves semantics through normalize, wire, and imp
   assert.equal(wire.installation.solarCapacityKw, 42.5);
   assert.equal(wire.zones[0]?.zoneCode, 'PLANT');
   assert.equal(wire.meterDevices[0]?.customName, 'Boiler Meter');
+  assert.equal(wire.meterDevices[0]?.lifecycleState, 'INACTIVE');
   const remote = {
     ...wire,
     treeRevision: 3,

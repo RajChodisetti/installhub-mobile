@@ -32,11 +32,14 @@ function object(value: unknown): value is Record<string, unknown> {
 export function confirmedHistoryMeter(
   raw: Record<string, unknown>, current: MeterDevice,
 ): MeterDevice {
+  const lifecycleState = raw.lifecycleState ?? raw.lifecycle_state;
   if (raw.id !== current.id || raw.installationId !== current.installationId
     || raw.installedOnBoardId !== current.installedOnBoardId
     || !['A3RM', 'A6M', 'OTHER'].includes(String(raw.deviceModel))
     || !['WATTWATCHERS', 'OTHER'].includes(String(raw.deviceFamily))
     || typeof raw.serialNumber !== 'string' || !Array.isArray(raw.channels)
+    || (lifecycleState !== undefined && lifecycleState !== null
+      && !['PLANNED', 'ACTIVE', 'INACTIVE'].includes(String(lifecycleState)))
     || !object(raw.displayName)
     || canonicalJsonStringify(raw.displayName) !== canonicalJsonStringify(current.displayName)) {
     throw new Error('The confirmed restored device has an unexpected identity or switchboard context.');
@@ -53,7 +56,12 @@ export function confirmedHistoryMeter(
     ids.add(channel.id);
     ordinals.add(Number(channel.ordinal));
   }
-  return structuredClone(raw) as unknown as MeterDevice;
+  const restored = structuredClone(raw) as unknown as MeterDevice;
+  if (restored.lifecycleState === undefined
+    && (lifecycleState === 'PLANNED' || lifecycleState === 'ACTIVE' || lifecycleState === 'INACTIVE')) {
+    restored.lifecycleState = lifecycleState;
+  }
+  return restored;
 }
 
 export function applyConfirmedMeterHistoryRollback(

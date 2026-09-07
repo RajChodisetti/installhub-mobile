@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   partitionReadinessIssues,
   readinessIssueKey,
+  reconciliationIssueWhy,
   reconciliationProgress,
   summarizeReadinessIssues,
 } from '../src/domain/reconciliationWorkflow';
@@ -31,6 +32,37 @@ test('readiness issue keys remain stable across message copy changes', () => {
     entityId: 'channel-1', field: 'measurementAssignments', message: 'Updated copy',
   });
   assert.equal(first, second);
+});
+
+test('reconciliation errors include short user-understandable reasons', () => {
+  const issue = (code: string, entityType: ReadinessIssue['entityType']): ReadinessIssue => ({
+    code, severity: 'ERROR', entityType, entityId: 'fixture', message: 'Technical detail',
+  });
+  assert.equal(
+    reconciliationIssueWhy(issue('SUPPLY_TBC', 'board')),
+    'This switchboard was saved without a confirmed incoming connection or parent switchboard.',
+  );
+  assert.equal(
+    reconciliationIssueWhy(issue('SUPPLY_TBC', 'site_asset')),
+    'This asset was saved without a confirmed incoming connection or supplying switchboard.',
+  );
+  assert.equal(
+    reconciliationIssueWhy({ ...issue('METERING_STATE_INVALID', 'site_asset'), field: 'meteringState' }),
+    'This asset was saved without confirming whether it is metered or unmetered.',
+  );
+  assert.equal(
+    reconciliationIssueWhy(issue('MEASUREMENT_TARGET_TBC', 'measurement_assignment')),
+    'This channel group was saved without confirming what it measures.',
+  );
+  assert.equal(
+    reconciliationIssueWhy(issue('CHANNEL_DUPLICATE_ASSIGNMENT', 'measurement_assignment')),
+    'The same device channel is included in more than one measurement group, so its reading would be counted twice.',
+  );
+  assert.equal(
+    reconciliationIssueWhy(issue('SENSOR_RATING_INVALID', 'meter')),
+    'The saved CT or Rogowski rating is missing or does not match this device type.',
+  );
+  assert.match(reconciliationIssueWhy(issue('UNKNOWN', 'installation')), /current installation rules/);
 });
 
 test('reconciliation contains only explicit unresolved choices while diagnostics stay separate', () => {

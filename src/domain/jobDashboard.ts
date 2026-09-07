@@ -41,7 +41,7 @@ export function localDashboardSnapshot(store: AppDataStore, actorUserId: string 
 export function filterDashboardJobs(items: Installation[], query: string, status: DashboardStatusFilter): Installation[] {
   return sortDashboardJobs(items.filter((item) => item.thumbnail_status !== 'pending'
     && (status === 'All' || item.status === status)
-    && searchMatch(`${item.site_name} ${item.client_name} ${item.site_address} ${item.inspector_name}`, query)));
+    && searchMatch(`${item.assigned_work_job_summary?.schedule_title ?? ''} ${item.site_name} ${item.client_name} ${item.site_address} ${item.inspector_name}`, query)));
 }
 
 export type DashboardJobTiming = {

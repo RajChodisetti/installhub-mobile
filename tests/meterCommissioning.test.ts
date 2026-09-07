@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  addCustomMeterChannel,
   answersWithCanonicalBoardContext,
   canonicalWwSwitchboardTypeAnswer,
   channelAfterPurposeChange,
+  channelAfterSensorRatingChange,
+  channelWithModelValidSensor,
   channelsAfterDeviceTypeChange,
   deviceLabelPrefix,
   energyFlowLabel,
@@ -11,7 +14,10 @@ import {
   measuredItemTypeLabel,
   meterFromInstallationForm,
   meterChannelPurposeLabel,
+  meterChannelsNeedLayoutRepair,
+  normalizedMeterEditorChannels,
   phaseGroupingLabel,
+  removeCustomMeterChannel,
   showsWattwatchersCommissioningSections,
   siteAssetTargetIdsOwnedByOtherMeters,
 } from '../src/domain/meterCommissioning';
@@ -33,9 +39,48 @@ test('new device names are suggested from site, zone, and type within the API li
   assert.equal(long.endsWith(' - A3RM - AL-260805-1234567890'), true);
 });
 
-test('switching a fixed meter to Other never defaults the custom definition to three', () => {
+test('switching a fixed meter to Other preserves the portal channel suggestions', () => {
   const a3 = Array.from({ length: 3 }, (_, index) => ({ ordinal: index + 1 }));
-  assert.deepEqual(channelsAfterDeviceTypeChange('A3RM', 'Other', a3), []);
+  assert.deepEqual(channelsAfterDeviceTypeChange('A3RM', 'Other', a3), [
+    { ordinal: 1, purpose: 'SPARE' },
+    { ordinal: 2, purpose: 'SPARE' },
+    { ordinal: 3, purpose: 'SPARE' },
+  ]);
+});
+
+test('device-model and sensor changes discard incompatible hidden sensor metadata', () => {
+  const stale = {
+    id: 'channel-1',
+    ordinal: 1,
+    purpose: 'SUB_CIRCUIT' as const,
+    rogowski_size: '3000A – 9cm',
+    ct_ratio: '120A',
+  };
+
+  assert.deepEqual(
+    channelsAfterDeviceTypeChange('A6M', 'A3RM', [stale])[0],
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT' },
+  );
+  assert.deepEqual(
+    channelWithModelValidSensor('A6M', stale),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', ct_ratio: '120A' },
+  );
+  assert.deepEqual(
+    channelWithModelValidSensor('A3RM', stale),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', rogowski_size: '3000A – 9cm' },
+  );
+  assert.deepEqual(
+    channelAfterSensorRatingChange('A6M', stale, '400A'),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', ct_ratio: '400A' },
+  );
+  assert.deepEqual(
+    channelAfterSensorRatingChange('A3RM', stale, '3000A – 20cm'),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', rogowski_size: '3000A – 20cm' },
+  );
+  assert.deepEqual(
+    channelAfterSensorRatingChange('A6M', stale, ''),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', ct_ratio: '' },
+  );
 });
 
 test('direct Other meter capture excludes Wattwatchers-only commissioning sections', () => {
@@ -45,22 +90,57 @@ test('direct Other meter capture excludes Wattwatchers-only commissioning sectio
 });
 
 test('channel measurement choices use plain field-facing labels without changing canonical values', () => {
-  assert.equal(meterChannelPurposeLabel('MAIN_SUPPLY'), 'Main supply');
-  assert.equal(meterChannelPurposeLabel('SUB_CIRCUIT'), 'Sub-circuit or site asset');
+  assert.equal(meterChannelPurposeLabel('MAIN_SUPPLY'), 'Main board supply');
+  assert.equal(meterChannelPurposeLabel('SUB_CIRCUIT'), 'Sub-circuit / asset');
   assert.equal(meterChannelPurposeLabel('SPARE'), 'Spare / unused');
-  assert.equal(phaseGroupingLabel('THREE_PHASE'), 'Three phase · 3 channels');
-  assert.equal(energyFlowLabel('BIDIRECTIONAL'), 'Can consume or generate');
+  assert.equal(phaseGroupingLabel('THREE_PHASE'), 'Three phase — select 3 channels');
+  assert.equal(energyFlowLabel('BIDIRECTIONAL'), 'Bidirectional');
   assert.equal(measuredItemTypeLabel('GRID_BOUNDARY'), 'Incoming grid connection');
+  assert.equal(measuredItemTypeLabel('SITE_ASSET'), 'Site asset');
   assert.equal(measuredItemTypeLabel('TBC'), 'To be confirmed');
 });
 
 test('custom channel definitions persist while fixed models keep exact positive ordinals', () => {
   const custom = [{ id: 'custom-7', ordinal: 7, capabilities: { pulse: true } }];
-  assert.equal(channelsAfterDeviceTypeChange('Other', 'Other', custom), custom);
+  assert.deepEqual(channelsAfterDeviceTypeChange('Other', 'Other', custom), [
+    { id: 'custom-7', ordinal: 1, purpose: 'SPARE', capabilities: { pulse: true } },
+  ]);
+  assert.deepEqual(channelsAfterDeviceTypeChange('Other', 'Other', []), [
+    { ordinal: 1, purpose: 'SPARE' },
+  ]);
   assert.deepEqual(
     channelsAfterDeviceTypeChange('Other', 'A3RM', custom).map((channel) => channel.ordinal),
     [1, 2, 3],
   );
+});
+
+test('channel editor repair, add, and remove behavior matches portal channel identity rules', () => {
+  assert.equal(meterChannelsNeedLayoutRepair('A3RM', [
+    { ordinal: 1 }, { ordinal: 2 }, { ordinal: 3 },
+  ]), false);
+  assert.equal(meterChannelsNeedLayoutRepair('A3RM', [{ ordinal: 1 }]), true);
+  assert.equal(meterChannelsNeedLayoutRepair('Other', [{ ordinal: 4 }]), true);
+
+  const normalized = normalizedMeterEditorChannels('meter-1', [
+    { ordinal: 4, purpose: 'SUB_CIRCUIT' },
+    { id: 'meter-1:1', ordinal: 9 },
+  ]);
+  assert.deepEqual(normalized, [
+    { id: 'meter-1:1', ordinal: 1, purpose: 'SUB_CIRCUIT' },
+    { id: 'meter-1:2', ordinal: 2, purpose: 'SPARE' },
+  ]);
+
+  const added = addCustomMeterChannel('meter-1', normalized);
+  assert.deepEqual(added.at(-1), { id: 'meter-1:3', ordinal: 3, purpose: 'SPARE' });
+  const removed = removeCustomMeterChannel('meter-1', added, 1);
+  assert.equal(removed.removedChannelId, 'meter-1:2');
+  assert.deepEqual(removed.channels.map(({ id, ordinal }) => ({ id, ordinal })), [
+    { id: 'meter-1:1', ordinal: 1 },
+    { id: 'meter-1:3', ordinal: 2 },
+  ]);
+  assert.deepEqual(addCustomMeterChannel('meter-1', removed.channels).at(-1), {
+    id: 'meter-1:2', ordinal: 3, purpose: 'SPARE',
+  });
 });
 
 test('choosing SPARE clears incompatible load and sensor details', () => {
@@ -81,8 +161,9 @@ test('choosing SPARE clears incompatible load and sensor details', () => {
       ordinal: 1,
       purpose: 'SPARE',
       capabilities: { current: true },
-      phase_label: 'L1',
+      phase_label: undefined,
       load_type: undefined,
+      custom_load_type_name: undefined,
       rogowski_size: undefined,
       ct_ratio: undefined,
       description: undefined,

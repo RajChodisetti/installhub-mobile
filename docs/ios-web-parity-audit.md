@@ -114,10 +114,16 @@ Current-source review found five live defects and one already-fixed zone issue.
 The local repair makes the Scheduler calendar span 00:00–24:00, preserves the
 created Field job title in the job pool and assigned calendar event, and lets an
 administrator edit the title in both creation and assignment. Field creation now
-captures job notes and shows a required Existing device ID only for
-`M2 - Faults / COMMS fault`. The additive API field round-trips through canonical
+captures job notes and requires one or more meters to replace only for
+`M2 - Faults / COMMS fault`. Known copied site meters are suggested, multiple
+meters can be selected, and an unlisted meter number can be added manually. The
+rolling-compatible newline-delimited planning value round-trips through canonical
 and legacy sync, while Electricity NMI remains on the default grid supply. The
-iOS Job details and assigned-work review show notes, NMI, and existing device ID.
+iOS installation details and assigned-work review show the replacement-meter list,
+and each target can open the existing comms replacement workflow. If a manually
+planned target is not yet a canonical device, device search requires the installer
+to select its old A3RM/A6M model and real switchboard before creating the replacement
+form; completion captures the old identity and applies the replacement atomically.
 The Installation outcome card and edit section are removed from iOS while their
 stored fields remain compatible with older clients.
 

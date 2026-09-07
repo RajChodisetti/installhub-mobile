@@ -13,6 +13,7 @@ import {
   suspendAuditWorkForInstallation,
 } from '../services/auditWorkTrackingBridge';
 import { captureAuditWorkResumeAuthority } from '../services/assignedWorkMutationGuard';
+import { replacementMeterSuggestions } from '../domain/replacementMeterPlanning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationForm'>;
 
@@ -22,6 +23,7 @@ export function InstallationFormScreen({ navigation, route }: Props) {
   const id = route.params?.installationId;
   const [initial, setInitial] = useState<Installation | null>(null);
   const [initialElectricityNmi, setInitialElectricityNmi] = useState('');
+  const [knownReplacementMeters, setKnownReplacementMeters] = useState<ReturnType<typeof replacementMeterSuggestions>>([]);
   const [loading, setLoading] = useState(!!id);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -34,13 +36,15 @@ export function InstallationFormScreen({ navigation, route }: Props) {
     void Promise.all([
       installationsRepo.getById(id),
       canonicalInstallationRepo.gridSupplies(id),
-    ]).then(([item, gridSupplies]) => {
+      canonicalInstallationRepo.meterDevices(id),
+    ]).then(([item, gridSupplies, meterDevices]) => {
       if (!active) return;
       if (!item) throw new Error('This installation is unavailable or you no longer have access.');
       const defaultGrid = gridSupplies.find((grid) => grid.isDefault)
         ?? [...gridSupplies].sort((a, b) => a.id.localeCompare(b.id))[0];
       setInitial(item);
       setInitialElectricityNmi(defaultGrid?.nmi ?? '');
+      setKnownReplacementMeters(replacementMeterSuggestions(meterDevices));
     }).catch((error) => {
       if (active) setLoadError(error instanceof Error ? error.message : 'Could not load installation details.');
     }).finally(() => { if (active) setLoading(false); });
@@ -73,6 +77,7 @@ export function InstallationFormScreen({ navigation, route }: Props) {
       <InstallationForm
         initial={initial ?? undefined}
         initialElectricityNmi={initialElectricityNmi}
+        knownReplacementMeters={knownReplacementMeters}
         submitLabel={id ? 'Update' : 'Create Installation'}
         onSubmit={async (values, planning) => {
           if (id) {

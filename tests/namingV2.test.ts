@@ -22,10 +22,18 @@ const zone = (id: string, name: string, code?: string): Zone => ({
 
 test('zone codes are deterministic and disambiguated in stable id order', () => {
   const zones = [zone('z2', 'Plant Room'), zone('z1', 'Plant Room')];
-  const codes = resolvedZoneCodes(zones);
-  assert.equal(codes.get('z1'), 'PLANT-ROOM');
-  assert.equal(codes.get('z2'), 'PLANT-ROOM-2');
-  assert.equal(availableZoneCode(zones, 'Plant Room'), 'PLANT-ROOM-3');
+  const codes = resolvedZoneCodes(zones, installation.site_code!);
+  assert.equal(codes.get('z1'), 'PLA-GOLD-01');
+  assert.equal(codes.get('z2'), 'PLA-GOLD-02');
+  assert.equal(availableZoneCode(zones, installation.site_code!, 'Plant Room'), 'PLA-GOLD-03');
+});
+
+test('new short zone codes stay within the contract and use a two-character base-36 sequence', () => {
+  const zones = Array.from({ length: 10 }, (_, index) => zone(`z-${index}`, 'Plant Room'));
+  const codes = resolvedZoneCodes(zones, 'A-Very-Long-Site-Code');
+  assert.equal(codes.get('z-0'), 'PLA-A-VERY-L-01');
+  assert.equal(codes.get('z-9'), 'PLA-A-VERY-L-0A');
+  assert.ok([...codes.values()].every((code) => code.length <= 16));
 });
 
 test('v2 display codes share a two-digit sequence across entity kinds in a zone', () => {

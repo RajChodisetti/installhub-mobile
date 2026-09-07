@@ -49,6 +49,7 @@ export function assignedWorkSummarySha256(
     jobComments: summary.job_comments ?? '',
     accessInformation: summary.access_information ?? '',
     scheduleEventId: summary.schedule_event_id ?? '',
+    scheduleTitle: summary.schedule_title ?? '',
     scheduledStartAt: summary.scheduled_start_at ?? '',
     scheduledEndAt: summary.scheduled_end_at ?? null,
     deadlineAt: summary.deadline_at ?? '',
@@ -58,6 +59,7 @@ export function assignedWorkSummarySha256(
 
 const ASSIGNED_WORK_SCHEDULE_SUMMARY_FIELDS = [
   'schedule_event_id',
+  'schedule_title',
   'scheduled_start_at',
   'scheduled_end_at',
   'deadline_at',

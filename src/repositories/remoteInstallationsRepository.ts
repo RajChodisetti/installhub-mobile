@@ -128,6 +128,14 @@ const optionalText = (
 };
 const bool = (record: Record<string, unknown>, camel: string, snake?: string): boolean =>
   Boolean(record[camel] ?? (snake ? record[snake] : false));
+const meterLifecycleState = (
+  record: Record<string, unknown>,
+): MeterDevice['lifecycleState'] => {
+  const normalized = optionalText(record, 'lifecycleState', 'lifecycle_state')?.toUpperCase();
+  return normalized === 'PLANNED' || normalized === 'ACTIVE' || normalized === 'INACTIVE'
+    ? normalized
+    : undefined;
+};
 const nullableBool = (
   record: Record<string, unknown>,
   camel: string,
@@ -203,6 +211,7 @@ function assignedWorkJobSummaryFromPull(
     throw new Error('Assigned installation is missing its assignee identity.');
   }
   const scheduleEventId = optionalText(source, 'scheduleEventId', 'schedule_event_id');
+  const scheduleTitle = optionalText(source, 'scheduleTitle', 'schedule_title');
   const scheduledStartAt = optionalText(source, 'scheduledStartAt', 'scheduled_start_at');
   const scheduledEndAt = optionalText(source, 'scheduledEndAt', 'scheduled_end_at');
   const deadlineAt = optionalText(source, 'deadlineAt', 'deadline_at');
@@ -233,6 +242,7 @@ function assignedWorkJobSummaryFromPull(
     job_comments: text(source, 'jobComments', 'job_comments'),
     access_information: text(source, 'accessInformation', 'access_information'),
     ...(scheduleEventId ? { schedule_event_id: scheduleEventId } : {}),
+    ...(scheduleTitle ? { schedule_title: scheduleTitle } : {}),
     ...(scheduledStartAt ? { scheduled_start_at: scheduledStartAt } : {}),
     ...(scheduledEndAt ? { scheduled_end_at: scheduledEndAt } : {}),
     ...(deadlineAt ? { deadline_at: deadlineAt } : {}),
@@ -383,6 +393,7 @@ function mapMeter(record: Record<string, unknown>, id: string): Meter {
     custom_name: optionalText(record, 'customName', 'custom_name'),
     device_type: (text(record, 'deviceType', 'device_type') || 'Other') as Meter['device_type'],
     device_id: text(record, 'deviceId', 'device_id'),
+    lifecycle_state: meterLifecycleState(record),
     device_number: optionalText(record, 'deviceNumber', 'device_number'),
     custom_manufacturer_name: optionalText(record, 'customManufacturerName', 'custom_manufacturer_name'),
     custom_model_name: optionalText(record, 'customModelName', 'custom_model_name'),
@@ -1045,6 +1056,7 @@ export async function importRemoteInstallationAsCopy(
         ),
       deviceNumber: optionalText(meter, 'deviceNumber', 'device_number'),
       serialNumber: text(meter, 'serialNumber', 'serial_number'),
+      lifecycleState: meterLifecycleState(meter),
       displayName,
       commissioningData: commissioningData ? {
         classification: optionalText(commissioningData, 'classification') ?? null,

@@ -1,4 +1,3 @@
-import type { ScrollView } from 'react-native';
 import { FormScrollView } from '../components/ui';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
@@ -47,6 +46,7 @@ import {
 } from '../domain/reconciliationWorkflow';
 import {
   availableZoneCode,
+  isZoneCodeAvailable,
   isValidZoneCode,
   ZONE_CODE_MAX_LENGTH,
 } from '../domain/namingV2';
@@ -83,15 +83,19 @@ import {
   applyLeasedCloudActionState,
   runLeasedCloudActionStep,
 } from '../services/cloudActionLease';
+import { replacementMeterNumbersFromStored } from '../domain/replacementMeterPlanning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
 const assignedWorkChangeLabels: Record<string, string> = {
+  client_name: 'client name',
+  customer_name: 'client name',
   inspector_name: 'assigned technician',
   audit_date: 'scheduled date',
   existing_device_id: 'existing device ID',
   job_comments: 'job comments',
   schedule_event_id: 'Scheduler assignment',
+  schedule_title: 'title',
   scheduled_start_at: 'scheduled start',
   scheduled_end_at: 'scheduled finish',
   deadline_at: 'deadline',
@@ -117,8 +121,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     refresh,
   } = useInstallation(installationId);
   const [zoneModal, setZoneModal] = useState(false);
-  const scrollViewRef = useRef<ScrollView>(null);
-  const zonesSectionY = useRef(0);
   const [zoneName, setZoneName] = useState('');
   const [zoneCode, setZoneCode] = useState('');
   const zoneCodeEdited = useRef(false);
@@ -249,7 +251,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     && item.assigned_work_actor_user_id === user.id,
   );
   const yesNoLabel = (value: boolean | null | undefined): string => (
-    value === true ? 'Yes' : value === false ? 'No' : 'Not confirmed'
+    value === true ? 'Yes' : value === false ? 'No' : 'Not recorded'
   );
   const contactSummary = [
     assignedJobSummary?.site_contact_name,
@@ -261,10 +263,20 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     assignedJobSummary?.metering_solution_type,
     assignedJobSummary?.job_comments,
   ].filter(Boolean).join(' · ');
-  const electricityNmi = (
-    gridSupplies.find((supply) => supply.isDefault) ?? gridSupplies[0]
-  )?.nmi ?? '';
+  const primaryGridSupply = gridSupplies.find((supply) => supply.isDefault) ?? gridSupplies[0];
+  const electricityNmi = primaryGridSupply?.nmi?.trim() ?? '';
+  const hasElectricityNmi = electricityNmi.length > 0;
+  const replacementMeterNumbers = replacementMeterNumbersFromStored(item.existing_device_id);
+  const recordedMeterTypes = [...new Set(meterDevices.map((meter) => (
+    meter.deviceModel === 'OTHER'
+      ? [meter.customManufacturerName, meter.customModelName].filter(Boolean).join(' ') || 'Other'
+      : meter.deviceModel
+  )))];
+  const meterType = recordedMeterTypes.join(', ') || item.planned_meter_type || 'Not recorded';
+  const recordedValue = (value: string | null | undefined): string => value?.trim() || 'Not recorded';
   const assignedJobDetailRows = [
+    ['Title', assignedJobSummary?.schedule_title
+      ?? 'Assigned job title unavailable — refresh assigned work'],
     ['Scheduled start', assignedJobSummary?.scheduled_start_at
       ? formatDateTime(assignedJobSummary.scheduled_start_at)
       : 'Not scheduled'],
@@ -277,7 +289,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         ? 'Planned'
         : 'Not scheduled'],
     ['Client', assignedJobSummary?.client_name ?? 'Assigned job summary unavailable — refresh assigned work'],
-    ['Customer', assignedJobSummary?.customer_name ?? ''],
     ['Site', assignedJobSummary?.site_name ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['Address', assignedJobSummary?.site_address ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['Scheduled date', assignedJobSummary?.audit_date
@@ -286,31 +297,71 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['Technician', assignedJobSummary?.inspector_name ?? 'Assigned job summary unavailable — refresh assigned work'],
     ['MaaS', yesNoLabel(assignedJobSummary?.maas)],
     ['Electricity NMI', electricityNmi],
-    ['Existing device ID', assignedJobSummary?.existing_device_id ?? ''],
+    ['Meters to replace', replacementMeterNumbersFromStored(assignedJobSummary?.existing_device_id).join('\n')],
     ['Contact', contactSummary],
     ['Scope', scopeSummary],
     ['Custom job number', assignedJobSummary?.custom_job_number ?? ''],
     ['Access information', assignedJobSummary?.access_information ?? ''],
   ] as const;
-  const jobDetailRows = ([
-    ['Scheduled start', assignedJobSummary?.scheduled_start_at
-      ? formatDateTime(assignedJobSummary.scheduled_start_at)
-      : ''],
-    ['Deadline', assignedJobSummary?.deadline_at
-      ? formatDateTime(assignedJobSummary.deadline_at)
-      : ''],
-    ['Customer', item.customer_name ?? ''],
-    ['Scope categorization', item.service_type ?? ''],
-    ['Metering type', item.metering_solution_type ?? ''],
-    ['MaaS', yesNoLabel(item.maas)],
-    ['Electricity NMI', electricityNmi],
-    ['Existing device ID', item.existing_device_id ?? ''],
-    ['Site contact', [item.site_contact_name, item.site_contact_phone, item.site_contact_email]
-      .filter(Boolean).join(' · ')],
-    ['Custom job number', item.custom_job_number ?? ''],
-    ['Access information', item.access_information ?? ''],
-    ['Job comments / scope', item.job_comments ?? ''],
-  ] as Array<readonly [string, string]>).filter(([, value]) => Boolean(value));
+  const installationDetailSections: Array<{
+    key: 'site' | 'client' | 'job' | 'metering';
+    title: string;
+    rows: Array<readonly [string, string]>;
+  }> = [
+    {
+      key: 'site',
+      title: 'Site & address',
+      rows: [
+        ['Site Name', recordedValue(item.site_name)],
+        ['Site Address', recordedValue(item.site_address)],
+        ['Suburb', recordedValue(item.site_locality)],
+        ['State', recordedValue(item.site_state)],
+        ['Postcode', recordedValue(item.site_postcode)],
+      ],
+    },
+    {
+      key: 'client',
+      title: 'Client & contact',
+      rows: [
+        ['Client Name', recordedValue(item.client_name)],
+        ['Site Contact Name', recordedValue(item.site_contact_name)],
+        ['Site Contact Number', recordedValue(item.site_contact_phone)],
+        ['Site Contact Email', recordedValue(item.site_contact_email)],
+      ],
+    },
+    {
+      key: 'job',
+      title: 'Job & schedule',
+      rows: [
+        ['Title', recordedValue(assignedJobSummary?.schedule_title)],
+        ['Job Number #', recordedValue(item.custom_job_number)],
+        ['Job Type', recordedValue(item.service_type)],
+        ['Scheduled date', item.audit_date ? formatDate(item.audit_date) : 'Not recorded'],
+        ['Technician', recordedValue(item.inspector_name)],
+        ['Scheduled start', assignedJobSummary?.scheduled_start_at
+          ? formatDateTime(assignedJobSummary.scheduled_start_at)
+          : 'Not recorded'],
+        ['Deadline', assignedJobSummary?.deadline_at
+          ? formatDateTime(assignedJobSummary.deadline_at)
+          : 'Not recorded'],
+        ['Scope Notes', recordedValue(item.job_comments)],
+        ['Access information', recordedValue(item.access_information)],
+      ],
+    },
+    {
+      key: 'metering',
+      title: 'Metering & supply',
+      rows: [
+        ['MaaS (Yes/No)', yesNoLabel(item.maas)],
+        ['MAAS Type', recordedValue(item.metering_solution_type)],
+        ['Meter Type', meterType],
+        ['Electricity NMI', recordedValue(electricityNmi)],
+        ['Meters to replace', replacementMeterNumbers.length ? replacementMeterNumbers.join('\n') : 'Not recorded'],
+      ],
+    },
+  ];
+  const showAddNmi = !readOnly && !hasElectricityNmi;
+  const showReplacementActions = item.status === 'Draft' && replacementMeterNumbers.length > 0;
   const assignedWorkChangedFields = item.assigned_work_change_notice?.changed_fields
     .map((field) => assignedWorkChangeLabels[field] ?? field.replaceAll('_', ' '))
     .filter((field, index, fields) => fields.indexOf(field) === index)
@@ -513,7 +564,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       recordRejection('CLOUD_BACKUP_DISABLED');
       Alert.alert(
         'Cloud Backup must be enabled first',
-        'Authoritative completion requires your prior, explicit Cloud Backup opt-in. Open More tools & reports, enable Cloud Backup, then complete again.',
+        'Authoritative completion requires your prior, explicit Cloud Backup opt-in. Open More tools, enable Cloud Backup, then complete again.',
       );
       return;
     }
@@ -1016,22 +1067,19 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
   return (
     <FormScrollView
-      ref={scrollViewRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={styles.pad}
     >
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <View style={{ flex: 1, paddingRight: 12 }}>
           <Text style={[typography.title, { color: colors.foreground }]}>{item.site_name}</Text>
-          <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.client_name}</Text>
-          <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>{item.site_address}</Text>
-          {[item.site_locality, item.site_state, item.site_postcode].some(Boolean) ? (
-            <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-              {[item.site_locality, item.site_state, item.site_postcode].filter(Boolean).join(' ')}
+          {assignedJobSummary?.schedule_title ? (
+            <Text style={{ color: colors.primary, fontWeight: '800', marginTop: 4 }}>
+              Title · {assignedJobSummary.schedule_title}
             </Text>
           ) : null}
           <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-            {item.inspector_name} · {formatDate(item.audit_date)}
+            {recordedValue(item.client_name || item.customer_name)}
           </Text>
         </View>
         <StatusChip status={item.status} />
@@ -1111,21 +1159,182 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           </Text>
         </Card>
       ) : null}
-      {jobDetailRows.length ? (
-        <Card style={{ marginTop: spacing.md }} accessibilityRole="summary">
-          <Text style={{ color: colors.foreground, fontWeight: '800', marginBottom: spacing.sm }}>
-            Job details
-          </Text>
-          {jobDetailRows.map(([label, value]) => (
-            <View key={label} style={{ marginTop: spacing.xs }}>
-              <Text style={{ color: colors.mutedForeground, fontSize: 12, fontWeight: '700' }}>
-                {label}
-              </Text>
-              <Text style={{ color: colors.foreground, marginTop: 2, lineHeight: 20 }}>{value}</Text>
+      <SectionHeader
+        title="Installation details"
+        actionLabel={readOnly ? undefined : 'Edit'}
+        onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
+          navigation.navigate('InstallationForm', { installationId });
+        })}
+      />
+      <View style={styles.detailSectionList}>
+        {installationDetailSections.map((section) => (
+          <Card
+            key={section.key}
+            accessibilityRole="summary"
+            accessibilityLabel={`${section.title} details`}
+          >
+            <Text
+              accessibilityRole="header"
+              style={[typography.subheading, { color: colors.foreground }]}
+            >
+              {section.title}
+            </Text>
+            <View style={styles.detailRows}>
+              {section.rows.map(([label, value], index) => (
+                <View
+                  key={label}
+                  style={[
+                    styles.detailRow,
+                    index > 0 && {
+                      borderTopColor: colors.border,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                    },
+                  ]}
+                >
+                  <Text style={[typography.label, { color: colors.mutedForeground }]}>
+                    {label}
+                  </Text>
+                  <Text
+                    selectable
+                    style={[typography.body, styles.detailValue, { color: colors.foreground }]}
+                  >
+                    {value}
+                  </Text>
+                </View>
+              ))}
             </View>
-          ))}
+            {section.key === 'metering' && (showAddNmi || showReplacementActions) ? (
+              <View
+                style={[
+                  styles.detailActions,
+                  { borderTopColor: colors.border },
+                ]}
+              >
+                {showAddNmi ? (
+                  <Button
+                    title="Add NMI"
+                    variant="secondary"
+                    accessibilityHint="Adds the missing NMI to the default incoming grid connection"
+                    onPress={() => requestAssignedWorkAction(() => openGridEditor(primaryGridSupply?.id))}
+                  />
+                ) : null}
+                {showReplacementActions ? replacementMeterNumbers.map((meterNumber) => (
+                  <Button
+                    key={meterNumber.toLocaleLowerCase('en-AU')}
+                    title={`Replace ${meterNumber}`}
+                    variant="secondary"
+                    onPress={() => requestAssignedWorkAction(() => {
+                      navigation.navigate('DeviceSearch', {
+                        installationId,
+                        initialQuery: meterNumber,
+                      });
+                    })}
+                  />
+                )) : null}
+              </View>
+            ) : null}
+          </Card>
+        ))}
+      </View>
+
+      <View>
+        <SectionHeader
+          title="Zones"
+          actionLabel={readOnly ? undefined : '+ Add'}
+          onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
+            setZoneName('');
+            setZoneCode('');
+            setZoneDesc('');
+            zoneCodeEdited.current = false;
+            setZoneModal(true);
+          })}
+        />
+        {zones.length === 0 ? (
+          <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
+        ) : (
+          zones.map((z) => (
+            <ZoneCard
+              key={z.id}
+              item={z}
+              boardCount={boardCount(z.id)}
+              assetCount={assetCount(z.id)}
+              onPress={() => requestAssignedWorkAction(() => {
+                navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
+              })}
+            />
+          ))
+        )}
+      </View>
+
+      <SectionHeader
+        title={`Incoming grid connections (${gridSupplies.length})`}
+        actionLabel={readOnly ? undefined : '+ Add'}
+        onAction={readOnly ? undefined : () => {
+          requestAssignedWorkAction(() => openGridEditor());
+        }}
+      />
+      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
+        The default incoming grid connection is the electrical starting point for this installation. Keep it unless the site genuinely has another incoming supply.
+      </Text>
+      {gridSupplies.map((grid) => (
+        <Card key={grid.id} style={{ marginBottom: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.foreground, fontWeight: '700' }}>{grid.name}</Text>
+              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
+                {grid.nmi ? `NMI ${grid.nmi}` : 'No NMI'}{grid.externalKey ? ` · ${grid.externalKey}` : ''}
+              </Text>
+            </View>
+            {grid.isDefault ? <Badge label="DEFAULT" tone="success" /> : null}
+          </View>
+          {!readOnly ? (
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <Button
+                title="Edit"
+                variant="secondary"
+                onPress={() => requestAssignedWorkAction(() => openGridEditor(grid.id))}
+              />
+              {!grid.isDefault ? (
+                <Button
+                  title="Set default"
+                  variant="ghost"
+                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
+                    await gridSuppliesRepo.update(grid.id, { isDefault: true });
+                    await refresh();
+                  })(); })}
+                />
+              ) : null}
+              {gridSupplies.length > 1 ? (
+                <Button
+                  title="Remove"
+                  variant="danger"
+                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
+                  const impact = await gridSuppliesRepo.previewRemove(grid.id);
+                  Alert.alert(
+                    'Remove Grid supply?',
+                    impact.boards + impact.siteAssets + impact.assignments
+                      ? `This converts ${impact.boards} board source(s), ${impact.siteAssets} asset source(s), and ${impact.assignments} boundary assignment(s) to TBC. Historical versions are preserved.`
+                      : `This connection has no references.${grid.isDefault ? ' A remaining connection will become the default.' : ''} Historical versions are preserved.`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: impact.boards + impact.siteAssets + impact.assignments ? 'Convert to TBC and remove' : 'Remove connection',
+                        style: 'destructive',
+                        onPress: () => { void requestAssignedWorkAction(async () => {
+                          await gridSuppliesRepo.remove(grid.id, true);
+                          await refresh();
+                        }); },
+                      },
+                    ],
+                  );
+                  })(); })}
+                />
+              ) : null}
+            </View>
+          ) : null}
         </Card>
-      ) : null}
+      ))}
+
       <SectionHeader title="Installation workspace" />
       <Card accessibilityRole="summary">
         <Text style={{ color: colors.foreground, fontWeight: '800' }}>
@@ -1135,13 +1344,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           All core installation tools are available here without opening the secondary tools drawer.
         </Text>
         <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
-          <Button
-            title={`Zones & assets · ${zones.length} zone${zones.length === 1 ? '' : 's'}`}
-            variant="secondary"
-            onPress={() => requestAssignedWorkAction(() => {
-              scrollViewRef.current?.scrollTo({ y: zonesSectionY.current, animated: true });
-            })}
-          />
           <Button
             title="Electrical map & reconciliation"
             variant="secondary"
@@ -1154,13 +1356,6 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             variant="secondary"
             onPress={() => requestAssignedWorkAction(() => {
               navigation.navigate('FormsList', { installationId });
-            })}
-          />
-          <Button
-            title="Metering table"
-            variant="secondary"
-            onPress={() => requestAssignedWorkAction(() => {
-              navigation.navigate('MeteringTable', { installationId });
             })}
           />
           <Button
@@ -1485,10 +1680,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
       <Button
         title={assignedWorkActionsLocked
-          ? 'More tools & reports (locked)'
+          ? 'More tools (locked)'
           : secondaryOpen
-            ? 'Hide tools & reports'
-            : 'More tools & reports'}
+            ? 'Hide more tools'
+            : 'More tools'}
         variant="secondary"
         style={{ marginTop: spacing.lg }}
         accessibilityState={{ expanded: secondaryOpen }}
@@ -1502,7 +1697,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             {item.cloud_backup_enabled ? 'Cloud Backup enabled' : 'Local-only installation'}
           </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
-            Open for Cloud Backup, incoming grid connection, forms, reports, metering, and administrator tools.
+            Open for Cloud Backup, cloud files, access, finance, and other administrator tools.
           </Text>
         </Card>
       ) : (
@@ -1580,113 +1775,8 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         ) : null}
       </Card>
 
-      <SectionHeader
-        title={`Incoming grid connections (${gridSupplies.length})`}
-        actionLabel={readOnly ? undefined : '+ Add'}
-        onAction={readOnly ? undefined : () => {
-          requestAssignedWorkAction(() => openGridEditor());
-        }}
-      />
-      <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm, lineHeight: 20 }}>
-        The default incoming grid connection is the electrical starting point for this installation. Keep it unless the site genuinely has another incoming supply.
-      </Text>
-      {gridSupplies.map((grid) => (
-        <Card key={grid.id} style={{ marginBottom: 8 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.foreground, fontWeight: '700' }}>{grid.name}</Text>
-              <Text style={{ color: colors.mutedForeground, marginTop: 4 }}>
-                {grid.nmi ? `NMI ${grid.nmi}` : 'No NMI'}{grid.externalKey ? ` · ${grid.externalKey}` : ''}
-              </Text>
-            </View>
-            {grid.isDefault ? <Badge label="DEFAULT" tone="success" /> : null}
-          </View>
-          {!readOnly ? (
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-              <Button
-                title="Edit"
-                variant="secondary"
-                onPress={() => requestAssignedWorkAction(() => openGridEditor(grid.id))}
-              />
-              {!grid.isDefault ? (
-                <Button
-                  title="Set default"
-                  variant="ghost"
-                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
-                    await gridSuppliesRepo.update(grid.id, { isDefault: true });
-                    await refresh();
-                  })(); })}
-                />
-              ) : null}
-              {gridSupplies.length > 1 ? (
-                <Button
-                  title="Remove"
-                  variant="danger"
-                  onPress={() => requestAssignedWorkAction(() => { void (async () => {
-                  const impact = await gridSuppliesRepo.previewRemove(grid.id);
-                  Alert.alert(
-                    'Remove Grid supply?',
-                    impact.boards + impact.siteAssets + impact.assignments
-                      ? `This converts ${impact.boards} board source(s), ${impact.siteAssets} asset source(s), and ${impact.assignments} boundary assignment(s) to TBC. Historical versions are preserved.`
-                      : `This connection has no references.${grid.isDefault ? ' A remaining connection will become the default.' : ''} Historical versions are preserved.`,
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: impact.boards + impact.siteAssets + impact.assignments ? 'Convert to TBC and remove' : 'Remove connection',
-                        style: 'destructive',
-                        onPress: () => { void requestAssignedWorkAction(async () => {
-                          await gridSuppliesRepo.remove(grid.id, true);
-                          await refresh();
-                        }); },
-                      },
-                    ],
-                  );
-                  })(); })}
-                />
-              ) : null}
-            </View>
-          ) : null}
-        </Card>
-      ))}
-
-      <SectionHeader title="Reports" />
-      <View style={{ gap: 8 }}>
-        <Button title="Field Forms / PDFs" onPress={() => requestAssignedWorkAction(() => navigation.navigate('FormsList', { installationId }))} />
-        <Button title="Installation data & checks" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('DataView', { installationId }))} />
-        <Button title="Metering Table" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('MeteringTable', { installationId }))} />
-        <Button title="Full Installation Report" variant="secondary" onPress={() => requestAssignedWorkAction(() => navigation.navigate('InstallationReport', { installationId }))} />
-      </View>
         </View>
       )}
-
-      <View onLayout={(event) => { zonesSectionY.current = event.nativeEvent.layout.y; }}>
-        <SectionHeader
-          title="Zones"
-          actionLabel={readOnly ? undefined : '+ Add'}
-          onAction={readOnly ? undefined : () => requestAssignedWorkAction(() => {
-            setZoneName('');
-            setZoneCode('');
-            setZoneDesc('');
-            zoneCodeEdited.current = false;
-            setZoneModal(true);
-          })}
-        />
-        {zones.length === 0 ? (
-          <EmptyState title="No zones yet" subtitle="Add a zone to capture boards and assets." />
-        ) : (
-          zones.map((z) => (
-            <ZoneCard
-              key={z.id}
-              item={z}
-              boardCount={boardCount(z.id)}
-              assetCount={assetCount(z.id)}
-              onPress={() => requestAssignedWorkAction(() => {
-                navigation.navigate('ZoneWorkspace', { zoneId: z.id, installationId });
-              })}
-            />
-          ))
-        )}
-      </View>
 
       <FormModal
         visible={prestartModal}
@@ -1760,7 +1850,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
       <FormModal visible={zoneModal} title="New zone" onClose={() => { if (!zoneBusy) setZoneModal(false); }}>
         <TextField label="Zone name" value={zoneName} editable={!zoneBusy} onChangeText={(value) => {
           setZoneName(value);
-          if (!zoneCodeEdited.current) setZoneCode(availableZoneCode(zones, value));
+          if (!zoneCodeEdited.current) {
+            setZoneCode(availableZoneCode(zones, item.site_code || item.site_name, value));
+          }
         }} />
         <TextField
           label="Zone short code"
@@ -1774,6 +1866,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           }}
           error={zoneCode && !isValidZoneCode(zoneCode) ? 'Use uppercase letters/numbers with single internal hyphens.' : undefined}
         />
+        <Text style={{ color: colors.mutedForeground, marginTop: -spacing.sm, marginBottom: spacing.md, lineHeight: 20 }}>
+          Generated from the first three zone letters, the site code, and a two-character sequence. You can still enter a unique code.
+        </Text>
         <TextField label="Description" value={zoneDesc} editable={!zoneBusy} onChangeText={setZoneDesc} />
         <Button
           title={zoneBusy ? 'Creating zone…' : 'Create zone'}
@@ -1782,13 +1877,17 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
             if (zoneCreating.current) return;
             const normalizedName = zoneName.trim() || 'Zone';
             const normalizedCode = zoneCode.trim().toUpperCase()
-              || availableZoneCode(zones, normalizedName);
+              || availableZoneCode(zones, item.site_code || item.site_name, normalizedName);
             const normalizedDescription = zoneDesc.trim();
             if (!isValidZoneCode(normalizedCode)) {
               Alert.alert('Invalid zone short code', 'Use uppercase letters/numbers with single internal hyphens.');
               return;
             }
-            if (availableZoneCode(zones, normalizedCode) !== normalizedCode) {
+            if (!isZoneCodeAvailable(
+              zones,
+              item.site_code || item.site_name,
+              normalizedCode,
+            )) {
               Alert.alert('Zone short code already used', 'Choose a unique short code or leave it blank to generate one.');
               return;
             }
@@ -1938,4 +2037,14 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   pad: { padding: spacing.lg, paddingBottom: 48 },
+  detailSectionList: { gap: spacing.sm },
+  detailRows: { marginTop: spacing.xs },
+  detailRow: { paddingVertical: spacing.sm },
+  detailValue: { lineHeight: 21, marginTop: 3 },
+  detailActions: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    paddingTop: spacing.md,
+  },
 });

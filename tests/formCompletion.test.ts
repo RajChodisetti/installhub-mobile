@@ -107,6 +107,114 @@ test('replacement validation is enforced atomically below the screen', () => {
   assert.equal(JSON.stringify(store), before);
 });
 
+test('an unrecorded planned M2 meter is safely captured on its selected board then replaced atomically', () => {
+  const form: FormSubmission = {
+    ...wwForm('board'),
+    form_type: 'comms-fault',
+    answers: {
+      'prestart.safe_to_proceed': 'yes',
+      'existing.device_type': 'A3RM',
+      'existing.device_id': 'OLD-PLANNED-100',
+      'works.replace_device': 'yes',
+      'works.new_device_type': 'A6M',
+      'works.new_device_id': 'NEW-DEVICE-200',
+      'works.new_sensor_rating': '120A',
+    },
+  };
+  const store = fixture(form);
+  const completed = completeFormSubmissionInStore(
+    store,
+    'form',
+    '2026-08-02T03:00:00.000Z',
+    () => 'replacement-location',
+  );
+
+  assert.equal(completed.meter_id, 'replacement-location');
+  assert.equal(store.electricalAssets[0].meters.length, 1);
+  assert.equal(store.electricalAssets[0].meters[0].device_id, 'NEW-DEVICE-200');
+  assert.equal(store.electricalAssets[0].meters[0].device_type, 'A6M');
+  assert.equal(store.electricalAssets[0].meters[0].lifecycle_state, 'ACTIVE');
+  assert.equal(store.meterDevices[0].serialNumber, 'NEW-DEVICE-200');
+  assert.equal(store.meterDevices[0].lifecycleState, 'ACTIVE');
+  assert.equal(store.meterDevices[0].channels.length, 6);
+  assert.deepEqual(
+    store.meterDevices[0].channels.map((channel) => channel.sensorRating),
+    Array(6).fill('120A'),
+  );
+  assert.equal(completed.answers['existing.device_id'], 'OLD-PLANNED-100');
+});
+
+test('unrecorded M2 completion refuses to duplicate a meter added while the form was open', () => {
+  const form: FormSubmission = {
+    ...wwForm('board'),
+    form_type: 'comms-fault',
+    answers: {
+      'prestart.safe_to_proceed': 'yes',
+      'existing.device_type': 'A3RM',
+      'existing.device_id': 'OLD-PLANNED-100',
+      'works.replace_device': 'yes',
+      'works.new_device_type': 'A6M',
+      'works.new_device_id': 'NEW-DEVICE-200',
+      'works.new_sensor_rating': '120A',
+    },
+  };
+  const store = fixture(form);
+  store.meterDevices.push({
+    id: 'now-recorded',
+    installationId: 'installation',
+    installedOnBoardId: 'board',
+    deviceFamily: 'WATTWATCHERS',
+    deviceModel: 'A3RM',
+    serialNumber: 'OLD-PLANNED-100',
+    displayName: { value: 'OLD-PLANNED-100', generatedValue: 'OLD-PLANNED-100', isOverridden: false, ruleVersion: 1 },
+    channels: [],
+  });
+  assert.throws(
+    () => completeFormSubmissionInStore(store, 'form', timestamp, () => 'must-not-allocate'),
+    /now in the site data/,
+  );
+});
+
+test('unrecorded M2 completion ignores non-active planned and historical meter rows', () => {
+  for (const lifecycleState of ['PLANNED', 'INACTIVE'] as const) {
+    const form: FormSubmission = {
+      ...wwForm('board'),
+      form_type: 'comms-fault',
+      answers: {
+        'prestart.safe_to_proceed': 'yes',
+        'existing.device_type': 'A3RM',
+        'existing.device_id': 'OLD-PLANNED-100',
+        'works.replace_device': 'yes',
+        'works.new_device_type': 'A6M',
+        'works.new_device_id': `NEW-${lifecycleState}`,
+        'works.new_sensor_rating': '120A',
+      },
+    };
+    const store = fixture(form);
+    store.meterDevices.push({
+      id: `hidden-${lifecycleState}`,
+      installationId: 'installation',
+      installedOnBoardId: 'board',
+      deviceFamily: 'WATTWATCHERS',
+      deviceModel: 'A3RM',
+      serialNumber: 'OLD-PLANNED-100',
+      lifecycleState,
+      displayName: { value: 'historical', generatedValue: 'historical', isOverridden: false, ruleVersion: 1 },
+      channels: [],
+    });
+
+    const completed = completeFormSubmissionInStore(
+      store,
+      'form',
+      timestamp,
+      () => `replacement-${lifecycleState}`,
+    );
+
+    assert.equal(completed.meter_id, `replacement-${lifecycleState}`);
+    assert.equal(store.meterDevices.find((meter) => meter.id === completed.meter_id)?.lifecycleState, 'ACTIVE');
+  }
+});
+
 test('WW completion atomically pins canonical board and one stable operational meter', () => {
   const store = fixture(wwForm('board'));
   const completed = completeFormSubmissionInStore(
@@ -126,7 +234,7 @@ test('WW completion atomically pins canonical board and one stable operational m
   assert.equal(store.meterDevices[0]!.deviceNumber, 'D-1');
   assert.equal(store.meterDevices[0]!.displayName.ruleVersion, 2);
   assert.equal(store.meterDevices[0]!.displayName.provisional, true);
-  assert.match(store.meterDevices[0]!.displayName.value, /-PLANT-01-A3RM-METER$/);
+  assert.match(store.meterDevices[0]!.displayName.value, /-PLA-S-01-01-A3RM-METER$/);
   assert.deepEqual(store.meterDevices[0]!.commissioningData?.prestart, {
     siteInduction: true,
     safeAccess: true,

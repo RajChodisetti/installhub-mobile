@@ -110,7 +110,10 @@ test('completing an unchanged prefilled draft preserves canonical purpose and un
     'SUB_CIRCUIT', 'SUB_CIRCUIT', 'SUB_CIRCUIT',
   ]);
   assert.deepEqual(completed.ww_channels?.map((channel) => channel.load_type), [
-    'Mains Supply', 'HVAC', undefined, 'Refrigeration', 'EV Charger', 'General Power',
+    'Mains Supply', 'HVAC', undefined, 'Other', 'Other', 'General Power',
+  ]);
+  assert.deepEqual(completed.ww_channels?.map((channel) => channel.custom_load_type_name), [
+    undefined, undefined, undefined, 'Refrigeration', 'EV Charger', undefined,
   ]);
   assert.deepEqual(completed.ww_channels?.map((channel) => channel.id), [
     'meter-1:1', 'meter-1:2', 'meter-1:3',
@@ -172,6 +175,8 @@ test('generic Other custom load remains explicit through prefill and canonical r
     created_at: timestamp, updated_at: timestamp,
   };
   const legacy = meterFromInstallationForm(form, board, meter.id);
+  assert.equal(legacy.ww_channels?.[1]?.load_type, 'Other');
+  assert.equal(legacy.ww_channels?.[1]?.custom_load_type_name, 'Other');
   const projected = meterDeviceFromLegacy('installation-1', board, legacy);
   assert.equal(projected.channels[1]?.loadTypeCode, 'OTHER');
   assert.equal(projected.channels[1]?.customLoadTypeName, 'Other');

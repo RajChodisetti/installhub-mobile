@@ -1,4 +1,4 @@
-import type { AppDataStore, FormSubmission } from '../types';
+import type { AppDataStore, FormSubmission, Meter } from '../types';
 import {
   meterAfterCommsReplacement,
   supportedFormAnswers,
@@ -7,8 +7,10 @@ import {
 import {
   answersWithCanonicalBoardContext,
   deviceLabelPrefix,
+  humanDeviceLabel,
   meterFromInstallationForm,
 } from './meterCommissioning';
+import { defaultMeterCustomName } from './namingV2';
 import {
   bumpTreeRevision,
   replaceBoardMetersFromLegacy,
@@ -57,6 +59,13 @@ export function completeFormSubmissionInStore(
   let boardId = current.board_id;
   let meterId = current.meter_id;
   let answers = current.answers;
+  if (
+    current.form_type === 'comms-fault'
+    && current.answers['works.replace_device'] === 'yes'
+    && !boardId
+  ) {
+    throw new Error('Select the switchboard where the existing meter is installed before completing the replacement.');
+  }
   const supportedWwDevice = current.form_type !== 'ww-installation'
     || ['A3RM', 'A6M'].includes(String(answers['device.type'] ?? ''));
   if (boardId && supportedWwDevice && ['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(current.form_type)) {
@@ -84,23 +93,68 @@ export function completeFormSubmissionInStore(
     board.updated_at = timestamp;
   } else if (
     current.form_type === 'comms-fault' &&
-    current.answers['works.replace_device'] === 'yes' && boardId && meterId
+    current.answers['works.replace_device'] === 'yes' && boardId
   ) {
     const board = store.electricalAssets.find(
       (item) => item.id === boardId && item.audit_id === current.installation_id,
     );
-    const existing = board?.meters.find((item) => item.id === meterId);
-    if (!board || !existing) throw new Error('The linked meter is no longer available.');
+    if (!board) throw new Error('The selected switchboard is no longer available.');
     const zone = store.zones.find((item) => item.id === board.zone_id);
+    const labelPrefix = deviceLabelPrefix(installation.site_name, zone?.zone_name ?? '');
+    let existing = meterId ? board.meters.find((item) => item.id === meterId) : undefined;
+    if (meterId && !existing) throw new Error('The linked meter is no longer available.');
+    if (!existing) {
+      const oldType = String(current.answers['existing.device_type'] ?? '').trim();
+      const oldSerial = String(current.answers['existing.device_id'] ?? '').trim();
+      if (oldType !== 'A3RM' && oldType !== 'A6M') {
+        throw new Error('Select whether the existing planned meter is an A3RM or A6M.');
+      }
+      if (!oldSerial) throw new Error('Enter or scan the existing planned Device ID / serial.');
+      const oldSerialKey = oldSerial.toLocaleLowerCase('en-AU');
+      const duplicate = store.meterDevices.find((meter) => (
+        meter.installationId === current.installation_id
+        && (!meter.lifecycleState || meter.lifecycleState === 'ACTIVE')
+        && [meter.serialNumber, meter.deviceNumber]
+          .filter(Boolean)
+          .some((value) => value!.trim().toLocaleLowerCase('en-AU') === oldSerialKey)
+      ));
+      if (duplicate) {
+        throw new Error('This meter is now in the site data. Open that device and start the replacement from it.');
+      }
+      meterId = createMeterId();
+      const oldSensorRating = String(current.answers['existing.sensor_rating'] ?? '').trim();
+      const channelCount = oldType === 'A3RM' ? 3 : 6;
+      existing = {
+        id: meterId,
+        device_name: humanDeviceLabel(labelPrefix, oldType, oldSerial),
+        custom_name: defaultMeterCustomName(oldType),
+        device_type: oldType,
+        device_id: oldSerial,
+        device_number: String(current.answers['existing.device_number'] ?? '').trim() || oldSerial,
+        lifecycle_state: 'ACTIVE',
+        ww_channels: Array.from({ length: channelCount }, (_, index) => ({
+          id: `${meterId}:${index + 1}`,
+          ordinal: index + 1,
+          purpose: 'SPARE',
+          ...(oldSensorRating
+            ? oldType === 'A3RM'
+              ? { rogowski_size: oldSensorRating }
+              : { ct_ratio: oldSensorRating }
+            : {}),
+        })),
+      } satisfies Meter;
+    }
     const replacement = meterAfterCommsReplacement(
       existing,
       current.answers,
-      deviceLabelPrefix(installation.site_name, zone?.zone_name ?? ''),
+      labelPrefix,
     );
     replaceBoardMetersFromLegacy(
       store,
       board,
-      board.meters.map((item) => item.id === meterId ? replacement : item),
+      board.meters.some((item) => item.id === meterId)
+        ? board.meters.map((item) => item.id === meterId ? replacement : item)
+        : [...board.meters, replacement],
     );
     board.updated_at = timestamp;
   }

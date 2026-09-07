@@ -20,8 +20,10 @@ import { getStore, initStore, updateStore } from '../data/seed';
 import { FORM_DEFINITION_BY_TYPE, supportedFormAnswers } from '../forms/catalog';
 import { answersWithCanonicalBoardContext } from '../domain/meterCommissioning';
 import { supportsCommsReplacement } from '../domain/meterSearch';
+import { plannedReplacementMeterNumber } from '../domain/replacementMeterPlanning';
 import { insertStagedMeterSiteAssets } from '../domain/meterEditorAdditions';
 import { assignmentApprovalSignature, type AssignmentTakeoverApprovals } from '../domain/meterAssignmentTakeover';
+import { assetMeteringDeviceChoices } from '../domain/assetMeteringWorkflow';
 import { assertSiteAssetMappingBaseline, electricalSourceFromSelection, type SiteAssetMeteringDraft } from '../domain/electricalCapture';
 import { completeFormSubmissionInStore } from '../domain/formCompletion';
 import { ensureGridSupplyDefault, gridSupplyNameForWrite } from '../domain/gridSupplyContext';
@@ -61,8 +63,9 @@ import {
 import {
   availableZoneCode,
   defaultMeterCustomName,
+  isValidZoneCode,
+  isZoneCodeAvailable,
   namingInventoryForInstallation,
-  normalizedZoneCode,
   provisionalDisplayCodeV2,
 } from '../domain/namingV2';
 import {
@@ -743,9 +746,21 @@ export const zonesRepo: ZonesRepository = {
       assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before editing it.');
       const installationZones = s.zones.filter((zone) => zone.audit_id === input.audit_id);
-      const zoneCode = availableZoneCode(
+      const requestedZoneCode = input.zone_code?.trim().toUpperCase() || '';
+      if (requestedZoneCode && !isValidZoneCode(requestedZoneCode)) {
+        throw new Error('Zone short code must use uppercase letters, numbers, and single hyphens.');
+      }
+      if (requestedZoneCode && !isZoneCodeAvailable(
         installationZones,
-        normalizedZoneCode(input.zone_code?.trim() || input.zone_name),
+        installation.site_code || installation.site_name,
+        requestedZoneCode,
+      )) {
+        throw new Error('Zone short code is already used in this installation.');
+      }
+      const zoneCode = requestedZoneCode || availableZoneCode(
+        installationZones,
+        installation.site_code || installation.site_name,
+        input.zone_name,
       );
       record = {
         ...input,
@@ -774,10 +789,23 @@ export const zonesRepo: ZonesRepository = {
       const installationZones = s.zones.filter((zone) => zone.audit_id === previous.audit_id);
       const shouldResolveCode = Object.prototype.hasOwnProperty.call(patch, 'zone_code')
         || !previous.zone_code;
+      const requestedZoneCode = patch.zone_code?.trim().toUpperCase() || '';
+      if (requestedZoneCode && !isValidZoneCode(requestedZoneCode)) {
+        throw new Error('Zone short code must use uppercase letters, numbers, and single hyphens.');
+      }
+      if (requestedZoneCode && !isZoneCodeAvailable(
+        installationZones,
+        installation.site_code || installation.site_name,
+        requestedZoneCode,
+        id,
+      )) {
+        throw new Error('Zone short code is already used in this installation.');
+      }
       const zoneCode = shouldResolveCode
-        ? availableZoneCode(
+        ? requestedZoneCode || availableZoneCode(
             installationZones,
-            normalizedZoneCode(patch.zone_code?.trim() || patch.zone_name || previous.zone_name),
+            installation.site_code || installation.site_name,
+            patch.zone_name || previous.zone_name,
             id,
           )
         : previous.zone_code;
@@ -1407,11 +1435,20 @@ export const canonicalInstallationRepo: CanonicalInstallationRepository = {
     const store = getStore();
     const asset = store.siteAssets.find((item) => item.id === assetId);
     if (!asset) return [];
-    return store.meterDevices.filter(
-      (meter) =>
-        meter.installationId === asset.audit_id &&
-        asset.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === meter.installedOnBoardId,
-    );
+    return assetMeteringDeviceChoices({
+      meters: store.meterDevices.filter((meter) => meter.installationId === asset.audit_id),
+      assignments: store.measurementAssignments.filter(
+        (assignment) => assignment.installationId === asset.audit_id,
+      ),
+      supplyingBoardId: asset.electrical_source?.kind === 'BOARD'
+        ? asset.electrical_source.boardId
+        : undefined,
+      assetId,
+    })
+      // Keep active devices visible even when every channel is occupied or
+      // incompatible so reconciliation can explain why it cannot select them.
+      // The full asset editor owns deliberate reassignment approval.
+      .map((choice) => choice.meter);
   },
 };
 
@@ -1584,15 +1621,43 @@ export const formsRepo: FormsRepository = {
       if (!installation) throw new Error('Installation not found');
       assertAssignedWorkAccess(installation);
       if (installation?.status === 'Completed') throw new Error('Reopen this completed installation before adding a form.');
-      if (input.form_type === 'comms-fault' && input.answers?.['works.replace_device'] === 'yes' && input.meter_id) {
-        const meter = store.meterDevices.find((item) => item.id === input.meter_id);
+      if (input.form_type === 'comms-fault' && input.answers?.['works.replace_device'] === 'yes') {
         const board = store.electricalAssets.find((item) => item.id === input.board_id);
-        if (!meter || !supportsCommsReplacement(meter)) {
-          throw new Error('The comms-fault replacement form supports A3RM and A6M devices only.');
-        }
-        if (meter.installationId !== input.installation_id || !board || board.audit_id !== input.installation_id
-          || meter.installedOnBoardId !== board.id || board.zone_id !== input.zone_id) {
-          throw new Error('The selected device is not installed on this switchboard. Refresh the installation and try again.');
+        if (input.meter_id) {
+          const meter = store.meterDevices.find((item) => item.id === input.meter_id);
+          if (!meter || !supportsCommsReplacement(meter)) {
+            throw new Error('The comms-fault replacement form supports A3RM and A6M devices only.');
+          }
+          if (meter.installationId !== input.installation_id || !board || board.audit_id !== input.installation_id
+            || meter.installedOnBoardId !== board.id || board.zone_id !== input.zone_id) {
+            throw new Error('The selected device is not installed on this switchboard. Refresh the installation and try again.');
+          }
+        } else {
+          const oldSerial = String(input.answers?.['existing.device_id'] ?? '').trim();
+          const oldType = String(input.answers?.['existing.device_type'] ?? '').trim();
+          if (!plannedReplacementMeterNumber(installation.existing_device_id, oldSerial)) {
+            throw new Error('This meter is not in the current M2 replacement plan. Refresh the installation and try again.');
+          }
+          if (oldType !== 'A3RM' && oldType !== 'A6M') {
+            throw new Error('Select whether the existing planned meter is an A3RM or A6M.');
+          }
+          if (!board || board.audit_id !== input.installation_id) {
+            throw new Error('Select the switchboard where the existing planned meter is installed.');
+          }
+          if (input.zone_id && board.zone_id !== input.zone_id) {
+            throw new Error('The selected switchboard is no longer in that zone. Refresh the installation and try again.');
+          }
+          const duplicate = store.meterDevices.find((meter) => (
+            meter.installationId === input.installation_id
+            && (!meter.lifecycleState || meter.lifecycleState === 'ACTIVE')
+            && [meter.serialNumber, meter.deviceNumber]
+              .filter(Boolean)
+              .some((value) => value!.trim().toLocaleLowerCase('en-AU') === oldSerial.toLocaleLowerCase('en-AU'))
+          ));
+          if (duplicate) {
+            throw new Error('This meter is now in the site data. Open that device and start the replacement from it.');
+          }
+          record.zone_id = board.zone_id;
         }
       }
       if (commissionsMeter && input.board_id) {

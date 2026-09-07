@@ -151,6 +151,23 @@ test('device reads never expose a foreign-owned installation', async () => {
   assert.match(h.render().error, /signed-in account/);
 });
 
+test('device search exposes active and legacy lifecycle rows but hides planned and inactive rows', async () => {
+  const h = hookHarness();
+  h.render();
+  h.effects();
+  await settle();
+  h.setMeters(async () => [
+    { id: 'legacy', installationId: 'installation-a', installedOnBoardId: 'board' },
+    { id: 'active', installationId: 'installation-a', installedOnBoardId: 'board', lifecycleState: 'ACTIVE' },
+    { id: 'planned', installationId: 'installation-a', installedOnBoardId: 'board', lifecycleState: 'PLANNED' },
+    { id: 'inactive', installationId: 'installation-a', installedOnBoardId: 'board', lifecycleState: 'INACTIVE' },
+  ]);
+
+  await h.render().refresh();
+
+  assert.deepEqual(h.render().items.map((item: any) => item.meter.id), ['legacy', 'active']);
+});
+
 test('Comms replacement matches the portal supported family and model gate', () => {
   for (const deviceFamily of ['WATTWATCHERS', 'OTHER'] as const) {
     for (const deviceModel of ['A3RM', 'A6M', 'OTHER'] as const) {

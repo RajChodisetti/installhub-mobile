@@ -131,9 +131,9 @@ Installation (id)
   `a3rm-installation`/`a6m-installation` submissions remain readable but must not
   return to the new-form picker.
 - WW Installation and Comms Fault use the model-dependent choices in the catalog:
-  A3RM uses `10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and
-  `Not Used`; A6M uses `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`, `CT-600A`, and `Not Used`.
-  Model-scoped older ratings remain readable through the catalog's compatibility options.
+  A3RM uses `3000A – 9cm`, `3000A – 20cm`, and `3000A – 29cm`; A6M uses `60A`, `120A`,
+  `200A`, `400A`, and `600A`. Model-scoped older ratings remain readable through the catalog's
+  compatibility validation but are not displayed in the current dropdowns.
 - Scanner requirements are field metadata in the form catalog. Preserve manual
   entry as a fallback and keep SUMS serial fields enabled for both barcode and
   QR scanning.

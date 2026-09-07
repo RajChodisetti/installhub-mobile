@@ -15,32 +15,64 @@ import {
 import { FORM_DEFINITION_BY_TYPE, createInitialFormAnswers } from '../forms/catalog';
 import { canonicalInstallationRepo, formsRepo } from '../repositories';
 import { Button, Card, EmptyState, LoadingState, SearchBar } from '../components/ui';
+import { SelectChips } from '../components/forms';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { commsFaultIdentityAnswersForMeter } from '../domain/formMeterPrefill';
 import { canonicalNmiForBoard } from '../domain/gridSupplyContext';
 import { RecordLoadState } from '../components/RecordLoadState';
 import { captureAssignedWorkMutationGuard } from '../services/assignedWorkMutationGuard';
+import { plannedReplacementMeterNumber } from '../domain/replacementMeterPlanning';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DeviceSearch'>;
 
 export function DeviceSearchScreen({ navigation, route }: Props) {
-  const { installationId } = route.params;
+  const { installationId, initialQuery } = route.params;
   const { colors } = useTheme();
   const { user } = useAuth();
-  const { items, installation, loading, loaded, error, refresh } = useDeviceSearchRecords(installationId);
+  const {
+    items,
+    installation,
+    boards = [],
+    zones = [],
+    loading,
+    loaded,
+    error,
+    refresh,
+  } = useDeviceSearchRecords(installationId);
   const focused = useIsFocused();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [replacingId, setReplacingId] = useState<string | null>(null);
+  const [plannedDeviceType, setPlannedDeviceType] = useState<'A3RM' | 'A6M'>('A3RM');
+  const [plannedBoardId, setPlannedBoardId] = useState('');
   const actionVersion = useRef(0);
   useEffect(() => {
     setReplacingId(null);
+    setQuery(initialQuery ?? '');
     return () => { actionVersion.current += 1; };
-  }, [installationId, user, focused]);
+  }, [installationId, initialQuery, user, focused]);
   const results = useMemo(
     () => searchInstallationDevices(items, installationId, query),
     [installationId, items, query],
   );
+  const plannedMeter = installation?.service_type === 'M2 - Faults / COMMS fault'
+    ? plannedReplacementMeterNumber(installation.existing_device_id, query)
+    : null;
+  const plannedMeterKey = plannedMeter?.toLocaleLowerCase('en-AU') ?? '';
+  const plannedMeterIsRecorded = Boolean(plannedMeter && items.some(({ meter }) => (
+    [meter.serialNumber, meter.deviceNumber]
+      .filter(Boolean)
+      .some((value) => value!.trim().toLocaleLowerCase('en-AU') === plannedMeterKey)
+  )));
+  const sortedBoards = useMemo(() => [...boards].sort((left, right) => (
+    left.asset_name.localeCompare(right.asset_name) || left.id.localeCompare(right.id)
+  )), [boards]);
+  const zoneById = useMemo(() => new Map(zones.map((zone) => [zone.id, zone])), [zones]);
+
+  useEffect(() => {
+    if (sortedBoards.some((board) => board.id === plannedBoardId)) return;
+    setPlannedBoardId(sortedBoards[0]?.id ?? '');
+  }, [plannedBoardId, sortedBoards]);
 
   const replaceDevice = async (record: DeviceSearchRecord) => {
     if (!user || !focused || error || replacingId) return;
@@ -103,6 +135,61 @@ export function DeviceSearchScreen({ navigation, route }: Props) {
     }
   };
 
+  const startUnrecordedPlannedReplacement = async () => {
+    if (!user || !focused || !installation || !plannedMeter || !plannedBoardId || error || replacingId) return;
+    if (installation.status === 'Completed') {
+      Alert.alert(
+        'Reopen installation first',
+        'The completed version is read-only. Reopen this installation before replacing its device.',
+      );
+      return;
+    }
+    const board = sortedBoards.find((candidate) => candidate.id === plannedBoardId);
+    if (!board) {
+      Alert.alert('Select a switchboard', 'Choose the switchboard where the existing meter is installed.');
+      return;
+    }
+    setReplacingId(`planned:${plannedMeterKey}`);
+    const version = ++actionVersion.current;
+    const assertAccess = captureAssignedWorkMutationGuard();
+    try {
+      assertAccess(installation);
+      const gridSupplies = await canonicalInstallationRepo.gridSupplies(installation.id);
+      if (actionVersion.current !== version) return;
+      assertAccess(installation);
+      const answers = createInitialFormAnswers(installation, user);
+      answers['existing.switchboard_location'] = board.location_description ?? '';
+      answers['existing.switchboard_type'] = board.asset_type;
+      answers['existing.site_nmi'] = canonicalNmiForBoard(board, gridSupplies);
+      answers['existing.device_type'] = plannedDeviceType;
+      answers['existing.device_id'] = plannedMeter;
+      answers['works.replace_device'] = 'yes';
+      const definition = FORM_DEFINITION_BY_TYPE['comms-fault'];
+      const form = await formsRepo.create({
+        form_type: definition.type,
+        schema_version: definition.schemaVersion,
+        installation_id: installation.id,
+        zone_id: board.zone_id,
+        board_id: board.id,
+        answers,
+      });
+      if (actionVersion.current !== version) return;
+      assertAccess(installation);
+      navigation.navigate('FormEditor', {
+        formId: form.id,
+        installationId: installation.id,
+      });
+    } catch (caught) {
+      if (actionVersion.current !== version) return;
+      Alert.alert(
+        'Replacement form not started',
+        caught instanceof Error ? caught.message : 'The replacement form could not be created.',
+      );
+    } finally {
+      if (actionVersion.current === version) setReplacingId(null);
+    }
+  };
+
   const retry = () => { void refresh().catch(() => undefined); };
   if (loading && !loaded) {
     return <LoadingState />;
@@ -130,6 +217,44 @@ export function DeviceSearchScreen({ navigation, route }: Props) {
           ? `Showing ${INSTALLATION_DEVICE_RESULT_LIMIT} of ${results.total} matches. Refine the search.`
           : `${results.total} matching device${results.total === 1 ? '' : 's'}.`}
       </Text>
+      {plannedMeter && !plannedMeterIsRecorded ? (
+        <Card style={{ marginBottom: spacing.md }}>
+          <Text style={[typography.subheading, { color: colors.foreground }]}>Planned meter {plannedMeter}</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, marginBottom: spacing.md, lineHeight: 20 }}>
+            This meter is in the M2 job plan but is not yet recorded in the copied site data. Confirm its existing type and actual switchboard before starting the replacement form.
+          </Text>
+          <SelectChips
+            label="Existing meter type"
+            value={plannedDeviceType}
+            options={['A3RM', 'A6M']}
+            onChange={setPlannedDeviceType}
+            disabled={Boolean(replacingId) || installation.status === 'Completed'}
+          />
+          {sortedBoards.length ? (
+            <SelectChips
+              label="Installed switchboard"
+              value={plannedBoardId}
+              options={sortedBoards.map((board) => board.id)}
+              getLabel={(boardId) => {
+                const board = sortedBoards.find((candidate) => candidate.id === boardId);
+                const zone = board ? zoneById.get(board.zone_id) : undefined;
+                return board ? `${board.asset_name}${zone ? ` · ${zone.zone_name}` : ''}` : boardId;
+              }}
+              onChange={setPlannedBoardId}
+              disabled={Boolean(replacingId) || installation.status === 'Completed'}
+            />
+          ) : (
+            <Text accessibilityRole="alert" style={{ color: colors.destructive, marginBottom: spacing.md }}>
+              Add the switchboard where this meter is installed before starting its replacement.
+            </Text>
+          )}
+          <Button
+            title={replacingId === `planned:${plannedMeterKey}` ? 'Opening…' : 'Capture old meter and start replacement'}
+            disabled={Boolean(error) || Boolean(replacingId) || !plannedBoardId || installation.status === 'Completed'}
+            onPress={() => { void startUnrecordedPlannedReplacement(); }}
+          />
+        </Card>
+      ) : null}
       <FlatList
         data={results.visible}
         keyExtractor={(record) => record.meter.id}

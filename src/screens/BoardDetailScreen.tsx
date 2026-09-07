@@ -14,7 +14,7 @@ import type { RootStackParamList } from '../navigation/types';
 type Props = NativeStackScreenProps<RootStackParamList, 'BoardDetail'>;
 
 export function BoardDetailScreen({ navigation, route }: Props) {
-  const { boardId, installationId, zoneId } = route.params;
+  const { boardId, installationId } = route.params;
   const { colors } = useTheme();
   const [editOpen, setEditOpen] = useState(false);
   const {
@@ -62,27 +62,13 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       ) : null}
 
       <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.lg, flexWrap: 'wrap' }}>
-        <Button title="Edit board" variant="secondary" disabled={readOnly} onPress={() => setEditOpen(true)} />
+        <Button title="Edit switchboard" variant="secondary" disabled={readOnly} onPress={() => setEditOpen(true)} />
         <Button
-          title="Commission new device"
-          disabled={readOnly}
-          onPress={() =>
-            navigation.navigate('FormTypePicker', {
-              installationId,
-              zoneId,
-              boardId,
-              formType: 'ww-installation',
-            })
-          }
-        />
-        <Button
-          title="Add Other Meter"
-          variant="secondary"
+          title="Add meter"
           disabled={readOnly}
           onPress={() => navigation.navigate('MeterForm', {
             installationId,
             boardId,
-            deviceType: 'Other',
           })}
         />
       </View>
@@ -90,9 +76,9 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       <Card style={{ marginTop: spacing.lg }}>
         <SectionHeader title="Switchboard details" />
         <Text style={{ color: colors.mutedForeground }}>Generated asset ID: {board.display_code_meta?.value || board.display_code || 'Not recorded'}</Text>
-        <Text style={{ color: colors.foreground, marginTop: 8 }}>Location: {board.location_description || 'Not recorded'}</Text>
-        <Text style={{ color: colors.foreground, marginTop: 8 }}>Amperage: {board.amperage_rating || 'Not recorded'}</Text>
-        <Text style={{ color: colors.foreground, marginTop: 8 }}>Sub-circuits: {board.sub_circuits_description || 'Not recorded'}</Text>
+        <Text style={{ color: colors.foreground, marginTop: 8 }}>Location description: {board.location_description || 'Not recorded'}</Text>
+        <Text style={{ color: colors.foreground, marginTop: 8 }}>Amperage rating: {board.amperage_rating || 'Not recorded'}</Text>
+        <Text style={{ color: colors.foreground, marginTop: 8 }}>Sub-circuits description: {board.sub_circuits_description || 'Not recorded'}</Text>
         <Text style={{ color: colors.foreground, marginTop: 8 }}>Comments: {board.comments || 'Not recorded'}</Text>
         {parent ? <Button title={`Electrical parent: ${parent.asset_name}`} variant="ghost" onPress={() => navigation.push('BoardDetail', { installationId, zoneId: parent.zone_id, boardId: parent.id })} />
           : <Text style={{ color: colors.foreground, marginTop: 8 }}>Supply: {electricalSource?.kind === 'GRID' ? gridSupplies.find((grid) => grid.id === electricalSource.gridSupplyId)?.name || 'Unavailable grid connection' : 'To be confirmed'}</Text>}
@@ -136,7 +122,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
       )}
 
       <Button
-        title="Delete board"
+        title="Delete switchboard"
         variant="danger"
         disabled={readOnly}
         style={{ marginTop: spacing.xl }}
@@ -146,7 +132,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
             ? `\n\nDeletes ${preview.deletes.meters} meter(s) and ${preview.deletes.assignments} assignment(s). Converts ${preview.convertsToTbc.boards} board(s) and ${preview.convertsToTbc.siteAssets} asset(s) to TBC.`
             : '';
           Alert.alert(
-            'Delete board?',
+            'Delete switchboard?',
             `Completed forms and their evidence are retained. Draft forms remain available with their board and meter links cleared. Other affected supply links will be marked TBC.${impact}`,
             [
               { text: 'Cancel', style: 'cancel' },
@@ -163,7 +149,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
         })(); }}
       />
 
-      <FormModal visible={editOpen} title="Edit board" onClose={() => setEditOpen(false)}>
+      <FormModal visible={editOpen} title="Edit switchboard" onClose={() => setEditOpen(false)}>
         <ElectricalAssetForm
           initial={board}
           sourceBoards={installationBoards}
@@ -200,7 +186,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
               meters: options.removeMeters ? [] : board.meters,
             });
             setEditOpen(false);
-            navigation.goBack();
+            await refresh();
           }}
         />
       </FormModal>

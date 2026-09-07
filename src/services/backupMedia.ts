@@ -227,6 +227,7 @@ function wireMeter(
       ),
     deviceType: meter.device_type,
     deviceId: meter.device_id,
+    lifecycleState: meter.lifecycle_state ?? 'ACTIVE',
     deviceNumber: meter.device_number ?? null,
     classification: meter.classification ?? null,
     coverage: meter.coverage ?? null,
@@ -456,6 +457,7 @@ function wireMeterDevice(
       ),
     deviceNumber: meter.deviceNumber ?? null,
     serialNumber: meter.serialNumber,
+    lifecycleState: meter.lifecycleState ?? 'ACTIVE',
     displayName: meter.displayName,
     channels: [...meter.channels]
       .sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id))
@@ -566,7 +568,10 @@ export function buildBackupPayload(
 ) {
   const installationId = tree.installation.id;
   const remote = remoteResolver(queue);
-  const zoneCodes = resolvedZoneCodes(tree.zones);
+  const zoneCodes = resolvedZoneCodes(
+    tree.zones,
+    tree.installation.site_code || tree.installation.site_name,
+  );
   return {
     treeSchemaVersion: tree.treeSchemaVersion,
     ...(tree.baseTreeRevision !== undefined

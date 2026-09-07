@@ -47,6 +47,7 @@ import { searchEligibleMeters } from '../domain/meterSearch';
 import {
   partitionReadinessIssues,
   readinessIssueKey,
+  reconciliationIssueWhy,
   reconciliationProgress,
 } from '../domain/reconciliationWorkflow';
 import {
@@ -54,6 +55,13 @@ import {
   meterChannelPurposeLabel,
   phaseGroupingLabel,
 } from '../domain/meterCommissioning';
+import {
+  assetMeteringChannelDescription,
+  assetMeteringChannelGroupComplete,
+  assetMeteringDeviceChoices,
+  assetMeteringSelectionAfterToggle,
+  requiredAssetMeteringChannelCount,
+} from '../domain/assetMeteringWorkflow';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DataView'>;
 type ViewMode = 'RECONCILIATION' | 'VALIDATION' | 'COVERAGE' | 'ELECTRICAL' | 'PHYSICAL';
@@ -394,23 +402,37 @@ export function DataViewScreen({ navigation, route }: Props) {
   }, [boards, candidateSearch, gridSupplies, sourceIssue, zones]);
 
   const selectedMeter = eligibleMeters.find((meter) => meter.id === selectedMeterId);
+  const mappingMeterChoices = useMemo(() => assetMeteringDeviceChoices({
+    meters: meterDevices,
+    assignments: measurementAssignments,
+    supplyingBoardId: mappingAsset?.electrical_source?.kind === 'BOARD'
+      ? mappingAsset.electrical_source.boardId
+      : undefined,
+    assetId: mappingAsset?.id,
+  }), [mappingAsset?.electrical_source, mappingAsset?.id, measurementAssignments, meterDevices]);
+  const selectedMeterChoice = mappingMeterChoices.find((choice) => choice.meter.id === selectedMeterId);
+  const requiredChannelCount = requiredAssetMeteringChannelCount(phaseMode);
+  const channelGroupComplete = assetMeteringChannelGroupComplete(phaseMode, selectedChannelIds);
   const eligibleMeterSearch = useMemo(
     () => searchEligibleMeters(eligibleMeters, meterSearch, METER_RESULT_LIMIT),
     [eligibleMeters, meterSearch],
   );
   const visibleEligibleMeters = eligibleMeterSearch.visible;
-  const assignedElsewhere = useMemo(() => {
-    const currentIds = new Set(
-      mappingAsset?.metering_state?.kind === 'METERED'
-        ? mappingAsset.metering_state.measurementAssignmentIds
-        : [],
-    );
-    return new Set(
-      measurementAssignments
-        .filter((assignment) => !currentIds.has(assignment.id) && assignment.target.kind !== 'TBC')
-        .flatMap((assignment) => assignment.channelIds),
-    );
-  }, [mappingAsset, measurementAssignments]);
+  useEffect(() => {
+    if (!mappingAsset || !selectedMeterId) return;
+    if (!selectedMeterChoice) {
+      setSelectedMeterId('');
+      setSelectedChannelIds([]);
+      return;
+    }
+    const selectable = new Set(selectedMeterChoice.channels
+      .filter((choice) => choice.selectable)
+      .map((choice) => choice.channel.id));
+    setSelectedChannelIds((current) => {
+      const retained = current.filter((channelId) => selectable.has(channelId));
+      return retained.length === current.length ? current : retained;
+    });
+  }, [mappingAsset, selectedMeterChoice, selectedMeterId]);
 
   const retry = () => {
     setRowsRetry((current) => current + 1);
@@ -693,6 +715,10 @@ export function DataViewScreen({ navigation, route }: Props) {
         <View style={{ flex: 1 }}>
           <Text style={{ color: colors.foreground, fontWeight: '800' }}>{context.title}</Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 4, lineHeight: 20 }}>{issue.message}</Text>
+          <Text style={{ color: colors.foreground, marginTop: 6, lineHeight: 20 }}>
+            <Text style={{ fontWeight: '800' }}>Why: </Text>
+            {reconciliationIssueWhy(issue)}
+          </Text>
           <Text style={{ color: colors.mutedForeground, marginTop: 5, fontSize: 12 }}>
             {issue.code} · {context.detail || issue.entityId}
           </Text>
@@ -1076,7 +1102,7 @@ export function DataViewScreen({ navigation, route }: Props) {
           keyExtractor={(meter) => meter.id}
           keyboardShouldPersistTaps="handled"
           accessibilityRole="radiogroup"
-          accessibilityLabel="Eligible meters on the supplying board"
+          accessibilityLabel="Active meters on the supplying board"
           contentContainerStyle={styles.mappingList}
           ListHeaderComponent={(
             <View>
@@ -1084,7 +1110,7 @@ export function DataViewScreen({ navigation, route }: Props) {
                 {mappingAsset?.display_code} · {mappingAsset?.asset_name}
               </Text>
               <Text style={{ color: colors.mutedForeground, marginBottom: spacing.md }}>
-                Record which non-spare meter channels directly measure this asset. Only meters installed on the asset’s immediate supplying electrical board are shown.
+                Record which configured sub-circuit channels directly measure this asset. Active meters on the immediate supplying switchboard remain visible when occupied so you can inspect the reason; use the full asset editor for an explicit reassignment.
               </Text>
               <SearchBar
                 value={meterSearch}
@@ -1094,15 +1120,19 @@ export function DataViewScreen({ navigation, route }: Props) {
               <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
                 {eligibleMeterSearch.total > METER_RESULT_LIMIT
                   ? `Showing ${METER_RESULT_LIMIT} of ${eligibleMeterSearch.total} matches. Refine the search to choose another meter.`
-                  : `${eligibleMeterSearch.total} eligible meter${eligibleMeterSearch.total === 1 ? '' : 's'}.`}
+                  : `${eligibleMeterSearch.total} active meter${eligibleMeterSearch.total === 1 ? '' : 's'} on this switchboard.`}
               </Text>
             </View>
           )}
           renderItem={({ item: meter, index }) => {
             const selected = selectedMeterId === meter.id;
+            const availability = mappingMeterChoices.find((choice) => choice.meter.id === meter.id);
+            const directlySelectable = availability?.channels.some((choice) => choice.selectable) ?? false;
             return (
               <Button
-                title={`${meter.displayName.value} · ${meter.deviceModel} · ${meter.serialNumber || 'no serial'}`}
+                title={`${meter.displayName.value} · ${meter.deviceModel} · ${meter.serialNumber || 'no serial'}${availability
+                  ? ` · ${availability.availableCount} free${availability.currentCount ? ` · ${availability.currentCount} current` : ''}${availability.tbcCount ? ` · ${availability.tbcCount} TBC` : ''}${availability.occupiedCount ? ` · ${availability.occupiedCount} occupied` : ''}${availability.takeoverCount ? ` · ${availability.takeoverCount} require reassignment` : ''}${directlySelectable ? '' : ' · unavailable in quick mapping'}`
+                  : ''}`}
                 variant={selected ? 'primary' : 'secondary'}
                 style={{ marginBottom: 8 }}
                 accessibilityRole="radio"
@@ -1119,7 +1149,7 @@ export function DataViewScreen({ navigation, route }: Props) {
             <Text style={{ color: colors.mutedForeground }}>
               {eligibleMeters.length
                 ? 'No meters match this search. Refine or clear the search.'
-                : 'No eligible meter is available on the supplying board. Confirm the asset’s supplying board or install a meter on that board first.'}
+                : 'No active meter is installed on the supplying board. Confirm the asset’s supplying board or install a meter on that board first.'}
             </Text>
           )}
           ListFooterComponent={selectedMeter ? (
@@ -1135,22 +1165,48 @@ export function DataViewScreen({ navigation, route }: Props) {
                   : phaseMode === 'THREE_PHASE'
                     ? `Three phase requires exactly 3 channels. ${selectedChannelIds.length} selected.`
                     : `Other channel group requires at least 1 channel. ${selectedChannelIds.length} selected.`}
+                {channelGroupComplete ? ' Channel group complete.' : ' Select the required channel count before saving.'}
               </Text>
-              {selectedMeter.channels.map((channel, index) => {
+              {selectedMeterChoice?.channels.map((channelChoice, index) => {
+                const { channel } = channelChoice;
                 const selected = selectedChannelIds.includes(channel.id);
-                const unavailable = assignedElsewhere.has(channel.id) || channel.purpose === 'SPARE';
+                const phaseLimitReached = !selected && requiredChannelCount !== null
+                  && selectedChannelIds.length >= requiredChannelCount;
+                const unavailable = !channelChoice.selectable || phaseLimitReached;
+                const availabilityStatus = channelChoice.availability === 'AVAILABLE'
+                  ? 'available'
+                  : channelChoice.availability === 'CURRENT'
+                    ? 'current asset mapping'
+                    : channelChoice.availability === 'TBC_ASSIGNMENT'
+                      ? 'claimable TBC mapping'
+                      : channelChoice.availability === 'TAKEOVER_REQUIRED'
+                        ? 'assigned to another asset; use the full asset editor to reassign'
+                        : channelChoice.availability === 'PROTECTED_ASSIGNMENT'
+                          ? 'reserved for a board or Grid boundary'
+                          : channelChoice.availability === 'CAPABILITY_REQUIRED'
+                            ? 'configure channel capabilities first'
+                            : channelChoice.availability === 'NOT_ASSET_CHANNEL'
+                              ? 'not configured as a sub-circuit channel'
+                              : 'invalid device topology';
+                const status = channelChoice.selectable && phaseLimitReached
+                  ? `${requiredChannelCount} required channel${requiredChannelCount === 1 ? '' : 's'} already selected`
+                  : availabilityStatus;
+                const description = assetMeteringChannelDescription(selectedMeter, channel);
                 return (
                   <Button
                     key={channel.id}
-                    title={`Ch ${channel.ordinal} · ${meterChannelPurposeLabel(channel.purpose)}${channel.description ? ` · ${channel.description}` : ''}${unavailable ? ' · unavailable' : ''}`}
+                    title={`Ch ${channel.ordinal} · ${meterChannelPurposeLabel(channel.purpose)}${description ? ` · ${description}` : ''} · ${status}`}
                     variant={selected ? 'primary' : 'secondary'}
                     disabled={unavailable}
                     style={{ marginBottom: 8 }}
-                    accessibilityLabel={`Channel ${channel.ordinal}, ${meterChannelPurposeLabel(channel.purpose)}${unavailable ? ', unavailable' : selected ? ', selected' : ', not selected'}`}
+                    accessibilityLabel={`Channel ${channel.ordinal}, ${meterChannelPurposeLabel(channel.purpose)}, ${status}${selected ? ', selected' : ''}`}
                     accessibilityHint={`${index + 1} of ${selectedMeter.channels.length}`}
                     accessibilityState={{ selected, disabled: unavailable }}
-                    onPress={() => setSelectedChannelIds((current) =>
-                      selected ? current.filter((id) => id !== channel.id) : [...current, channel.id])}
+                    onPress={() => setSelectedChannelIds((current) => assetMeteringSelectionAfterToggle({
+                      phaseMode,
+                      selectedChannelIds: current,
+                      channelId: channel.id,
+                    }))}
                   />
                 );
               })}
@@ -1159,7 +1215,10 @@ export function DataViewScreen({ navigation, route }: Props) {
                 value={phaseMode}
                 options={['SINGLE_PHASE', 'THREE_PHASE', 'OTHER']}
                 getLabel={phaseGroupingLabel}
-                onChange={setPhaseMode}
+                onChange={(value) => {
+                  if (value !== phaseMode) setSelectedChannelIds([]);
+                  setPhaseMode(value);
+                }}
               />
               <SelectChips
                 label="Energy flow"
@@ -1170,12 +1229,23 @@ export function DataViewScreen({ navigation, route }: Props) {
               />
               <Button
                 title="Save channel measurement"
-                disabled={!selectedChannelIds.length}
+                disabled={!channelGroupComplete || !direction}
                 style={{ marginTop: spacing.md }}
                 onPress={async () => {
                   if (!mappingAsset) return;
                   try {
                     if (!direction) throw new Error('Choose the energy flow.');
+                    if (!channelGroupComplete) {
+                      throw new Error(requiredChannelCount === null
+                        ? 'Choose at least one channel.'
+                        : `Choose exactly ${requiredChannelCount} channel${requiredChannelCount === 1 ? '' : 's'} for this phase grouping.`);
+                    }
+                    const selectable = new Set(selectedMeterChoice?.channels
+                      .filter((choice) => choice.selectable)
+                      .map((choice) => choice.channel.id) ?? []);
+                    if (!selectedChannelIds.every((channelId) => selectable.has(channelId))) {
+                      throw new Error('A selected channel is no longer available. Review the current device mapping.');
+                    }
                     const assignment = createMeasurementAssignment({
                       installationId,
                       assetId: mappingAsset.id,

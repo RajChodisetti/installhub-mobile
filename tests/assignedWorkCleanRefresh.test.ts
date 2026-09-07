@@ -299,6 +299,29 @@ test('production pull and canonical mapper refresh an existing clean record befo
   } finally { unregister(); }
 });
 
+test('production pull preserves canonical inactive meter lifecycle in local and legacy projections', async () => {
+  const unregister = noScreens();
+  try {
+    const store = fixture();
+    store.meterDevices.push({
+      id: 'meter', installationId: 'job', installedOnBoardId: 'board',
+      deviceFamily: 'WATTWATCHERS', deviceModel: 'A3RM', customName: 'Meter',
+      serialNumber: 'SERIAL', lifecycleState: 'ACTIVE',
+      displayName: { value: 'M-1', generatedValue: 'M-1', isOverridden: false, ruleVersion: 1 },
+      channels: [1, 2, 3].map((ordinal) => ({
+        id: `meter:${ordinal}`, ordinal, purpose: 'SPARE' as const,
+      })),
+    });
+    projectCanonicalCompatibility(store, 'job');
+    const response = remoteResponse(store);
+    response.installations[0]!.meterDevices[0]!.lifecycleState = 'INACTIVE';
+    const harness = pullHarness(store, async () => response);
+    await harness.sync();
+    assert.equal(store.meterDevices[0]!.lifecycleState, 'INACTIVE');
+    assert.equal(store.electricalAssets[0]!.meters[0]!.lifecycle_state, 'INACTIVE');
+  } finally { unregister(); }
+});
+
 test('production pull preserves local work changed after request capture', async () => {
   const unregister = noScreens();
   try {

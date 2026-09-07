@@ -85,18 +85,21 @@ test('routine tree/CAS revision and pull timestamps do not invalidate an acknowl
 test('schedule start, deadline, and status changes are reported for the update notice', () => {
   const previous = summary({
     schedule_event_id: 'event-1',
+    schedule_title: 'M2 - Client - Site - A1B',
     scheduled_start_at: '2026-08-22T09:00:00.000Z',
     deadline_at: '2026-08-22T17:00:00.000Z',
     schedule_status: 'planned',
   });
   const current = summary({
     schedule_event_id: 'event-1',
+    schedule_title: 'M2 - Client - Site - C2D',
     scheduled_start_at: '2026-08-22T10:00:00.000Z',
     deadline_at: '2026-08-23T17:00:00.000Z',
     schedule_status: 'in_progress',
   });
 
   assert.deepEqual(assignedWorkScheduleChangedFields(previous, current), [
+    'schedule_title',
     'scheduled_start_at',
     'deadline_at',
     'schedule_status',

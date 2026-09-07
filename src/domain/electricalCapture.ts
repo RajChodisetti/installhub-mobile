@@ -43,6 +43,7 @@ export function electricalSourceFromSelection(
 export function siteAssetMeteringForSave(input: {
   kind: SiteAssetMeteringDraft['kind']; source: ElectricalSource;
   selectedMeter?: MeterDevice; selectedMeterId?: string; eligibleMeterIds: string[]; channelIds: string[];
+  eligibleChannelIds?: string[]; assetId?: string;
   phaseMode: MeasurementAssignment['phaseMode']; direction: MeasurementDirection | '';
   assignments: MeasurementAssignment[]; previousAssignmentId?: string;
   previousAssignment?: MeasurementAssignment; previousSource?: ElectricalSource;
@@ -52,7 +53,6 @@ export function siteAssetMeteringForSave(input: {
   if (input.kind !== 'METERED') return { kind: input.kind };
   const previous = input.previousAssignment;
   if (previous && input.previousSource
-    && !input.eligibleMeterIds.includes(previous.meterId)
     && (input.selectedMeterId ?? input.selectedMeter?.id ?? previous.meterId) === previous.meterId
     && JSON.stringify(input.previousSource) === JSON.stringify(input.draftSource ?? input.source)
     && JSON.stringify(previous.channelIds) === JSON.stringify(input.channelIds)
@@ -64,14 +64,24 @@ export function siteAssetMeteringForSave(input: {
   }
   const ids = [...new Set(input.channelIds)];
   const count = input.phaseMode === 'SINGLE_PHASE' ? 1 : input.phaseMode === 'THREE_PHASE' ? 3 : ids.length;
+  const ownedIds = new Set(input.assignments.flatMap((assignment) =>
+    input.assetId
+    && assignment.target.kind === 'SITE_ASSET'
+    && assignment.target.siteAssetId === input.assetId
+      ? [assignment.id]
+      : []));
+  if (input.previousAssignmentId) ownedIds.add(input.previousAssignmentId);
   const conflicts = input.assignments.filter((assignment) =>
-    assignment.id !== input.previousAssignmentId && assignment.target.kind !== 'TBC'
+    assignment.meterId === input.selectedMeter?.id
+    && !ownedIds.has(assignment.id) && assignment.target.kind !== 'TBC'
     && assignment.channelIds.some((id) => ids.includes(id)));
   const conflict = conflicts.some((assignment) => assignment.target.kind !== 'SITE_ASSET'
     || input.takeoverApprovals?.[assignment.id] !== assignmentApprovalSignature(assignment));
   if (input.source.kind !== 'BOARD' || !input.selectedMeter
     || !input.eligibleMeterIds.includes(input.selectedMeter.id)
     || !ids.length || ids.length !== count || ids.length !== input.channelIds.length
+    || (input.eligibleChannelIds !== undefined
+      && !ids.every((id) => input.eligibleChannelIds!.includes(id)))
     || !ids.every((id) => input.selectedMeter!.channels.find((channel) => channel.id === id)?.purpose === 'SUB_CIRCUIT')
     || conflict) return { kind: 'TBC' };
   return { kind: 'METERED', meterId: input.selectedMeter.id, channelIds: ids,

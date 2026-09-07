@@ -96,14 +96,14 @@ const entityFields = {
   siteAssets: ['id', 'installationId', 'zoneId', 'assetName', 'typeCode', 'customTypeName', 'electricalSource', 'meteringState',
     'locationDescription', 'locationPhoto', 'meterPresent', 'comments'],
   meterDevices: ['id', 'installationId', 'installedOnBoardId', 'customName', 'deviceFamily', 'deviceModel',
-    'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'commissioningData', 'notes'],
+    'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'lifecycleState', 'commissioningData', 'notes'],
   measurementAssignments: ['id', 'installationId', 'meterId', 'phaseMode', 'target', 'direction', 'status'],
   formSubmissions: ['id', 'installationId', 'formType', 'schemaVersion', 'zoneId', 'boardId', 'meterId', 'siteAssetId',
     'supersedesId', 'historicalMeterRemoved'],
 } as const;
 
 const retainedMeterFields = ['id', 'installationId', 'installedOnBoardId', 'customName', 'deviceFamily',
-  'deviceModel', 'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'displayName', 'channels'] as const;
+  'deviceModel', 'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'lifecycleState', 'displayName', 'channels'] as const;
 
 function restoredFormMatches(sent: Row, previous: Row): boolean {
   if (previous.status !== 'Completed' || sent.status !== 'Draft') return false;

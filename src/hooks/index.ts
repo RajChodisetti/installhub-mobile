@@ -55,8 +55,9 @@ export function useDeviceSearchRecords(installationId: string) {
   const scope = `${installationId}:${actor}:${authority.generation}`;
   const [state, setState] = useState<{
     scope: string; items: DeviceSearchRecord[]; installation: Installation | null;
+    boards: ElectricalAsset[]; zones: Zone[];
     loading: boolean; loaded: boolean; error: string | null;
-  }>({ scope, items: [], installation: null, loading: true, loaded: false, error: null });
+  }>({ scope, items: [], installation: null, boards: [], zones: [], loading: true, loaded: false, error: null });
   const request = useRef(0);
   const mounted = useRef(true);
   const currentScope = useRef(scope);
@@ -67,14 +68,14 @@ export function useDeviceSearchRecords(installationId: string) {
     const isCurrent = () => mounted.current && currentScope.current === scope
       && request.current === version && actorForCurrentAssignedWorkAuthority(authority) === actor;
     setState((prior) => ({ ...(prior.scope === scope ? prior : {
-      scope, items: [], installation: null, loaded: false,
+      scope, items: [], installation: null, boards: [], zones: [], loaded: false,
     }), loading: true, error: null }));
     try {
       if (!actor) throw new Error('Sign in to search installation devices.');
       const installation = await installationsRepo.getById(installationId);
       if (!isCurrent()) return;
       if (!installation) {
-        setState({ scope, items: [], installation: null, loaded: true, loading: false, error: null });
+        setState({ scope, items: [], installation: null, boards: [], zones: [], loaded: true, loading: false, error: null });
         return;
       }
       if (installation.id !== installationId || installation.local_owner_user_id !== actor) {
@@ -88,12 +89,12 @@ export function useDeviceSearchRecords(installationId: string) {
       if (!isCurrent()) return;
       const boardById = new Map(boards.map((board) => [board.id, board]));
       const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
-      const items = meters.flatMap((meter) => {
+      const items = meters.filter((meter) => !meter.lifecycleState || meter.lifecycleState === 'ACTIVE').flatMap((meter) => {
         const board = boardById.get(meter.installedOnBoardId);
         const zone = board ? zoneById.get(board.zone_id) : undefined;
         return board && zone ? [{ meter, board, zone, installation }] : [];
       });
-      setState({ scope, items, installation, loaded: true, loading: false, error: null });
+      setState({ scope, items, installation, boards, zones, loaded: true, loading: false, error: null });
     } catch (caught) {
       if (isCurrent()) setState((prior) => ({ ...prior, loading: false,
         error: caught instanceof Error ? caught.message : 'Installation devices could not be loaded.' }));
@@ -107,7 +108,7 @@ export function useDeviceSearchRecords(installationId: string) {
     return () => { mounted.current = false; request.current += 1; unsubscribe(); };
   }, [refresh]);
   const scoped = state.scope === scope ? state : {
-    items: [], installation: null, loaded: false, loading: true, error: null,
+    items: [], installation: null, boards: [], zones: [], loaded: false, loading: true, error: null,
   };
   return { ...scoped, refresh };
 }

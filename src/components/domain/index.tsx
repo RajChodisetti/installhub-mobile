@@ -22,6 +22,7 @@ export function InstallationCard({
 }) {
   const { colors } = useTheme();
   const timing = dashboardJobTiming(item);
+  const scheduleTitle = item.assigned_work_job_summary?.schedule_title?.trim();
   const timingSummary = timing.group === 'scheduled'
     ? [
         timing.scheduledStartAt
@@ -37,7 +38,7 @@ export function InstallationCard({
   return (
     <ListRow
       title={item.site_name}
-      subtitle={`${item.client_name} · ${item.site_address}\n${timingSummary}${counts ? `\n${counts.zones} zones · ${counts.boards} boards · ${counts.siteAssets} assets · ${counts.forms} forms` : ''}`}
+      subtitle={`${scheduleTitle ? `Title · ${scheduleTitle}\n` : ''}${item.client_name} · ${item.site_address}\n${timingSummary}${counts ? `\n${counts.zones} zones · ${counts.boards} boards · ${counts.siteAssets} assets · ${counts.forms} forms` : ''}`}
       onPress={onPress}
       right={(
         <View style={{ alignItems: 'flex-end', gap: 4 }}>

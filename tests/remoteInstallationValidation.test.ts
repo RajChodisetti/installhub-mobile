@@ -92,6 +92,22 @@ test('canonical v2 import validation accepts a fully referenced direct-Grid tree
   );
 });
 
+test('canonical v2 meter lifecycle remains optional but rejects unknown declared states', () => {
+  const historical = canonicalTree();
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(historical));
+
+  const inactive = canonicalTree();
+  inactive.meterDevices![0]!.lifecycleState = 'INACTIVE';
+  assert.doesNotThrow(() => validateCanonicalRemoteTreeIds(inactive));
+
+  const invalid = canonicalTree();
+  invalid.meterDevices![0]!.lifecycleState = 'DECOMMISSIONED';
+  assert.throws(
+    () => validateCanonicalRemoteTreeIds(invalid),
+    /meter meter-1 lifecycle state must be one of PLANNED, ACTIVE, INACTIVE/,
+  );
+});
+
 test('canonical v2 import never blocks on stale or out-of-region location metadata', () => {
   for (const country of [undefined, null, '', 'au', 'NZ']) {
     const tree = canonicalTree();

@@ -158,6 +158,7 @@ test('job metadata normalization preserves nullable outcomes and defaults legacy
 test('meter commissioning metadata survives legacy-to-canonical-to-legacy normalization', () => {
   const store = storeFixture();
   const meter = store.electricalAssets[0]!.meters[0]!;
+  meter.lifecycle_state = 'INACTIVE';
   meter.classification = 'Electricity meter';
   meter.coverage = 'Main switchboard incoming supply';
   meter.ww_prestart = {
@@ -198,6 +199,8 @@ test('meter commissioning metadata survives legacy-to-canonical-to-legacy normal
 
   normalizeCanonicalStore(store);
 
+  assert.equal(store.meterDevices[0]!.lifecycleState, 'INACTIVE');
+  assert.equal(store.electricalAssets[0]!.meters[0]!.lifecycle_state, 'INACTIVE');
   assert.deepEqual(store.meterDevices[0]!.commissioningData, {
     classification: 'Electricity meter',
     coverage: 'Main switchboard incoming supply',
@@ -533,7 +536,7 @@ test('accepted legacy taxonomy aliases normalize without losing deliberate custo
   assert.equal(store.gridSupplies.find((grid) => grid.isDefault)?.id, 'grid-a');
   assert.equal(
     store.siteAssets.find((asset) => asset.id === 'new-light')?.display_code,
-    'ESS-PLANT-01-DIRECT-GRID-LOAD',
+    'ESS-PLA-ESS-01-01-DIRECT-GRID-LOAD',
   );
   assert.equal(store.siteAssets.find((asset) => asset.id === 'refrigeration')?.custom_type_name, 'Refrigeration');
 });
@@ -572,10 +575,12 @@ test('legacy channel migration and projection preserve custom loads and model-sp
   const store = storeFixture();
   const legacyMeter = store.electricalAssets[0]!.meters[0]!;
   legacyMeter.device_type = 'A6M';
+  legacyMeter.notes = 'Operational meter notes';
   legacyMeter.ww_channels = [{
     purpose: 'SUB_CIRCUIT',
     load_type: 'Refrigeration',
     ct_ratio: '120A',
+    rogowski_size: '3000A – 9cm',
     phase_label: 'L1',
     capabilities: { labels: ['pulse'] },
   }];
@@ -585,10 +590,32 @@ test('legacy channel migration and projection preserve custom loads and model-sp
   assert.equal(channel.customLoadTypeName, 'Refrigeration');
   assert.equal(channel.sensorRating, '120A');
   assert.equal(channel.phaseLabel, 'L1');
+  assert.equal(store.meterDevices[0]!.notes, 'Operational meter notes');
   const projected = store.electricalAssets[0]!.meters[0]!.ww_channels![0]!;
-  assert.equal(projected.load_type, 'Refrigeration');
+  assert.equal(projected.load_type, 'Other');
+  assert.equal(projected.custom_load_type_name, 'Refrigeration');
   assert.equal(projected.ct_ratio, '120A');
   assert.equal(projected.rogowski_size, undefined);
+  assert.equal(store.electricalAssets[0]!.meters[0]!.notes, 'Operational meter notes');
+});
+
+test('legacy A3RM conversion ignores hidden CT metadata and projects Rogowski only', () => {
+  const store = storeFixture();
+  const legacyMeter = store.electricalAssets[0]!.meters[0]!;
+  legacyMeter.device_type = 'A3RM';
+  legacyMeter.ww_channels = [{
+    purpose: 'SUB_CIRCUIT',
+    load_type: 'Lighting',
+    rogowski_size: '3000A – 20cm',
+    ct_ratio: '400A',
+  }];
+
+  normalizeCanonicalStore(store);
+
+  assert.equal(store.meterDevices[0]!.channels[0]!.sensorRating, '3000A – 20cm');
+  const projected = store.electricalAssets[0]!.meters[0]!.ww_channels![0]!;
+  assert.equal(projected.rogowski_size, '3000A – 20cm');
+  assert.equal(projected.ct_ratio, undefined);
 });
 
 test('DEC-005 custom meters require explicit channels, capabilities, and positive ordinals', () => {

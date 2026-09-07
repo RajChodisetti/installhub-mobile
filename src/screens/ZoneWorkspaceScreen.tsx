@@ -389,13 +389,18 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
             gridSupplies={gridSupplies}
             zones={zones}
             onSubmit={async (values) => {
-              await electricalAssetsRepo.create({
+              const created = await electricalAssetsRepo.create({
                 ...values,
                 audit_id: installationId,
                 zone_id: zoneId,
               });
               setBoardModal(false);
               await Promise.all([refresh(), refreshInstallation()]);
+              navigation.navigate('BoardDetail', {
+                boardId: created.id,
+                installationId,
+                zoneId,
+              });
             }}
           />
         )}

@@ -97,7 +97,7 @@ function coverPrimaryDetails(submission: FormSubmission): {
     return { label: 'Job', value: coverValue(submission, 'job.name') };
   }
   return {
-    label: 'Customer / site',
+    label: 'Client / site',
     value: coverValue(submission, 'site.customer_name'),
   };
 }

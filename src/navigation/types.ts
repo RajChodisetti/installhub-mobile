@@ -5,7 +5,7 @@ export type RootStackParamList = {
   MainTabs: undefined;
   InstallationForm: { installationId?: string } | undefined;
   InstallationDetail: { installationId: string };
-  DeviceSearch: { installationId: string };
+  DeviceSearch: { installationId: string; initialQuery?: string };
   ZoneWorkspace: { zoneId: string; installationId: string };
   BoardDetail: { boardId: string; installationId: string; zoneId: string };
   SiteAssetDetail: { assetId: string; installationId: string; zoneId: string };

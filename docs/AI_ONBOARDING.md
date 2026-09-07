@@ -313,6 +313,15 @@ legacy job-level outcome summaries remain sync-compatible but are no longer show
 iOS app. New field forms prefer
 the end-customer name and fall back to the contracting client and then the site name.
 
+An assigned existing-site M2 COMMS-fault job carries a newline-delimited replacement-meter plan
+with at most 50 unique numbers and at most 10,000 serialized characters. Suggestions come from the
+exact prior installation whose topology was copied and include only active devices; a missing
+historical lifecycle is active-compatible, while planned, inactive, deleted, blank, and duplicate
+serials are omitted. A manually planned number that has no canonical device remains actionable from
+device search: the installer must identify the old A3RM/A6M model and select its real switchboard,
+then completion captures that old identity and replaces it atomically at the same stable meter
+location. The app never guesses a board, model, or device that was not selected.
+
 A3RM/A6M devices have exact 3/6 positive channel ordinals. Other meters expose optional
 manufacturer/model and explicit custom channels/capabilities; they are not defaulted to three
 channels. Fixed A3RM/A6M channels use their model contract. Business answers and photo evidence
@@ -321,6 +330,17 @@ Supplied answers still follow catalog choices and visibility rules. Choosing `SP
 incompatible load, custom label, sensor, description, and evidence details. Measurement assignments
 retain stable identity and exact channel order; structural ownership and duplicate-channel checks
 remain enforced.
+
+For “How is this asset metered?”, a new or changed `METERED` choice is derived from the asset's
+immediate supplying board and the canonical `meterDevices` plus `measurementAssignments`. The app
+offers only a coherent A3RM/A6M topology or an explicitly configured custom meter, and only
+`SUB_CIRCUIT` channels with the selected custom channel's non-empty capabilities. A channel already
+owned by this asset stays editable, a `TBC` group is claimable, another site asset requires explicit
+reassignment approval, and board/Grid assignments remain protected. Incomplete or stale new choices
+save as `TBC`; an unchanged historical invalid relationship remains readable and may round-trip while
+unrelated asset details are edited. Only `ACTIVE` meters are offered; missing lifecycle state on a
+historical record defaults to `ACTIVE`, while the API retains a stored `PLANNED` or `INACTIVE` value
+when an older full-snapshot client omits this additive field.
 
 WW forms may be created and completed without board context. When a valid board and supported
 device type are present, form completion and operational-meter materialization are one store
@@ -766,9 +786,9 @@ preserving:
   commissioning questions. Its optional site/asset tag is not copied from the
   serial, and persisted legacy values remain readable.
 - Installation uses one `device.type` controller. A3RM exposes three channels with exactly
-  `10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, or `Not Used`;
-  A6M exposes six channels with exactly `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`,
-  `CT-600A`, or `Not Used`. A6M current observations also accept the explicit text value
+  `3000A – 9cm`, `3000A – 20cm`, or `3000A – 29cm`; A6M exposes six channels with exactly
+  `60A`, `120A`, `200A`, `400A`, or `600A`. Older model-scoped sensor values remain readable
+  but are not shown in the current dropdowns. A6M current observations also accept the explicit text value
   `Not Connected`; A3RM current observations remain numeric.
 - Signal authoring uses `Low`, `Medium`, or `High`. Antenna authoring uses `Internal`,
   `External`, `CSM550 - External High Gain`, or `Other`. Known saved values from the previous

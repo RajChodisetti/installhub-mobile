@@ -426,6 +426,8 @@ export function FormEditorScreen({ navigation, route }: Props) {
       );
     }
     if (field.kind === 'select') {
+      const fieldOptions = optionsForField(field, answers);
+      const hiddenSavedValue = value && !fieldOptions.includes(value) ? value : null;
       return (
         <View key={field.key} testID={`form-field:${field.key}`} style={styles.fieldBlock}>
           <Text style={[styles.label, { color: fieldError ? colors.destructive : colors.foreground }]}>{label}</Text>
@@ -435,11 +437,16 @@ export function FormEditorScreen({ navigation, route }: Props) {
             value={value}
             disabled={readOnly}
             onChange={(next) => change(field.key, next)}
-            options={optionsForField(field, answers).map((option) => ({
+            options={fieldOptions.map((option) => ({
               label: option,
               value: option,
             }))}
           />
+          {hiddenSavedValue ? (
+            <Text style={{ color: colors.mutedForeground }}>
+              Previously saved value: {hiddenSavedValue}. Select a current option to replace it.
+            </Text>
+          ) : null}
           {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
       );

@@ -32,18 +32,41 @@ export function isValidZoneCode(value: string): boolean {
     && ZONE_CODE_PATTERN.test(value);
 }
 
-function uniqueDerivedZoneCode(baseValue: string, used: Set<string>): string {
-  const base = normalizedZoneCode(baseValue);
-  if (!used.has(base)) return base;
-  for (let ordinal = 2; ; ordinal += 1) {
-    const suffix = `-${ordinal}`;
-    const candidate = `${base.slice(0, ZONE_CODE_MAX_LENGTH - suffix.length).replace(/-+$/g, '')}${suffix}`;
+function shortZonePrefix(zoneName: string): string {
+  return zoneName
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 3) || 'ZON';
+}
+
+function shortSiteSegment(siteCode: string): string {
+  return identifierSegment(siteCode, 8) || 'SITE';
+}
+
+function twoCharacterSequence(ordinal: number): string {
+  const value = ordinal.toString(36).toUpperCase();
+  if (value.length > 2) {
+    throw new Error('No two-character zone short codes remain for this site.');
+  }
+  return value.padStart(2, '0');
+}
+
+function uniqueDerivedZoneCode(zoneName: string, siteCode: string, used: Set<string>): string {
+  const prefix = shortZonePrefix(zoneName);
+  const site = shortSiteSegment(siteCode);
+  for (let ordinal = 1; ordinal < 36 ** 2; ordinal += 1) {
+    const suffix = twoCharacterSequence(ordinal);
+    const availableSiteLength = ZONE_CODE_MAX_LENGTH - prefix.length - suffix.length - 2;
+    const candidate = `${prefix}-${site.slice(0, availableSiteLength).replace(/-+$/g, '')}-${suffix}`;
     if (!used.has(candidate)) return candidate;
   }
+  throw new Error('No two-character zone short codes remain for this site.');
 }
 
 export function resolvedZoneCodes(
   zones: readonly Pick<Zone, 'id' | 'zone_name' | 'zone_code'>[],
+  siteCode: string,
 ): Map<string, string> {
   const result = new Map<string, string>();
   const used = new Set<string>();
@@ -55,7 +78,7 @@ export function resolvedZoneCodes(
   }
   for (const zone of [...zones].sort((left, right) => left.id.localeCompare(right.id))) {
     if (result.has(zone.id)) continue;
-    const derived = uniqueDerivedZoneCode(zone.zone_name, used);
+    const derived = uniqueDerivedZoneCode(zone.zone_name, siteCode, used);
     result.set(zone.id, derived);
     used.add(derived);
   }
@@ -64,16 +87,29 @@ export function resolvedZoneCodes(
 
 export function availableZoneCode(
   zones: readonly Pick<Zone, 'id' | 'zone_name' | 'zone_code'>[],
+  siteCode: string,
   zoneName: string,
   excludeZoneId?: string,
 ): string {
-  const resolved = resolvedZoneCodes(zones);
+  const resolved = resolvedZoneCodes(zones, siteCode);
   const used = new Set(
     [...resolved.entries()]
       .filter(([id]) => id !== excludeZoneId)
       .map(([, code]) => code),
   );
-  return uniqueDerivedZoneCode(zoneName, used);
+  return uniqueDerivedZoneCode(zoneName, siteCode, used);
+}
+
+export function isZoneCodeAvailable(
+  zones: readonly Pick<Zone, 'id' | 'zone_name' | 'zone_code'>[],
+  siteCode: string,
+  zoneCode: string,
+  excludeZoneId?: string,
+): boolean {
+  const candidate = zoneCode.trim().toUpperCase();
+  if (!isValidZoneCode(candidate)) return false;
+  return ![...resolvedZoneCodes(zones, siteCode).entries()]
+    .some(([id, code]) => id !== excludeZoneId && code === candidate);
 }
 
 export function normalizedCustomName(value: string, fallback: string): string {
@@ -143,7 +179,7 @@ export function generatedDisplayCodeV2(
     excludeId?: string;
   },
 ): string {
-  const zoneCode = resolvedZoneCodes(inventory.zones).get(input.zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(inventory.zones, sitePrefix(installation)).get(input.zoneId) || 'ZONE';
   const prefix = `${sitePrefix(installation)}-${zoneCode}`;
   const sequencePattern = new RegExp(`^${escapeRegExp(prefix)}-(\\d+)-`, 'i');
   const values = [
@@ -184,7 +220,7 @@ function largestSequenceForZone(
   zoneId: string,
   excludeId?: string,
 ): number {
-  const zoneCode = resolvedZoneCodes(inventory.zones).get(zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(inventory.zones, sitePrefix(installation)).get(zoneId) || 'ZONE';
   const prefix = `${sitePrefix(installation)}-${zoneCode}`;
   const values = [
     ...inventory.electricalAssets
@@ -227,7 +263,7 @@ function generatedWithSequence(
   input: { zoneId: string; customName: string; fallbackType: string },
   sequence: number,
 ): string {
-  const zoneCode = resolvedZoneCodes(inventory.zones).get(input.zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(inventory.zones, sitePrefix(installation)).get(input.zoneId) || 'ZONE';
   const prefix = `${sitePrefix(installation)}-${zoneCode}`;
   const ordinal = String(sequence).padStart(2, '0');
   const fixedPrefix = `${prefix}-${ordinal}-`;
@@ -260,7 +296,7 @@ export function provisionalDisplayCodeV2(
     return input.current;
   }
   const currentValue = input.current?.generatedValue || input.current?.value || '';
-  const zoneCode = resolvedZoneCodes(inventory.zones).get(input.zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(inventory.zones, sitePrefix(installation)).get(input.zoneId) || 'ZONE';
   const currentPrefix = `${sitePrefix(installation)}-${zoneCode}`;
   const previousPrefix = input.previousZoneCode
     ? `${sitePrefix(installation)}-${normalizedZoneCode(input.previousZoneCode)}`

@@ -56,8 +56,8 @@ export function showsWattwatchersCommissioningSections(
 export function meterChannelPurposeLabel(
   purpose?: MeterChannelPurpose | null,
 ): string {
-  if (purpose === 'MAIN_SUPPLY') return 'Main supply';
-  if (purpose === 'SUB_CIRCUIT') return 'Sub-circuit or site asset';
+  if (purpose === 'MAIN_SUPPLY') return 'Main board supply';
+  if (purpose === 'SUB_CIRCUIT') return 'Sub-circuit / asset';
   if (purpose === 'SPARE') return 'Spare / unused';
   return 'Choose channels that measure the same thing';
 }
@@ -65,29 +65,29 @@ export function meterChannelPurposeLabel(
 export function phaseGroupingLabel(
   phaseMode: MeasurementAssignment['phaseMode'] | '',
 ): string {
-  if (phaseMode === 'SINGLE_PHASE') return 'Single phase · 1 channel';
-  if (phaseMode === 'THREE_PHASE') return 'Three phase · 3 channels';
-  if (phaseMode === 'OTHER') return 'Custom grouping';
-  return 'Choose phase grouping';
+  if (phaseMode === 'SINGLE_PHASE') return 'Single phase — select 1 channel';
+  if (phaseMode === 'THREE_PHASE') return 'Three phase — select 3 channels';
+  if (phaseMode === 'OTHER') return 'Other observed grouping';
+  return 'Select phase grouping';
 }
 
 export function energyFlowLabel(
   direction: MeasurementDirection | '',
 ): string {
-  if (direction === 'CONSUMPTION') return 'Consumes energy';
-  if (direction === 'GENERATION') return 'Generates energy';
-  if (direction === 'BIDIRECTIONAL') return 'Can consume or generate';
-  return 'Choose energy flow';
+  if (direction === 'CONSUMPTION') return 'Consumption';
+  if (direction === 'GENERATION') return 'Generation';
+  if (direction === 'BIDIRECTIONAL') return 'Bidirectional';
+  return 'Select energy flow';
 }
 
 export function measuredItemTypeLabel(
   kind: MeasurementTarget['kind'] | '',
 ): string {
   if (kind === 'GRID_BOUNDARY') return 'Incoming grid connection';
-  if (kind === 'SITE_ASSET') return 'Site asset / equipment';
+  if (kind === 'SITE_ASSET') return 'Site asset';
   if (kind === 'BOARD') return 'Switchboard';
   if (kind === 'TBC') return 'To be confirmed';
-  return 'Choose what is measured';
+  return 'Select measured item';
 }
 
 /**
@@ -106,24 +106,143 @@ export function siteAssetTargetIdsOwnedByOtherMeters(
 }
 
 /**
- * Fixed Wattwatchers models own exact channel counts. Switching into Other
- * starts an explicit definition instead of silently inheriting three A3RM
- * channels; subsequent Other edits preserve the installer's channel list.
+ * Fixed Wattwatchers models own exact channel counts. Other meters preserve
+ * their explicit channels, always expose at least one, and keep display-order
+ * ordinals aligned with the portal editor.
  */
 export function channelsAfterDeviceTypeChange(
   currentType: MeterDeviceType,
   nextType: MeterDeviceType,
   channels: WattwatcherChannel[],
 ): WattwatcherChannel[] {
-  if (nextType === 'Other') return currentType === 'Other' ? channels : [];
+  const sensorCompatibleChannel = (channel: WattwatcherChannel): WattwatcherChannel => (
+    currentType === nextType
+      ? channelWithModelValidSensor(nextType, channel)
+      : channelWithoutSensorMetadata(channel)
+  );
+  if (nextType === 'Other') {
+    const customChannels = channels.length ? channels : [{ ordinal: 1, purpose: 'SPARE' }];
+    return customChannels.map((channel, index) => ({
+      ...sensorCompatibleChannel(channel),
+      ordinal: index + 1,
+      purpose: channel.purpose || 'SPARE',
+    }));
+  }
   const count = nextType === 'A6M' ? 6 : 3;
   return [
     ...channels,
-    ...Array.from({ length: count }, (_, index) => ({ ordinal: index + 1 })),
+    ...Array.from({ length: count }, (_, index) => ({ ordinal: index + 1, purpose: 'SPARE' as const })),
   ].slice(0, count).map((channel, index) => ({
-    ...channel,
+    ...sensorCompatibleChannel(channel),
     ordinal: index + 1,
+    purpose: channel.purpose || 'SPARE',
   }));
+}
+
+export function channelWithModelValidSensor(
+  deviceType: MeterDeviceType,
+  channel: WattwatcherChannel,
+): WattwatcherChannel {
+  if (deviceType === 'A6M') {
+    const next = { ...channel };
+    delete next.rogowski_size;
+    return next;
+  }
+  if (deviceType === 'A3RM') {
+    const next = { ...channel };
+    delete next.ct_ratio;
+    return next;
+  }
+  return channel;
+}
+
+function channelWithoutSensorMetadata(channel: WattwatcherChannel): WattwatcherChannel {
+  const next = { ...channel };
+  delete next.rogowski_size;
+  delete next.ct_ratio;
+  return next;
+}
+
+export function channelAfterSensorRatingChange(
+  deviceType: MeterDeviceType,
+  channel: WattwatcherChannel,
+  value: string,
+): WattwatcherChannel {
+  if (deviceType === 'A6M') {
+    const next = { ...channel, ct_ratio: value };
+    delete next.rogowski_size;
+    return next;
+  }
+  const next = { ...channel, rogowski_size: value };
+  delete next.ct_ratio;
+  return next;
+}
+
+/** Match the portal's visible channel-layout warning rules. */
+export function meterChannelsNeedLayoutRepair(
+  deviceType: MeterDeviceType,
+  channels: WattwatcherChannel[],
+): boolean {
+  const expected = deviceType === 'A3RM' ? 3 : deviceType === 'A6M' ? 6 : null;
+  return (expected !== null && channels.length !== expected)
+    || channels.some((channel, index) => channel.ordinal !== index + 1);
+}
+
+/** Ensure editor actions operate on stable channel IDs before assignments are
+ * created, removed, or filtered. Existing IDs are retained wherever possible. */
+export function normalizedMeterEditorChannels(
+  meterId: string,
+  channels: WattwatcherChannel[],
+): WattwatcherChannel[] {
+  const used = new Set<string>();
+  return channels.map((channel, index) => {
+    let id = channel.id?.trim() || '';
+    if (!id || used.has(id)) {
+      let suffix = index + 1;
+      id = `${meterId}:${suffix}`;
+      while (used.has(id)) {
+        suffix += 1;
+        id = `${meterId}:${suffix}`;
+      }
+    }
+    used.add(id);
+    return {
+      ...channel,
+      id,
+      ordinal: index + 1,
+      purpose: channel.purpose || 'SPARE',
+    };
+  });
+}
+
+export function addCustomMeterChannel(
+  meterId: string,
+  channels: WattwatcherChannel[],
+): WattwatcherChannel[] {
+  const normalized = normalizedMeterEditorChannels(meterId, channels);
+  const used = new Set(normalized.map((channel) => channel.id));
+  let suffix = 1;
+  while (used.has(`${meterId}:${suffix}`)) suffix += 1;
+  return [...normalized, {
+    id: `${meterId}:${suffix}`,
+    ordinal: normalized.length + 1,
+    purpose: 'SPARE',
+  }];
+}
+
+export function removeCustomMeterChannel(
+  meterId: string,
+  channels: WattwatcherChannel[],
+  index: number,
+): { channels: WattwatcherChannel[]; removedChannelId?: string } {
+  const normalized = normalizedMeterEditorChannels(meterId, channels);
+  const removedChannelId = normalized[index]?.id;
+  return {
+    removedChannelId,
+    channels: normalized
+      .filter((_, channelIndex) => channelIndex !== index)
+      .map((channel, channelIndex) => ({ ...channel, ordinal: channelIndex + 1 })),
+  };
 }
 
 /** Spare channels retain identity/capabilities but cannot carry load/sensor details. */
@@ -135,7 +254,9 @@ export function channelAfterPurposeChange(
   return {
     ...channel,
     purpose,
+    phase_label: undefined,
     load_type: undefined,
+    custom_load_type_name: undefined,
     rogowski_size: undefined,
     description: undefined,
     ct_ratio: undefined,
@@ -240,6 +361,9 @@ export function meterFromInstallationForm(
       load,
       form.answers[`channel.${ordinal}.custom_load_type`],
     );
+    const customLoadTypeName = load === 'Other'
+      ? String(form.answers[`channel.${ordinal}.custom_load_type`] ?? '').trim() || undefined
+      : undefined;
     const rating = String(form.answers[`channel.${ordinal}.rating`] ?? '');
     const previous = existing?.ww_channels?.find(
       (channel, previousIndex) => (channel.ordinal ?? previousIndex + 1) === ordinal,
@@ -254,7 +378,8 @@ export function meterFromInstallationForm(
       id: previous?.id ?? `${meterId}:${ordinal}`,
       ordinal,
       purpose,
-      load_type: isSpare ? undefined : persistedLoad,
+      load_type: isSpare ? undefined : load === 'Other' ? 'Other' : persistedLoad,
+      custom_load_type_name: isSpare ? undefined : customLoadTypeName,
       description: isSpare
         ? undefined
         : String(form.answers[`channel.${ordinal}.description`] ?? ''),

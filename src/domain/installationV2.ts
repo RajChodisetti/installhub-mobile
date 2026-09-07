@@ -277,6 +277,7 @@ function legacyChannelToCanonical(
   meterId: string,
   channel: NonNullable<Meter['ww_channels']>[number],
   index: number,
+  deviceModel: MeterDevice['deviceModel'],
 ): MeterChannel {
   const ordinal = Number.isSafeInteger(channel.ordinal) && (channel.ordinal ?? 0) > 0
     ? channel.ordinal!
@@ -290,8 +291,15 @@ function legacyChannelToCanonical(
       : channel.load_type === 'Not Used'
         ? 'SPARE'
         : 'SUB_CIRCUIT';
-  const loadTypeCode = purpose === 'SUB_CIRCUIT' && channel.load_type
-    ? siteAssetTypeCode(channel.load_type as SiteAssetType)
+  const canonicalLoadCandidate = channel.load_type === 'Other'
+    ? channel.custom_load_type_name?.trim() || channel.load_type
+    : channel.load_type;
+  const loadTypeCode = purpose === 'SUB_CIRCUIT' && canonicalLoadCandidate
+    ? siteAssetTypeCode(canonicalLoadCandidate as SiteAssetType)
+    : undefined;
+  const customLoadTypeName = loadTypeCode === 'OTHER'
+    ? channel.custom_load_type_name?.trim()
+      || (channel.load_type && channel.load_type !== 'Other' ? channel.load_type : undefined)
     : undefined;
   return {
     id: channel.id?.trim() || `${meterId}:${ordinal}`,
@@ -300,10 +308,12 @@ function legacyChannelToCanonical(
     phaseLabel: channel.phase_label,
     capabilities: channel.capabilities,
     loadTypeCode,
-    customLoadTypeName: loadTypeCode === 'OTHER' && channel.load_type
-      ? channel.load_type
-      : undefined,
-    sensorRating: channel.rogowski_size ?? channel.ct_ratio,
+    customLoadTypeName,
+    sensorRating: deviceModel === 'A6M'
+      ? channel.ct_ratio
+      : deviceModel === 'A3RM'
+        ? channel.rogowski_size
+        : channel.rogowski_size ?? channel.ct_ratio,
     description: channel.description,
   };
 }
@@ -333,6 +343,7 @@ export function meterDeviceFromLegacy(
     customName,
     deviceNumber: meter.device_number ?? existing?.deviceNumber,
     serialNumber: meter.device_id,
+    lifecycleState: meter.lifecycle_state ?? existing?.lifecycleState ?? 'ACTIVE',
     displayName: existing?.displayName ?? displayCodeFromLegacy(
       generatedName,
       meter.id,
@@ -341,7 +352,7 @@ export function meterDeviceFromLegacy(
     // Other devices deliberately preserve the explicit count, including zero;
     // the readiness engine asks the installer to declare capabilities.
     channels: channels.map((channel, index) =>
-      legacyChannelToCanonical(meter.id, channel, index)),
+      legacyChannelToCanonical(meter.id, channel, index, model)),
     commissioningData: {
       classification: meter.classification ?? null,
       coverage: meter.coverage ?? null,
@@ -385,7 +396,7 @@ export function meterDeviceFromLegacy(
           extra: meter.ww_photos.extra,
         }
       : undefined,
-    notes: meter.ww_switchboard?.notes ?? meter.ww_commissioning?.notes,
+    notes: meter.notes ?? meter.ww_switchboard?.notes ?? meter.ww_commissioning?.notes,
   };
 }
 
@@ -408,9 +419,11 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
         device.customManufacturerName,
       ),
     device_id: device.serialNumber,
+    lifecycle_state: device.lifecycleState ?? 'ACTIVE',
     device_number: device.deviceNumber,
     custom_manufacturer_name: device.customManufacturerName,
     custom_model_name: device.customModelName,
+    notes: device.notes,
     ...(commissioning ? {
       classification: commissioning.classification ?? undefined,
       coverage: commissioning.coverage ?? undefined,
@@ -446,10 +459,13 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
         phase_label: channel.phaseLabel,
         capabilities: channel.capabilities,
         load_type: channel.loadTypeCode === 'OTHER'
-          ? channel.customLoadTypeName ?? 'Other'
+          ? 'Other'
           : channel.loadTypeCode
             ? siteAssetTypeFromCode(channel.loadTypeCode)
             : undefined,
+        custom_load_type_name: channel.loadTypeCode === 'OTHER'
+          ? channel.customLoadTypeName
+          : undefined,
         rogowski_size: device.deviceModel === 'A6M' ? undefined : channel.sensorRating,
         ct_ratio: device.deviceModel === 'A6M' ? channel.sensorRating : undefined,
         description: channel.description,
@@ -646,7 +662,10 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
   for (const installation of store.installations) {
     ensureInstallationMetadata(installation);
     const installationZones = store.zones.filter((zone) => zone.audit_id === installation.id);
-    const zoneCodes = resolvedZoneCodes(installationZones);
+    const zoneCodes = resolvedZoneCodes(
+      installationZones,
+      installation.site_code || installation.site_name,
+    );
     for (const zone of installationZones) zone.zone_code = zoneCodes.get(zone.id);
     const grid = ensureGridSupply(store, installation);
 
@@ -687,6 +706,7 @@ export function normalizeCanonicalStore(store: AppDataStore): AppDataStore {
     for (const meter of store.meterDevices.filter(
       (item) => item.installationId === installation.id,
     )) {
+      meter.lifecycleState ??= 'ACTIVE';
       meter.customName = (
         meter.customName?.trim()
         || defaultMeterCustomName(

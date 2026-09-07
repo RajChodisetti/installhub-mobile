@@ -96,7 +96,7 @@ const scan = (
 
 const siteFields: FormFieldDefinition[] = [
   text('site.date_time', 'Date and time', true),
-  text('site.customer_name', 'Customer / site name', true),
+  text('site.customer_name', 'Client / site name', true),
   { ...text('site.address', 'Address', true), kind: 'multiline' },
   number('site.latitude', 'Latitude'),
   number('site.longitude', 'Longitude'),
@@ -130,8 +130,18 @@ const antennaOptions = ['Internal', 'External', 'CSM550 - External High Gain', '
 const legacySignalOptions = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'];
 const legacyAntennaOptions = ['N/A'];
 const LEGACY_SENSOR_OPTIONS_BY_DEVICE = {
-  A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
-  A6M: ['60A', '120A', '200A', '400A', '600A'],
+  A3RM: [
+    '10cm-200A',
+    '10cm-333mV',
+    '20cm-3000A',
+    '30cm-3000A',
+    '45cm-3000A',
+    'Not Used',
+    '3000A - 9cm',
+    '3000A - 20cm',
+    '3000A - 29cm',
+  ],
+  A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
 };
 export const SWITCHBOARD_TYPES = [
   'Main Switchboard', 'Sub / Distribution Board', 'HVAC DB', 'Lighting DB',
@@ -143,8 +153,8 @@ function switchboardType(key: string): FormFieldDefinition {
 }
 export const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 export const SENSOR_OPTIONS_BY_DEVICE: Record<(typeof DEVICE_TYPES)[number], string[]> = {
-  A3RM: ['10cm-200A', '10cm-333mV', '20cm-3000A', '30cm-3000A', '45cm-3000A', 'Not Used'],
-  A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
+  A3RM: ['3000A – 9cm', '3000A – 20cm', '3000A – 29cm'],
+  A6M: ['60A', '120A', '200A', '400A', '600A'],
 };
 const loads = [
   'Mains Supply',
@@ -184,7 +194,6 @@ function sensorField(
       key: deviceTypeKey,
       values: SENSOR_OPTIONS_BY_DEVICE,
     },
-    preserveLegacyValue: true,
     legacyOptionsWhen: { key: deviceTypeKey, values: LEGACY_SENSOR_OPTIONS_BY_DEVICE },
   };
 }
@@ -264,7 +273,6 @@ function channelFields(kind: 'A3RM' | 'A6M', count: number): FormSectionDefiniti
           label: kind === 'A3RM' ? 'Rogowski coil size' : 'CT rating',
           kind: 'select',
           options: ratings,
-          preserveLegacyValue: true,
           legacyOptions: LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
           required: true,
         },
@@ -348,7 +356,7 @@ function auditorDefinition(kind: 'A3RM' | 'A6M'): FormDefinition {
             const n = i + 1;
             const usedRatings = [
               ...SENSOR_OPTIONS_BY_DEVICE[kind].filter((value) => value !== 'Not Used'),
-              ...LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
+              ...LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind].filter((value) => value !== 'Not Used'),
             ];
             return [
               {
@@ -495,7 +503,7 @@ const AUTHORED_FORM_DEFINITIONS: FormDefinition[] = [
     description: 'Diagnose, replace and recommission an existing 4G Auditor.',
     schemaVersion: 2,
     sections: [
-      { title: 'Customer details', fields: siteFields },
+      { title: 'Client details', fields: siteFields },
       { title: 'Installer details', fields: installerFields },
       { title: 'Pre-start information', fields: prestartFields },
       {
@@ -815,8 +823,7 @@ export function createInitialFormAnswers(
 ): Record<string, FormValue> {
   return {
     'site.date_time': new Date().toISOString(),
-    'site.customer_name': installation.customer_name?.trim()
-      || installation.client_name
+    'site.customer_name': installation.client_name
       || installation.site_name,
     'site.address': installation.site_address,
     'installer.name': user.full_name,
@@ -1045,6 +1052,7 @@ export function meterAfterCommsReplacement(
     custom_name: customName,
     device_type: typedDevice,
     device_id: deviceId,
+    lifecycle_state: 'ACTIVE',
     device_number: String(answers['works.new_device_number'] ?? '').trim() || deviceId,
     ww_channels: Array.from({ length: channelCount }, (_, index) => {
       const {

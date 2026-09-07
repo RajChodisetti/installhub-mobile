@@ -141,6 +141,8 @@ export interface MeterDevice {
   customName?: string;
   deviceNumber?: string;
   serialNumber: string;
+  /** Missing on historical records means ACTIVE. */
+  lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
   displayName: DisplayCode;
   channels: MeterChannel[];
   commissioningData?: MeterCommissioningData;
@@ -468,6 +470,7 @@ export interface AssignedWorkJobSummarySnapshot {
   job_comments?: string;
   access_information?: string;
   schedule_event_id?: string;
+  schedule_title?: string;
   scheduled_start_at?: string;
   scheduled_end_at?: string | null;
   deadline_at?: string;
@@ -720,6 +723,8 @@ export interface WattwatcherChannel {
   phase_label?: string;
   capabilities?: Record<string, unknown>;
   load_type?: string;
+  /** Custom label when load_type is Other. */
+  custom_load_type_name?: string;
   rogowski_size?: string;
   description?: string;
   ct_ratio?: string;
@@ -754,12 +759,16 @@ export interface Meter {
   custom_name?: string;
   device_type: MeterDeviceType;
   device_id: string;
+  /** Legacy projection of the canonical meter lifecycle. */
+  lifecycle_state?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
   /** Optional site / asset tag (barcode-scannable), distinct from the serial identity. */
   device_number?: string;
   custom_manufacturer_name?: string;
   custom_model_name?: string;
   classification?: string;
   coverage?: string;
+  /** Operational meter notes, distinct from switchboard and commissioning notes. */
+  notes?: string;
   ww_prestart?: WattwatcherPrestart;
   ww_switchboard?: WattwatcherSwitchboard;
   ww_channels?: WattwatcherChannel[];

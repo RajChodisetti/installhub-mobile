@@ -36,11 +36,31 @@ test('site asset TBC and partial metering can save; exact metering keeps API val
   for (const patch of [
     { channelIds: [] }, { channelIds: ['c1', 'c1'] }, { channelIds: ['c3'] },
     { channelIds: ['spare'] }, { channelIds: ['missing'] }, { eligibleMeterIds: [] },
+    { eligibleChannelIds: ['c2'] },
     { assignments: [assignment] }, { source: { kind: 'TBC' as const } },
   ]) assert.deepEqual(siteAssetMeteringForSave({ ...input, ...patch }), { kind: 'TBC' });
   assert.deepEqual(siteAssetMeteringForSave({ ...input, kind: 'UNMETERED' }), { kind: 'UNMETERED' });
   assert.deepEqual(siteAssetMeteringForSave({ ...input, kind: 'TBC' }), { kind: 'TBC' });
   assert.equal(siteAssetMeteringForSave({ ...input, assignments: [assignment], previousAssignmentId: assignment.id }).kind, 'METERED');
+  assert.equal(siteAssetMeteringForSave({
+    ...input,
+    assignments: [{ ...assignment, meterId: 'another-meter' }],
+  }).kind, 'METERED', 'same channel ID on another meter does not create false occupancy');
+});
+
+test('all of the edited asset own assignments remain eligible without takeover approval', () => {
+  const secondOwn = {
+    ...assignment,
+    id: 'assignment-two',
+    channelIds: ['c2'],
+  };
+  const result = siteAssetMeteringForSave({
+    kind: 'METERED', source: { kind: 'BOARD', boardId: 'board' },
+    selectedMeter: meter, eligibleMeterIds: ['meter'], eligibleChannelIds: ['c1', 'c2'],
+    channelIds: ['c1', 'c2'], phaseMode: 'OTHER', direction: 'CONSUMPTION',
+    assignments: [assignment, secondOwn], assetId: 'asset',
+  });
+  assert.equal(result.kind, 'METERED');
 });
 
 test('partial meter groups match portal structural normalization without channel duplication', () => {
@@ -69,6 +89,33 @@ test('unchanged unavailable historical mappings survive optional asset edits, bu
     { source: { kind: 'BOARD' as const, boardId: 'changed' } }, { channelIds: ['c2'] },
     { direction: 'GENERATION' as const }, { selectedMeterId: 'another-unavailable' }, { kind: 'TBC' as const },
   ]) assert.equal(siteAssetMeteringForSave({ ...input, ...patch }).kind, 'TBC');
+});
+
+test('save preserves an unchanged incompatible channel on an otherwise eligible device until deliberate remapping', () => {
+  const source = { kind: 'BOARD' as const, boardId: 'board' };
+  const input = {
+    kind: 'METERED' as const,
+    source,
+    previousSource: source,
+    selectedMeter: meter,
+    selectedMeterId: meter.id,
+    eligibleMeterIds: [meter.id],
+    eligibleChannelIds: ['c2'],
+    channelIds: assignment.channelIds,
+    phaseMode: assignment.phaseMode,
+    direction: assignment.direction,
+    assignments: [assignment],
+    previousAssignmentId: assignment.id,
+    previousAssignment: assignment,
+  };
+  const preserved = siteAssetMeteringForSave(input);
+  assert.equal(preserved.kind, 'METERED');
+  if (preserved.kind === 'METERED') assert.deepEqual(preserved.preserveMapping, { assignment, source });
+
+  assert.deepEqual(siteAssetMeteringForSave({ ...input, channelIds: ['c2'] }), {
+    kind: 'METERED', meterId: meter.id, channelIds: ['c2'],
+    phaseMode: 'SINGLE_PHASE', direction: 'CONSUMPTION',
+  });
 });
 
 test('site capture only accepts exact current approved conflicts and retains the approval for atomic save', () => {

@@ -499,6 +499,16 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
       `meter ${meterId} device model`,
     );
     requiredText(meter, 'serialNumber', 'serial_number', `meter ${meterId} serial number`);
+    const lifecycleState = property(meter, 'lifecycleState', 'lifecycle_state');
+    if (lifecycleState !== undefined && lifecycleState !== null) {
+      exactEnum(
+        meter,
+        'lifecycleState',
+        'lifecycle_state',
+        ['PLANNED', 'ACTIVE', 'INACTIVE'],
+        `meter ${meterId} lifecycle state`,
+      );
+    }
     const customNameValue = property(meter, 'customName', 'custom_name');
     if (customNameValue !== undefined && customNameValue !== null && (
       typeof customNameValue !== 'string'
