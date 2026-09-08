@@ -18,6 +18,7 @@ import {
   mergeAssignedInstallationServerState,
   mergeAssignedInstallationStatus,
   planAssignedInstallationPull,
+  remoteInstallationIsActiveAssignedWork,
   remoteTreeIsAuthoritativeReopen,
 } from '../src/services/assignedWorkPolicy';
 import { nextCopyIndex } from '../src/repositories/copyNaming';
@@ -790,6 +791,40 @@ test('filters elevated pulls to actor-owned or assigned work and retains complet
   assert.deepEqual(plan.trees.map((item) => item.installation.id), ['assigned', 'owned', 'complete']);
   assert.deepEqual(plan.activeAssignedIds, ['assigned', 'complete']);
   assert.deepEqual(plan.inactiveAssignedIds, ['revoked']);
+});
+
+test('an active self-assigned Scheduler job is assigned work but an ordinary owned draft is not', () => {
+  const scheduled = {
+    id: 'self-scheduled',
+    status: 'Draft',
+    createdByUserId: 'field-1',
+    assignedInspectorUserId: 'field-1',
+    scheduleEventId: 'event-1',
+    scheduleStatus: 'planned',
+  };
+  const localOnly = {
+    id: 'self-local',
+    status: 'Draft',
+    createdByUserId: 'field-1',
+    assignedInspectorUserId: 'field-1',
+  };
+  assert.equal(remoteInstallationIsActiveAssignedWork(scheduled, 'field-1'), true);
+  assert.equal(remoteInstallationIsActiveAssignedWork(localOnly, 'field-1'), false);
+  assert.equal(remoteInstallationIsActiveAssignedWork({
+    ...scheduled,
+    scheduleStatus: 'cancelled',
+  }, 'field-1'), false);
+
+  const plan = planAssignedInstallationPull(
+    'field-1',
+    [tree(scheduled), tree(localOnly)],
+    [],
+  );
+  assert.deepEqual(plan.trees.map((item) => item.installation.id), [
+    'self-scheduled',
+    'self-local',
+  ]);
+  assert.deepEqual(plan.activeAssignedIds, ['self-scheduled']);
 });
 
 test('actor switch hides another actor checkout without treating it as B revocation work', () => {

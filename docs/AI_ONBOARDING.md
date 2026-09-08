@@ -152,9 +152,11 @@ index.ts
                  ├─ StatusBar follows theme
                  └─ PushNotificationProvider
                     └─ AuditWorkTrackingProvider
-                       └─ RootNavigator
-                          ├─ Login when signed out
-                          └─ MainTabs + feature stack when signed in
+                       └─ SyncStatusProvider
+                          ├─ RootNavigator
+                          │  ├─ Login when signed out
+                          │  └─ MainTabs + feature stack when signed in
+                          └─ SyncStatusBanner
 ```
 
 `AppProviders` owns:
@@ -420,7 +422,7 @@ server-owned; local residuals are advisory shared/unallocated previews with no p
 ```text
 local repository write
   -> AsyncStorage store notification
-  -> SyncStatusProvider debounce / foreground / 15-minute trigger
+  -> SyncStatusProvider debounce / foreground / 15-minute / Scheduler-notification trigger
   -> syncService
      1. recover durable metadata and complete requests, then refresh assigned work
      2. capture the local tree and exact known server preimage
@@ -430,6 +432,11 @@ local repository write
      6. push the durable complete request with confirmed remote URLs
      7. advance the installation watermark only after exact canonical confirmation
 ```
+
+A validated InstallHub Scheduler notification receipt, interaction, or cold-start response requests
+this same full sync path. It never bypasses durable backup recovery. When another sync is already in
+flight, notification signals coalesce into one actor/session-fenced trailing run so a pull that began
+before the server change cannot swallow the refresh.
 
 During the metadata stage, every locally Completed form is deliberately sent as Draft without
 mutating local status—including zero-attachment forms and forms whose URLs were already remote.
@@ -487,7 +494,10 @@ are not already local are materialized with the exact server installation,
 child, form, attachment, and tree-revision identities; they are not renamed or
 converted into `cpN` copies. They are immediately cloud-enabled and their pull
 watermark prevents an unchanged checkout from being pushed back. Offline edits
-then follow the normal Cloud Backup path. If a later complete inventory no
+then follow the normal Cloud Backup path. A self-owned installation is classified
+as active assigned work only when its assignee matches the actor and the pull also
+contains an active Scheduler event ID/status; an ordinary self-created unscheduled
+Draft remains local work. If a later complete inventory no
 longer contains an externally assigned Draft installation, a local-only
 visibility tombstone removes it from the dashboard and stops timing/uploads
 while retaining the entire tree and any unsent edits for recovery. Completed
@@ -868,7 +878,7 @@ tree.
 | `expo-location ~57.0.7` | One-time foreground capture for form coordinates and daily-route origins |
 | `expo-constants ~57.0.11` | Read the configured EAS project ID used for Expo push-token exchange |
 | `expo-device ~57.0.1` | Prevent remote push registration on simulators and emulators |
-| `expo-notifications ~57.0.11` | Notification permission, Expo push tokens, Android channel, rotation listener and foreground presentation |
+| `expo-notifications ~57.0.11` | Notification permission, Expo push tokens, Android channel, rotation listener, foreground presentation, and Scheduler receipt/response refresh signals |
 | `expo-secure-store ~57.0.1` | Store JWT, refresh token, and cached cloud identity |
 | `expo-background-task ~57.0.6` | Opportunistic OS-scheduled Cloud Backup |
 | `expo-task-manager ~57.0.6` | Define the background task at module scope |
@@ -945,8 +955,11 @@ native push-token listener is treated only as a rotation signal: the supplied na
 explicitly re-exchanged through `getExpoPushTokenAsync({ projectId, devicePushToken })` before the
 new Expo token is PUT. It is never uploaded directly.
 
-Foreground notifications show a banner/list entry and play sound; there is no notification log or
-history UI and no deep-link behavior. Logout first captures that lifecycle's generation,
+Foreground notifications show a banner/list entry and play sound. A validated Scheduler payload for
+an InstallHub installation requests an actor-fenced full sync on foreground receipt, user response,
+or cold-start response; duplicate native request identifiers are handled once, and a recognized
+cold-start response is cleared after processing. There is no notification log or history UI and no
+deep-link behavior. Logout first captures that lifecycle's generation,
 invalidates/aborts pending registration work, and makes a bounded best-effort
 `DELETE /v1/notifications/devices/:deviceId?registrationGeneration=N` while credentials still
 exist. This generation fence prevents a delayed logout from disabling a newer login's device

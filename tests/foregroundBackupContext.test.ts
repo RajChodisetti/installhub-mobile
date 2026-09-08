@@ -51,6 +51,7 @@ function harness() {
   }, (a, b) => a.identity === b.identity);
   const modules: Record<string, any> = {
     react, 'react-native': { AppState: {} },
+    'expo-notifications': {},
     'expo-secure-store': { setItemAsync: async () => { events.push('timestamp'); } },
     '../context/AppProviders': { useAuth: () => ({ user }) },
     '../data/seed': { getStore: () => { events.push('read-store'); return store; }, subscribeStore: () => {} },
@@ -78,6 +79,9 @@ function harness() {
         events.push('capture-descriptor'); if (captureError) throw captureError; const result = captureForegroundRejectedMetadataRetry(value, actor); descriptors.push(result); return result;
       },
     },
+    './schedulerNotificationRefresh': {
+      listenForInstallHubSchedulerNotifications: () => () => {},
+    },
   };
   const exports: any = {};
   new Function('require', 'exports', code)((name: string) => { assert.ok(name in modules, `Unexpected dependency ${name}`); return modules[name]; }, exports);
@@ -104,6 +108,54 @@ test('automatic calls deduplicate with no descriptor, while manual press waits a
   assert.ok(h.events.indexOf('capture-descriptor') < h.events.indexOf('reset-failed'));
   assert.deepEqual(h.events.filter((event) => event.endsWith('-run')), ['automatic-run', 'manual-run']);
   await context.triggerSync(); assert.equal(h.runs[2].rejectedMetadataRetry, undefined);
+});
+
+test('a server-change signal coalesces one trailing full sync behind an active flight', async () => {
+  const h = harness(); const gate = deferred(); h.runGate(gate.promise); const context = h.render();
+  const active = context.triggerSync(); await settle(); assert.equal(h.runs.length, 1);
+  const firstSignal = context.triggerSyncAfterServerChange();
+  const secondSignal = context.triggerSyncAfterServerChange();
+  assert.equal(secondSignal, firstSignal);
+  assert.notEqual(firstSignal, active);
+  gate.resolve(); await active; await firstSignal;
+  assert.equal(h.runs.length, 2);
+  assert.deepEqual(h.events.filter((event) => event.endsWith('-run')), [
+    'automatic-run',
+    'automatic-run',
+  ]);
+});
+
+test('a server-change signal starts the normal full sync immediately when idle', async () => {
+  const h = harness(); const result = await h.render().triggerSyncAfterServerChange();
+  assert.equal(result.phase, 'done');
+  assert.equal(h.runs.length, 1);
+  assert.deepEqual(h.events.filter((event) => (
+    event === 'assigned-refresh' || event.endsWith('-run')
+  )), ['automatic-run', 'assigned-refresh']);
+});
+
+test('a trailing server-change sync cannot be swallowed by a manual flight queued later', async () => {
+  const h = harness(); const gate = deferred(); h.runGate(gate.promise); const context = h.render();
+  const active = context.triggerSync(); await settle();
+  const serverChange = context.triggerSyncAfterServerChange();
+  const manual = context.retrySync();
+  gate.resolve(); await Promise.all([active, manual, serverChange]);
+  assert.equal(h.runs.length, 3);
+  assert.deepEqual(h.events.filter((event) => event.endsWith('-run')), [
+    'automatic-run',
+    'manual-run',
+    'automatic-run',
+  ]);
+});
+
+test('a queued server-change sync is actor-fenced across session replacement', async () => {
+  const h = harness(); const gate = deferred(); h.runGate(gate.promise); const context = h.render();
+  const active = context.triggerSync(); await settle();
+  const serverChange = context.triggerSyncAfterServerChange();
+  h.replaceSession('other'); gate.resolve();
+  await active; const result = await serverChange;
+  assert.equal(result.phase, 'idle');
+  assert.equal(h.runs.length, 1);
 });
 
 for (const actor of ['actor', 'other']) {

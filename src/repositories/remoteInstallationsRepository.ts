@@ -75,6 +75,7 @@ import {
   mergeAssignedInstallationServerState,
   planAssignedInstallationPull,
   crossActorAssignedCheckoutConflictIds,
+  remoteInstallationIsActiveAssignedWork,
 } from '../services/assignedWorkPolicy';
 import { quarantineAssignedWorkCheckout } from '../services/assignedWorkRecovery';
 import {
@@ -714,19 +715,18 @@ export async function importRemoteInstallationAsCopy(
     'assignedInspectorUserId',
     'assigned_inspector_user_id',
   );
-  const isExternalAssignment = Boolean(
+  const isAssignedWork = Boolean(
     assignedActorUserId
-    && assignedInspectorUserId === assignedActorUserId
-    && createdByUserId !== assignedActorUserId,
+    && remoteInstallationIsActiveAssignedWork(source, assignedActorUserId),
   );
   const installation: Installation = {
     id: installationId,
     local_owner_user_id: materializationActorUserId ?? undefined,
     created_by_user_id: createdByUserId,
     assigned_inspector_user_id: assignedInspectorUserId,
-    assigned_work_state: isExternalAssignment ? 'active' : 'none',
-    assigned_work_actor_user_id: isExternalAssignment ? assignedActorUserId : undefined,
-    ...(isExternalAssignment
+    assigned_work_state: isAssignedWork ? 'active' : 'none',
+    assigned_work_actor_user_id: isAssignedWork ? assignedActorUserId : undefined,
+    ...(isAssignedWork
       ? {
           assigned_work_job_summary: assignedWorkJobSummaryFromPull(
             source,

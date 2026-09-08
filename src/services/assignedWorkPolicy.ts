@@ -976,6 +976,38 @@ export type AssignedInstallationPullPlan = {
   inactiveAssignedIds: string[];
 };
 
+/**
+ * A checkout is assigned work when another actor assigned it to this user, or
+ * when this user's own installation has an active Scheduler projection. The
+ * latter distinguishes self-assigned Scheduler jobs from ordinary local work.
+ */
+export function remoteInstallationIsActiveAssignedWork(
+  installation: Record<string, unknown>,
+  actorUserId: string,
+): boolean {
+  const owner = text(installation, 'createdByUserId', 'created_by_user_id');
+  const assignee = text(
+    installation,
+    'assignedInspectorUserId',
+    'assigned_inspector_user_id',
+  );
+  const scheduleEventId = text(
+    installation,
+    'scheduleEventId',
+    'schedule_event_id',
+  );
+  const scheduleStatus = text(
+    installation,
+    'scheduleStatus',
+    'schedule_status',
+  );
+  const hasActiveSchedule = Boolean(
+    scheduleEventId
+    && (scheduleStatus === 'planned' || scheduleStatus === 'in_progress'),
+  );
+  return assignee === actorUserId && (owner !== actorUserId || hasActiveSchedule);
+}
+
 export function materializedRecordId(
   preserveServerIdentity: boolean,
   remoteId: string,
@@ -1005,13 +1037,9 @@ export function planAssignedInstallationPull(
   });
   const activeAssignedIds = eligible.flatMap(({ installation }) => {
     const id = text(installation, 'id', 'id');
-    const owner = text(installation, 'createdByUserId', 'created_by_user_id');
-    const assignee = text(
-      installation,
-      'assignedInspectorUserId',
-      'assigned_inspector_user_id',
-    );
-    return id && assignee === actorUserId && owner !== actorUserId ? [id] : [];
+    return id && remoteInstallationIsActiveAssignedWork(installation, actorUserId)
+      ? [id]
+      : [];
   });
   const active = new Set(activeAssignedIds);
   return {

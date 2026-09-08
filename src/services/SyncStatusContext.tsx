@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
 import { useAuth } from '../context/AppProviders';
 import { getStore, subscribeStore } from '../data/seed';
 import {
@@ -34,6 +35,7 @@ import {
 import { lastSyncedAtSecureStoreKey, lastConfirmedBackupAtSecureStoreKey } from './syncStatusStorage';
 import { shouldRecordConfirmedBackup } from './backupOutcome';
 import { captureForegroundRejectedMetadataRetry, type ForegroundRejectedMetadataRetry } from './foregroundRejectedMetadataRetry';
+import { listenForInstallHubSchedulerNotifications } from './schedulerNotificationRefresh';
 
 const defaultProgress: SyncProgress = {
   phase: 'idle',
@@ -48,6 +50,7 @@ interface SyncStatusValue {
   lastSyncedAt: string | null;
   lastConfirmedBackupAt: string | null;
   triggerSync: () => Promise<SyncProgress>;
+  triggerSyncAfterServerChange: () => Promise<SyncProgress>;
   retrySync: () => Promise<SyncProgress>;
 }
 
@@ -57,12 +60,23 @@ const SyncStatusContext = createContext<SyncStatusValue>({
   lastSyncedAt: null,
   lastConfirmedBackupAt: null,
   triggerSync: async () => defaultProgress,
+  triggerSyncAfterServerChange: async () => defaultProgress,
   retrySync: async () => defaultProgress,
 });
 
 type AuthenticatedSyncFlight = {
   actorUserId: string;
   authority: AssignedWorkMutationAuthority;
+  promise: Promise<SyncProgress>;
+};
+
+type AutomaticSyncScope = Pick<
+  AuthenticatedSyncFlight,
+  'actorUserId' | 'authority'
+>;
+
+type TrailingServerChangeSync = AutomaticSyncScope & {
+  after: AuthenticatedSyncFlight;
   promise: Promise<SyncProgress>;
 };
 
@@ -77,6 +91,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [lastConfirmedBackupAt, setLastConfirmedBackupAt] = useState<string | null>(null);
   const activeSync = useRef<AuthenticatedSyncFlight | null>(null);
+  const trailingServerChangeSync = useRef<TrailingServerChangeSync | null>(null);
 
   useEffect(() => {
     const actorUserId = user?.id;
@@ -102,10 +117,12 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
     actorUserId: string;
     authority: AssignedWorkMutationAuthority;
     descriptor: ForegroundRejectedMetadataRetry;
-  }): Promise<SyncProgress> => {
-    const actorUserId = foreground?.actorUserId ?? user?.id;
+  }, automaticScope?: AutomaticSyncScope): Promise<SyncProgress> => {
+    const actorUserId = foreground?.actorUserId ?? automaticScope?.actorUserId ?? user?.id;
     if (!actorUserId) return Promise.resolve(defaultProgress);
-    const authority = foreground?.authority ?? captureAssignedWorkMutationAuthority();
+    const authority = foreground?.authority
+      ?? automaticScope?.authority
+      ?? captureAssignedWorkMutationAuthority();
     try {
       assertCurrentAssignedWorkAuthority(authority, actorUserId);
     } catch {
@@ -113,7 +130,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
     }
     const currentFlight = activeSync.current;
     if (
-      !foreground && currentFlight
+      !foreground && !automaticScope && currentFlight
       && currentFlight.actorUserId === actorUserId
       && actorForCurrentAssignedWorkAuthority(currentFlight.authority) === actorUserId
     ) {
@@ -223,6 +240,47 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
   // Automatic callers cannot supply a foreground descriptor.
   const triggerSync = useCallback(() => startSync(), [startSync]);
 
+  // A server-change signal must not merely join a pull that may already have
+  // captured older server state. Coalesce one actor-fenced follow-up run behind
+  // that exact flight while preserving the normal backup-recovery-before-pull
+  // sequence inside startSync.
+  const triggerSyncAfterServerChange = useCallback((): Promise<SyncProgress> => {
+    const actorUserId = user?.id;
+    if (!actorUserId) return Promise.resolve(defaultProgress);
+    const authority = captureAssignedWorkMutationAuthority();
+    try {
+      assertCurrentAssignedWorkAuthority(authority, actorUserId);
+    } catch {
+      return Promise.resolve(defaultProgress);
+    }
+    const scope = { actorUserId, authority };
+    const currentFlight = activeSync.current;
+    if (!currentFlight) return startSync(undefined, scope);
+
+    const queued = trailingServerChangeSync.current;
+    if (
+      queued
+      && queued.after === currentFlight
+      && queued.actorUserId === actorUserId
+      && actorForCurrentAssignedWorkAuthority(queued.authority) === actorUserId
+    ) {
+      return queued.promise;
+    }
+
+    let trailing: TrailingServerChangeSync;
+    const startAfterCurrent = () => startSync(undefined, scope);
+    const promise = currentFlight.promise
+      .then(startAfterCurrent, startAfterCurrent)
+      .finally(() => {
+        if (trailingServerChangeSync.current === trailing) {
+          trailingServerChangeSync.current = null;
+        }
+      });
+    trailing = { ...scope, after: currentFlight, promise };
+    trailingServerChangeSync.current = trailing;
+    return promise;
+  }, [startSync, user?.id]);
+
   const retrySync = useCallback(async (): Promise<SyncProgress> => {
     const actorUserId = user?.id;
     let authority: AssignedWorkMutationAuthority | undefined;
@@ -279,6 +337,22 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
   }, [triggerSync, user]);
 
   useEffect(() => {
+    if (!user) return undefined;
+    return listenForInstallHubSchedulerNotifications({
+      addNotificationReceivedListener: (listener) => (
+        Notifications.addNotificationReceivedListener(listener)
+      ),
+      addNotificationResponseReceivedListener: (listener) => (
+        Notifications.addNotificationResponseReceivedListener(listener)
+      ),
+      getLastNotificationResponse: () => Notifications.getLastNotificationResponseAsync(),
+      clearLastNotificationResponse: () => Notifications.clearLastNotificationResponseAsync(),
+    }, () => {
+      void triggerSyncAfterServerChange();
+    });
+  }, [triggerSyncAfterServerChange, user?.id]);
+
+  useEffect(() => {
     if (progress.phase !== 'offline') return undefined;
     const retry = setInterval(() => void triggerSync(), 30_000);
     return () => clearInterval(retry);
@@ -291,6 +365,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
       lastSyncedAt,
       lastConfirmedBackupAt,
       triggerSync,
+      triggerSyncAfterServerChange,
       retrySync,
     }}>
       {children}
