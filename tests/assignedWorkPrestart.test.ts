@@ -82,7 +82,7 @@ test('routine tree/CAS revision and pull timestamps do not invalidate an acknowl
   assert.equal(installationAllowsActiveWorkTracking(next, 'technician-1'), true);
 });
 
-test('schedule start, deadline, and status changes are reported for the update notice', () => {
+test('schedule detail changes are reported while operational progress does not trigger review', () => {
   const previous = summary({
     schedule_event_id: 'event-1',
     schedule_title: 'M2 - Client - Site - A1B',
@@ -102,8 +102,35 @@ test('schedule start, deadline, and status changes are reported for the update n
     'schedule_title',
     'scheduled_start_at',
     'deadline_at',
-    'schedule_status',
   ]);
+});
+
+test('the app-generated planned to in-progress transition keeps pre-start acknowledged', () => {
+  const previous = assignedDraft({
+    assigned_work_job_summary: summary({
+      schedule_event_id: 'event-1',
+      schedule_status: 'planned',
+    }),
+  });
+  previous.assigned_work_prestart_acknowledgement =
+    createAssignedWorkPrestartAcknowledgement(previous, 'technician-1', timestamp);
+  const next: Installation = {
+    ...previous,
+    assigned_work_job_summary: summary({
+      schedule_event_id: 'event-1',
+      schedule_status: 'in_progress',
+      pulled_at: '2026-08-21T10:00:00.000Z',
+    }),
+  };
+  next.assigned_work_prestart_acknowledgement =
+    reconcileAssignedWorkPrestartAcknowledgement(previous, next);
+
+  assert.deepEqual(
+    next.assigned_work_prestart_acknowledgement,
+    previous.assigned_work_prestart_acknowledgement,
+  );
+  assert.equal(assignedWorkPrestartActionIsLocked(next, 'technician-1'), false);
+  assert.equal(installationAllowsActiveWorkTracking(next, 'technician-1'), true);
 });
 
 test('a changed pulled scheduler summary invalidates without overwriting offline tree edits', () => {

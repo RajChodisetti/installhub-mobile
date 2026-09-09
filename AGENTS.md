@@ -141,6 +141,9 @@ Installation (id)
   only when replacement is selected. The optional `device_number` value is a distinct site/asset
   tag, remains readable and is mirrored for compatibility only while blank; never
   describe it as a second serial identity.
+- Editing a Scheduler-linked Draft retains its canonical client/site IDs while ordinary client or
+  address fields are changed, so the API can update the shared records. Only the explicit new-client
+  or new-address action clears those IDs and creates or matches a separate directory record.
 - Board, asset, and device names use type-based defaults when blank and accept up to 64 visible characters. Stable record
   IDs and serials remain separate identities, while duplicate names are rejected
   installation-wide.
@@ -153,6 +156,10 @@ Installation (id)
   and formal report pack. They do not sync between iOS, other devices, and the portal.
 - Every evidence-photo field is a multi-photo collection. Keep the visible
   “another photo” camera/library affordance after the first attachment.
+- Every captured/selected photo exposes editable title/notes/comments. Form
+  evidence stores this in `attachment.caption`; zone, switchboard, site-asset,
+  and meter evidence use `photo_notes` keyed by the canonical upload field.
+  Removing an array photo must reindex its matching note keys.
 - Meter presence on a switchboard is derived from its installed devices. Do not
   add a separate yes/no question; use the detailed WW commissioning action.
 - The site-asset source-board detour is intentionally minimal: collect only the

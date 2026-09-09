@@ -487,7 +487,7 @@ export function FormEditorScreen({ navigation, route }: Props) {
                     item.caption?.trim() ? (
                       <View style={styles.savedCaption}>
                         <Text style={[styles.savedCaptionLabel, { color: colors.mutedForeground }]}>
-                          Caption
+                          Title / notes / comments
                         </Text>
                         <Text style={[styles.savedCaptionText, { color: colors.foreground }]}>
                           {item.caption.trim()}
@@ -496,11 +496,11 @@ export function FormEditorScreen({ navigation, route }: Props) {
                     ) : null
                   ) : (
                     <TextArea
-                      label={`Caption ${index + 1}`}
-                      accessibilityLabel={`Caption for ${field.label} photo ${index + 1}`}
+                      label={`Photo ${index + 1} title / notes / comments`}
+                      accessibilityLabel={`Title, notes, or comments for ${field.label} photo ${index + 1}`}
                       value={item.caption ?? ''}
-                      placeholder="Add a caption or comment"
-                      maxLength={120}
+                      placeholder="Add context for this photo"
+                      maxLength={500}
                       onChangeText={(caption) =>
                         setAttachments((current) =>
                           current.map((candidate) =>

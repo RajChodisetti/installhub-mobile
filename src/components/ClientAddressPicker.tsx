@@ -34,7 +34,7 @@ type Props = {
   onClientChange: (name: string, clientId: string | null) => void;
   onAddressChange: (
     address: AustralianAddress,
-    clientSiteId: string | null,
+    clientSiteId: string | null | undefined,
     suggestedSiteName?: string | null,
   ) => void;
 };
@@ -203,8 +203,7 @@ export function ClientAddressPicker({
         onFocus={() => setClientOpen(true)}
         onBlur={() => setTimeout(() => setClientOpen(false), 180)}
         onChangeText={(value) => {
-          setSelectedClient(null);
-          onClientChange(value, null);
+          onClientChange(value, clientId);
           setClientOpen(true);
         }}
       />
@@ -237,6 +236,24 @@ export function ClientAddressPicker({
               </Text>
             </Pressable>
           ))}
+          {clientId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Use ${clientName.trim() || 'this name'} as a new client`}
+              onPress={() => {
+                setSelectedClient(null);
+                onClientChange(clientName, null);
+                onAddressChange(address, null);
+                setClientOpen(false);
+              }}
+              style={({ pressed }) => [
+                styles.newAddress,
+                { borderColor: colors.primary, opacity: pressed ? 0.7 : 1 },
+              ]}
+            >
+              <Text style={{ color: colors.primary, fontWeight: '700' }}>+ Save as a new client</Text>
+            </Pressable>
+          ) : null}
           {!clientBusy && !clients.length ? (
             <Text style={{ color: colors.mutedForeground, padding: spacing.sm }}>
               No matching known client. The entered name can still be saved.
@@ -262,7 +279,7 @@ export function ClientAddressPicker({
         onChangeText={(value) => {
           onAddressChange(
             manualAustralianAddressEdit(address, { display_address: value }),
-            null,
+            undefined,
           );
           setAddressOpen(true);
         }}

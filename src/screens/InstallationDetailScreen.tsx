@@ -244,6 +244,20 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     user?.id,
   );
   const assignedJobSummary = item.assigned_work_job_summary;
+  const jobStatusLabel = authoritativeCompleted
+    ? 'Completed'
+    : assignedJobSummary?.schedule_status === 'in_progress'
+      ? 'In progress'
+      : assignedJobSummary
+        ? 'Scheduled'
+        : 'Draft';
+  const jobStatusDescription = authoritativeCompleted
+    ? 'This job is complete. Its Scheduler calendar entry is highlighted green.'
+    : assignedJobSummary?.schedule_status === 'in_progress'
+      ? 'Field work has started. Its Scheduler calendar entry is highlighted blue until completion.'
+      : assignedJobSummary
+        ? 'Opening acknowledged job work starts active tracking. Scheduler changes the entry to blue after the first active-time checkpoint syncs.'
+        : 'This local installation remains a Draft until it is marked complete.';
   const canAcknowledgeAssignedSummary = Boolean(
     user?.id
     && assignedJobSummary?.actor_user_id === user.id
@@ -1159,6 +1173,65 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           </Text>
         </Card>
       ) : null}
+      <Card
+        accessibilityRole="summary"
+        accessibilityLabel={`Job status: ${jobStatusLabel}`}
+        style={{
+          marginTop: spacing.md,
+          borderWidth: 2,
+          borderColor: authoritativeCompleted ? colors.success : colors.primary,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm }}>
+          <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: '800' }}>
+            Job status
+          </Text>
+          <Badge
+            label={jobStatusLabel}
+            tone={authoritativeCompleted ? 'success' : 'default'}
+          />
+        </View>
+        <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+          {jobStatusDescription}
+        </Text>
+        {authoritativeCompleted ? (
+          <>
+            <Button
+              testID="completed-installation-report-action"
+              title="Download / share installation report"
+              accessibilityHint="Opens the version-pinned completed report. After creating the PDF, choose Save to Files or another iOS destination."
+              style={{ marginTop: spacing.md }}
+              onPress={() => navigation.navigate('InstallationReport', { installationId })}
+            />
+            <Button
+              testID="job-completion-action"
+              title="Reopen completed job"
+              variant="secondary"
+              disabled={completionBusy}
+              accessibilityHint="Requires an audited reason and preserves the completed version"
+              accessibilityState={{ busy: completionBusy }}
+              style={{ marginTop: spacing.sm }}
+              onPress={() => requestAssignedWorkAction(() => setReopenModal(true))}
+            />
+          </>
+        ) : (
+          <Button
+            testID="job-completion-action"
+            title={assignedWorkActionsLocked
+              ? 'Mark job complete (locked)'
+              : completionBusy
+                ? 'Marking job complete…'
+                : 'Mark job complete'}
+            disabled={completionBusy}
+            accessibilityHint="Validates, backs up, and marks this job complete in Scheduler"
+            accessibilityState={{ busy: completionBusy }}
+            style={{ marginTop: spacing.md }}
+            onPress={() => requestAssignedWorkAction(() => {
+              void completeInstallation();
+            })}
+          />
+        )}
+      </Card>
       <SectionHeader
         title="Installation details"
         actionLabel={readOnly ? undefined : 'Edit'}
@@ -1637,39 +1710,10 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         </Card>
       )}
 
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: spacing.lg }}>
-        <Button
-          title={assignedWorkActionsLocked ? 'Edit (locked)' : 'Edit'}
-          variant="secondary"
-          disabled={readOnly}
-          onPress={() => requestAssignedWorkAction(() => {
-            navigation.navigate('InstallationForm', { installationId });
-          })}
-          style={{ flexGrow: 1 }}
-        />
-        <Button
-          title={authoritativeCompleted
-            ? 'Reopen installation'
-            : assignedWorkActionsLocked
-              ? 'Complete installation (locked)'
-              : completionBusy
-                ? 'Completing…'
-                : 'Complete installation'}
-          disabled={completionBusy}
-          accessibilityHint={authoritativeCompleted
-            ? 'Requires an audited reason and preserves the completed version'
-            : 'Requires local readiness, enabled Cloud Backup, successful sync, and server validation'}
-          onPress={() => requestAssignedWorkAction(() => {
-            if (authoritativeCompleted) setReopenModal(true);
-            else void completeInstallation();
-          })}
-          style={{ flexGrow: 1 }}
-        />
-      </View>
       <Text
         accessibilityRole="summary"
         accessibilityLiveRegion="polite"
-        style={{ color: colors.mutedForeground, fontSize: 12, marginTop: spacing.xs }}
+        style={{ color: colors.mutedForeground, fontSize: 12, marginTop: spacing.md }}
       >
         {completionBusy
           ? 'Completion validation is in progress.'

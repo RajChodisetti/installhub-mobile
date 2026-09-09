@@ -307,6 +307,7 @@ function wireZone(
     photos: zone.photos
       .map((uri, index) => remote('zone', zone.id, `photos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
+    photoNotes: zone.photo_notes ?? {},
     createdAt: zone.created_at,
     updatedAt: zone.updated_at,
   };
@@ -350,6 +351,7 @@ function wireElectricalAsset(
       .map((uri, index) =>
         remote('electrical_asset', board.id, `extraPhotos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
+    photoNotes: board.photo_notes ?? {},
     meterPresent: board.meter_present,
     meters: board.meters.map((meter, index) => wireMeter(board, meter, index, remote)),
     subCircuitsDescription: board.sub_circuits_description ?? null,
@@ -397,6 +399,7 @@ function wireSiteAsset(
     extraPhotos: (asset.extra_photos ?? [])
       .map((uri, index) => remote('site_asset', asset.id, `extraPhotos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
+    photoNotes: asset.photo_notes ?? {},
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
   };
@@ -491,6 +494,7 @@ function wireMeterDevice(
             .filter((uri): uri is string => Boolean(uri)),
         }
       : {},
+    photoNotes: meter.photoNotes ?? {},
     notes: meter.notes ?? null,
   };
 }

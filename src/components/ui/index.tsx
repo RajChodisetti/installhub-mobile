@@ -274,12 +274,14 @@ export function ListRow({
 
 export function PhotoThumbnailGrid({
   uris,
+  labels,
   onAdd,
   onRemove,
 }: {
   uris: string[];
+  labels?: Array<string | undefined>;
   onAdd?: () => void;
-  onRemove?: (uri: string) => void;
+  onRemove?: (uri: string, index: number) => void;
 }) {
   const { colors } = useTheme();
   return (
@@ -287,16 +289,21 @@ export function PhotoThumbnailGrid({
       {uris.map((uri, index) => (
         <View key={`${uri}:${index}`} style={styles.photoItem}>
           <Pressable
-            onLongPress={() => onRemove?.(uri)}
+            onLongPress={() => onRemove?.(uri, index)}
             accessibilityRole="image"
             accessibilityLabel={`Evidence photo ${index + 1}`}
             style={[styles.photoThumb, { borderColor: colors.border, backgroundColor: colors.muted }]}
           >
             <Image source={{ uri: cachedThumbnailUri(uri) ?? uri }} style={styles.photoImage} />
           </Pressable>
+          {labels?.[index] ? (
+            <Text style={{ color: colors.mutedForeground, fontSize: 12, lineHeight: 16 }}>
+              {labels[index]}
+            </Text>
+          ) : null}
           {onRemove ? (
             <Pressable
-              onPress={() => onRemove(uri)}
+              onPress={() => onRemove(uri, index)}
               accessibilityRole="button"
               accessibilityLabel={`Remove photo ${index + 1}`}
               style={[styles.photoRemove, { borderColor: colors.border, backgroundColor: colors.card }]}

@@ -198,6 +198,15 @@ const objectRecord = (
     : undefined;
 };
 
+const stringRecord = (
+  source: Record<string, unknown>,
+  camel: string,
+  snake?: string,
+): Record<string, string> => Object.fromEntries(
+  Object.entries(objectRecord(source, camel, snake) ?? {})
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+);
+
 function assignedWorkJobSummaryFromPull(
   source: Record<string, unknown>,
   actorUserId: string,
@@ -858,6 +867,7 @@ export async function importRemoteInstallationAsCopy(
     zone_name: text(zone, 'zoneName', 'zone_name'),
     zone_description: text(zone, 'zoneDescription', 'zone_description'),
     photos: array<string>(zone, 'photos'),
+    photo_notes: stringRecord(zone, 'photoNotes', 'photo_notes'),
     created_at: now,
     updated_at: now,
   }));
@@ -911,6 +921,7 @@ export async function importRemoteInstallationAsCopy(
     site_nmi: optionalText(board, 'siteNmi', 'site_nmi'),
     photo: optionalText(board, 'photo'),
     extra_photos: array<string>(board, 'extraPhotos', 'extra_photos'),
+    photo_notes: stringRecord(board, 'photoNotes', 'photo_notes'),
     meter_present: canonicalV2
       ? (tree.meterDevices ?? []).some(
           (meter) => text(meter, 'installedOnBoardId', 'installed_on_board_id') === text(board, 'id'),
@@ -1001,6 +1012,7 @@ export async function importRemoteInstallationAsCopy(
     meter_channels: canonicalV2 ? [] : array(asset, 'meterChannels', 'meter_channels'),
     comments: optionalText(asset, 'comments'),
     extra_photos: array<string>(asset, 'extraPhotos', 'extra_photos'),
+    photo_notes: stringRecord(asset, 'photoNotes', 'photo_notes'),
     created_at: now,
     updated_at: now,
     };
@@ -1129,6 +1141,7 @@ export async function importRemoteInstallationAsCopy(
             extra: array<string>(photos, 'extra'),
           }
         : undefined,
+      photoNotes: stringRecord(meter, 'photoNotes', 'photo_notes'),
       notes: optionalText(meter, 'notes'),
     };
   });

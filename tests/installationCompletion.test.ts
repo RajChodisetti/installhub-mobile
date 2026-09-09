@@ -257,6 +257,40 @@ test('completion captures one actor generation and revalidates pending state at 
   );
 });
 
+test('job detail keeps the completion action prominent above the long installation workspace', () => {
+  const screen = readFileSync(
+    new URL('../src/screens/InstallationDetailScreen.tsx', import.meta.url),
+    'utf8',
+  );
+  const actionIndex = screen.indexOf('testID="job-completion-action"');
+  const detailsIndex = screen.indexOf('title="Installation details"');
+  const workspaceIndex = screen.indexOf('title="Installation workspace"');
+
+  assert.ok(actionIndex >= 0, 'job detail should expose a dedicated completion action');
+  assert.ok(actionIndex < detailsIndex, 'completion should be visible before installation details');
+  assert.ok(actionIndex < workspaceIndex, 'completion should not be buried below field tools');
+  assert.match(screen, /'Mark job complete'/);
+  assert.match(screen, /Validates, backs up, and marks this job complete in Scheduler/);
+});
+
+test('completed job detail exposes its version-pinned report beside the completion state', () => {
+  const screen = readFileSync(
+    new URL('../src/screens/InstallationDetailScreen.tsx', import.meta.url),
+    'utf8',
+  );
+  const reportActionIndex = screen.indexOf('testID="completed-installation-report-action"');
+  const detailsIndex = screen.indexOf('title="Installation details"');
+  const workspaceIndex = screen.indexOf('title="Installation workspace"');
+
+  assert.ok(reportActionIndex >= 0, 'completed job detail should expose a report action');
+  assert.ok(reportActionIndex < detailsIndex, 'completed report action should be near job status');
+  assert.ok(reportActionIndex < workspaceIndex, 'completed report action should not be buried in tools');
+  assert.match(screen, /authoritativeCompleted \? \([\s\S]*completed-installation-report-action/);
+  assert.match(screen, /title="Download \/ share installation report"/);
+  assert.match(screen, /navigation\.navigate\('InstallationReport', \{ installationId \}\)/);
+  assert.match(screen, /choose Save to Files or another iOS destination/);
+});
+
 test('pending completion persistence is an authenticated repository command, not server reconciliation', () => {
   const repository = readFileSync(
     new URL('../src/repositories/index.ts', import.meta.url),

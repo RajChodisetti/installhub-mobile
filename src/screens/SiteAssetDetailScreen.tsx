@@ -19,6 +19,7 @@ import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { quickSwitchboardCreateValues } from '../domain/sourcePicker';
 import { wwCommissioningPickerParams } from '../domain/formPickerContext';
+import { photoNote } from '../domain/photoNotes';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'SiteAssetDetail'>;
 
@@ -158,7 +159,15 @@ export function SiteAssetDetailScreen({ navigation, route }: Props) {
         return meter ? <Button key={assignment.id} title={`Open meter: ${meter.displayName.value}`} variant="ghost" onPress={() => navigation.navigate('MeterForm', { installationId, boardId: meter.installedOnBoardId, meterId: meter.id })} /> : null;
       })}
       <SectionHeader title="Site asset evidence" />
-      <PhotoThumbnailGrid uris={[asset.location_photo, ...(asset.extra_photos ?? [])].filter((uri): uri is string => Boolean(uri))} />
+      <PhotoThumbnailGrid
+        uris={[asset.location_photo, ...(asset.extra_photos ?? [])].filter((uri): uri is string => Boolean(uri))}
+        labels={[
+          ...(asset.location_photo ? [photoNote(asset.photo_notes, 'locationPhoto') || undefined] : []),
+          ...(asset.extra_photos ?? []).map((_, index) => (
+            photoNote(asset.photo_notes, `extraPhotos[${index}]`) || undefined
+          )),
+        ]}
+      />
 
       <Button title="Edit asset" disabled={readOnly} style={{ marginTop: spacing.lg }} onPress={() => setEditOpen(true)} />
       <Button

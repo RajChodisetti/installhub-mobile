@@ -86,6 +86,12 @@ working viewport. Home search splits whitespace into tokens and requires every t
 partially match any job title, site, reference, client, address, technician, device, or
 service field; tokens may match different fields and in any order.
 
+For a Scheduler-created COMMS-fault job, the entered meter number may have already resolved the
+canonical client/site and copied the site's electrical structure before iOS imports the assignment.
+Editing normal client or address fields on that linked Draft keeps the canonical IDs so the API
+updates the shared client/site/device associations. “Save as a new client” and “Add a new address”
+are the explicit detach paths; unknown-meter jobs remain valid fresh-site installations.
+
 ## 2. Repository tree
 
 ```text
@@ -274,8 +280,10 @@ form completion, and other tree changes therefore cannot commit after invalidati
 The acknowledgement write additionally compares the current summary with the exact summary hash
 displayed when the user tapped acknowledge. Server pull/reconciliation writes deliberately bypass
 this local work guard so they can invalidate access without overwriting offline tree edits.
-Accepted Scheduler-owned date, technician, scope-comment, start, deadline, and status
+Accepted Scheduler-owned date, technician, scope-comment, start, and deadline
 changes create a local informational notice and require review of the refreshed summary.
+The app-generated planned-to-in-progress status projection is operational and preserves the
+existing pre-start acknowledgement; it must not interrupt work by requesting the same review again.
 Legacy Scheduler projections that changed only those owned fields without advancing the
 server revision are accepted for recovery; unrelated same-revision metadata or tree
 changes remain hard reconciliation errors.
@@ -293,6 +301,14 @@ active milliseconds and stable start/end boundaries. Sessions remain local until
 enabled and a server installation revision confirms the parent exists. Network, authorization,
 missing-parent, and lifecycle failures remain pending. Delivery retries after checkpoints,
 foregrounding, and Cloud Backup; the API update does not mutate the installation tree revision.
+For assigned Scheduler work, the first accepted checkpoint with positive active time advances the
+assigned technician's linked planned event to `in_progress`; repeated checkpoints are idempotent.
+The prominent **Mark job complete** action on Installation Detail uses the authoritative completion
+flow, which advances the linked Scheduler event to `done` only after server acceptance. Once the
+server-pinned completed version is present, the same Job status card exposes **Download / share
+installation report** above the general workspace. It opens the formal installation-pack workflow;
+after generation, iOS presents its native share sheet so the technician can choose **Save to Files**
+or another destination. Report access is read-only and is not blocked by work-action locking.
 
 ### Canonical installation v2
 
@@ -558,6 +574,12 @@ Backend storage is separated into `ih_users`, `ih_installations`, `ih_zones`,
 `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions`. Meter arrays, form answers,
 and form attachments intentionally remain JSON because they are embedded/versioned mobile values.
 Photo bytes use the shared `photo_registry`, but every row is isolated by `app=installhub`.
+Editable photo annotations are metadata, not file identities. Form photos use
+`attachment.caption`; zones, switchboards, site assets, and canonical meter
+devices use `photo_notes`/`photoNotes`, keyed by the exact canonical upload
+field such as `photos[0]` or `wwPhotos.deviceInstalled`. Annotation edits keep
+the existing image URI and array deletion reindexes only that photo field's
+keys.
 Native Field App Complete accounts remain authoritative in `ih_users`; the additive
 `unified_users` registry contains every Eco Audit, Solar Sense, and Field App Complete account so
 source credentials can receive Field App Complete access without changing any installed app login

@@ -98,6 +98,12 @@ import {
   nameAfterTypeChange,
 } from '../../domain/namingV2';
 import {
+  PHOTO_NOTE_MAX_LENGTH,
+  photoNote,
+  removeIndexedPhotoNote,
+  setPhotoNote,
+} from '../../domain/photoNotes';
+import {
   deleteRemovedLocalPhotos,
   pickLocalPhoto,
   takeLocalPhoto,
@@ -218,12 +224,16 @@ function BoolRow({
 function PhotoAttachmentField({
   label,
   uris,
+  photoNotes,
+  noteField,
   onChange,
   single = false,
 }: {
   label: string;
   uris: string[];
-  onChange: (uris: string[]) => void;
+  photoNotes?: Record<string, string>;
+  noteField: string;
+  onChange: (uris: string[], photoNotes: Record<string, string>) => void;
   single?: boolean;
 }) {
   const { colors } = useTheme();
@@ -233,7 +243,7 @@ function PhotoAttachmentField({
     setPhotoBusy(true);
     try {
       const uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
-      if (uri) onChange(single ? [uri] : [...uris, uri]);
+      if (uri) onChange(single ? [uri] : [...uris, uri], photoNotes ?? {});
     } catch (error) {
       Alert.alert(
         'Photo not added',
@@ -244,13 +254,18 @@ function PhotoAttachmentField({
     }
   };
 
-  const confirmRemove = (uri: string) => {
+  const confirmRemove = (uri: string, index: number) => {
     Alert.alert('Remove photo?', undefined, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove',
         style: 'destructive',
-        onPress: () => onChange(single ? [] : uris.filter((item) => item !== uri)),
+        onPress: () => {
+          const nextNotes = single
+            ? setPhotoNote(photoNotes, noteField, '')
+            : removeIndexedPhotoNote(photoNotes, noteField, index);
+          onChange(single ? [] : uris.filter((_, itemIndex) => itemIndex !== index), nextNotes);
+        },
       },
     ]);
   };
@@ -261,7 +276,22 @@ function PhotoAttachmentField({
         {label}
       </Text>
       {uris.length ? (
-        <PhotoThumbnailGrid uris={uris} onRemove={confirmRemove} />
+        <>
+          <PhotoThumbnailGrid uris={uris} onRemove={confirmRemove} />
+          {uris.map((uri, index) => {
+            const fieldName = single ? noteField : `${noteField}[${index}]`;
+            return (
+              <TextArea
+                key={`${uri}:${index}:note`}
+                label={`${label} ${index + 1} title / notes / comments`}
+                value={photoNote(photoNotes, fieldName)}
+                maxLength={PHOTO_NOTE_MAX_LENGTH}
+                placeholder="Add context for this photo"
+                onChangeText={(value) => onChange(uris, setPhotoNote(photoNotes, fieldName, value))}
+              />
+            );
+          })}
+        </>
       ) : (
         <Text style={{ color: colors.mutedForeground, marginBottom: spacing.sm }}>
           No photo attached.
@@ -430,6 +460,15 @@ export function InstallationForm({
   return (
     <View>
       <SectionHeader title="Client and service" />
+      {initial?.client_id && initial.client_site_id ? (
+        <Card style={{ marginBottom: spacing.md }} accessibilityRole="summary">
+          <Text style={{ color: colors.foreground, fontWeight: '800' }}>Existing site linked</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.xs, lineHeight: 20 }}>
+            Saving edits updates the shared client, site, and installed-device association. Use
+            “Save as a new client” or “Add a new address” only when this should be a separate record.
+          </Text>
+        </Card>
+      ) : null}
       <ClientAddressPicker
         clientName={client_name}
         clientId={client_id}
@@ -444,7 +483,7 @@ export function InstallationForm({
         }}
         onAddressChange={(nextAddress, nextClientSiteId, suggestedSiteName) => {
           setSiteAddress(nextAddress);
-          setClientSiteId(nextClientSiteId);
+          if (nextClientSiteId !== undefined) setClientSiteId(nextClientSiteId);
           if (suggestedSiteName && (!site_name.trim() || !siteNameEdited.current)) {
             setSite(suggestedSiteName);
             if (!siteCodeEdited.current) setSiteCode(normalizedSiteCode(suggestedSiteName));
@@ -576,7 +615,6 @@ export function InstallationForm({
         value={siteAddress.locality ?? ''}
         maxLength={120}
         onChangeText={(value) => {
-          setClientSiteId(null);
           setSiteAddress(manualAustralianAddressEdit(siteAddress, { locality: value }));
         }}
       />
@@ -585,7 +623,6 @@ export function InstallationForm({
         value={siteAddress.state ?? 'unknown'}
         options={['unknown', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']}
         onChange={(value) => {
-          setClientSiteId(null);
           setSiteAddress(manualAustralianAddressEdit(siteAddress, {
             state: value === 'unknown' ? null : value,
           }));
@@ -603,7 +640,6 @@ export function InstallationForm({
         keyboardType="number-pad"
         maxLength={4}
         onChangeText={(value) => {
-          setClientSiteId(null);
           setSiteAddress(manualAustralianAddressEdit(siteAddress, { postcode: value }));
         }}
       />
@@ -780,6 +816,7 @@ export function ElectricalAssetForm({
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
   const [photo, setPhoto] = useState(initial?.photo ?? '');
   const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
+  const [photo_notes, setPhotoNotes] = useState(initial?.photo_notes ?? {});
   const [sub_circuits_description, setSubCircuitsDescription] = useState(
     initial?.sub_circuits_description ?? '',
   );
@@ -934,8 +971,13 @@ export function ElectricalAssetForm({
       <PhotoAttachmentField
         label="Main switchboard photo"
         uris={photo ? [photo] : []}
+        photoNotes={photo_notes}
+        noteField="photo"
         single
-        onChange={(uris) => setPhoto(uris[0] ?? '')}
+        onChange={(uris, notes) => {
+          setPhoto(uris[0] ?? '');
+          setPhotoNotes(notes);
+        }}
       />
       <TextField label="Amperage rating" value={amperage_rating} onChangeText={setAmps} />
       <Text style={[typography.label, { color: colors.mutedForeground, marginBottom: spacing.xs }]}>Electricity NMI</Text>
@@ -952,7 +994,12 @@ export function ElectricalAssetForm({
       <PhotoAttachmentField
         label="Extra photos"
         uris={extra_photos}
-        onChange={setExtraPhotos}
+        photoNotes={photo_notes}
+        noteField="extraPhotos"
+        onChange={(uris, notes) => {
+          setExtraPhotos(uris);
+          setPhotoNotes(notes);
+        }}
       />
       <Button
         title={busy ? 'Saving…' : 'Save switchboard'}
@@ -992,6 +1039,7 @@ export function ElectricalAssetForm({
               electrical_parent_tbc: normalizedSource.kind === 'TBC',
               photo,
               extra_photos,
+              photo_notes,
               meter_present: (initial?.meters?.length ?? 0) > 0,
               sub_circuits_description,
               comments,
@@ -1142,6 +1190,7 @@ export function SiteAssetForm({
   const [location_description, setLoc] = useState(initial?.location_description ?? '');
   const [location_photo, setLocationPhoto] = useState(initial?.location_photo ?? '');
   const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
+  const [photo_notes, setPhotoNotes] = useState(initial?.photo_notes ?? {});
   const initialSource = initial?.electrical_source ?? (
     initial?.electrical_board_tbc || !initial?.electrical_board_id
       ? { kind: 'TBC' as const }
@@ -1283,6 +1332,7 @@ export function SiteAssetForm({
     locationDescription: location_description,
     locationPhoto: location_photo,
     extraPhotos: extra_photos,
+    photoNotes: photo_notes,
     sourceKey,
     sourceBoardSearch,
     meteringKind,
@@ -1310,6 +1360,7 @@ export function SiteAssetForm({
       setLoc(saved.locationDescription);
       setLocationPhoto(saved.locationPhoto ?? initial?.location_photo ?? '');
       setExtraPhotos(saved.extraPhotos ?? initial?.extra_photos ?? []);
+      setPhotoNotes(saved.photoNotes ?? initial?.photo_notes ?? {});
       setSourceKey(saved.sourceKey);
       setSourceBoardSearch(saved.sourceBoardSearch);
       setMeteringKind(saved.meteringKind);
@@ -1373,7 +1424,7 @@ export function SiteAssetForm({
   }, [
     active, asset_name, comments, customCode, custom_type_name, deviceDetour,
     direction, display_code, draftAssetId, draftHydrated, draftInstallationId, draftScope, extra_photos,
-    location_description, location_photo,
+    location_description, location_photo, photo_notes,
     meterSearch, meteringKind, phaseMode, selectedChannelIds, selectedMeterId,
     sourceBoardSearch, sourceKey, type_code,
   ]);
@@ -1662,8 +1713,13 @@ export function SiteAssetForm({
       <PhotoAttachmentField
         label="Location photo"
         uris={location_photo ? [location_photo] : []}
+        photoNotes={photo_notes}
+        noteField="locationPhoto"
         single
-        onChange={(uris) => setLocationPhoto(uris[0] ?? '')}
+        onChange={(uris, notes) => {
+          setLocationPhoto(uris[0] ?? '');
+          setPhotoNotes(notes);
+        }}
       />
       <Card style={{ marginBottom: spacing.md }}>
         <SectionHeader title="How is this asset metered?" />
@@ -1950,7 +2006,12 @@ export function SiteAssetForm({
       <PhotoAttachmentField
         label="Additional photos"
         uris={extra_photos}
-        onChange={setExtraPhotos}
+        photoNotes={photo_notes}
+        noteField="extraPhotos"
+        onChange={(uris, notes) => {
+          setExtraPhotos(uris);
+          setPhotoNotes(notes);
+        }}
       />
       {draftPersistenceError ? (
         <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={{ color: colors.destructive, marginBottom: spacing.md }}>
@@ -2002,6 +2063,7 @@ export function SiteAssetForm({
               meter_channels: initial?.meter_channels ?? [],
               comments,
               extra_photos,
+              photo_notes,
             }, { ...meteringDraft, baselineAssignments: mappingBaseline.current });
             deleteRemovedLocalPhotos(
               [initial?.location_photo, ...(initial?.extra_photos ?? [])],
@@ -2548,9 +2610,12 @@ export function WattwatcherForm({
         <PhotoAttachmentField
           label="Installed device"
           uris={data.ww_photos?.device_installed ? [data.ww_photos.device_installed] : []}
+          photoNotes={data.photo_notes}
+          noteField="wwPhotos.deviceInstalled"
           single
-          onChange={(uris) => onChange({
+          onChange={(uris, notes) => onChange({
             ...data,
+            photo_notes: notes,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               device_installed: uris[0],
@@ -2560,9 +2625,12 @@ export function WattwatcherForm({
         <PhotoAttachmentField
           label="Switchboard overview"
           uris={data.ww_photos?.switchboard_overview ? [data.ww_photos.switchboard_overview] : []}
+          photoNotes={data.photo_notes}
+          noteField="wwPhotos.switchboardOverview"
           single
-          onChange={(uris) => onChange({
+          onChange={(uris, notes) => onChange({
             ...data,
+            photo_notes: notes,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               switchboard_overview: uris[0],
@@ -2572,9 +2640,12 @@ export function WattwatcherForm({
         <PhotoAttachmentField
           label="Device and channel labeling"
           uris={data.ww_photos?.labeling ? [data.ww_photos.labeling] : []}
+          photoNotes={data.photo_notes}
+          noteField="wwPhotos.labeling"
           single
-          onChange={(uris) => onChange({
+          onChange={(uris, notes) => onChange({
             ...data,
+            photo_notes: notes,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               labeling: uris[0],
@@ -2584,8 +2655,11 @@ export function WattwatcherForm({
         <PhotoAttachmentField
           label="Extra meter photos"
           uris={data.ww_photos?.extra ?? []}
-          onChange={(extra) => onChange({
+          photoNotes={data.photo_notes}
+          noteField="wwPhotos.extra"
+          onChange={(extra, notes) => onChange({
             ...data,
+            photo_notes: notes,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               extra,

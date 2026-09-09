@@ -35,6 +35,12 @@ import {
 import type { ElectricalSource } from '../types';
 import { wwCommissioningPickerParams } from '../domain/formPickerContext';
 import { isValidZoneCode, ZONE_CODE_MAX_LENGTH } from '../domain/namingV2';
+import {
+  PHOTO_NOTE_MAX_LENGTH,
+  photoNote,
+  removeIndexedPhotoNote,
+  setPhotoNote,
+} from '../domain/photoNotes';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ZoneWorkspace'>;
 const ZONE_PAGE_SIZE = 100;
@@ -219,7 +225,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         <PhotoThumbnailGrid
           uris={zone.photos}
           onAdd={readOnly ? undefined : () => void addPhoto('library')}
-          onRemove={readOnly ? undefined : (uri) => {
+          onRemove={readOnly ? undefined : (uri, photoIndex) => {
             Alert.alert('Remove photo?', undefined, [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -229,7 +235,8 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
                   let removed = false;
                   try {
                     await zonesRepo.update(zoneId, {
-                      photos: zone.photos.filter((p) => p !== uri),
+                      photos: zone.photos.filter((_, index) => index !== photoIndex),
+                      photo_notes: removeIndexedPhotoNote(zone.photo_notes, 'photos', photoIndex),
                     });
                     removed = true;
                     deleteLocalPhoto(uri);
@@ -246,6 +253,25 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           }}
         />
       )}
+      {zone.photos.map((uri, index) => (
+        <TextArea
+          key={`${uri}:${index}:note`}
+          label={`Photo ${index + 1} title / notes / comments`}
+          defaultValue={photoNote(zone.photo_notes, `photos[${index}]`)}
+          editable={!readOnly}
+          maxLength={PHOTO_NOTE_MAX_LENGTH}
+          placeholder="Add context for this photo"
+          onEndEditing={(event) => {
+            const value = event.nativeEvent.text;
+            void zonesRepo.update(zoneId, {
+              photo_notes: setPhotoNote(zone.photo_notes, `photos[${index}]`, value),
+            }).then(refresh).catch((caught) => Alert.alert(
+              'Photo note not saved',
+              caught instanceof Error ? caught.message : 'Try saving the note again.',
+            ));
+          }}
+        />
+      ))}
       <Button
         title="Take photo"
         variant="ghost"

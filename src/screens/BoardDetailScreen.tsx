@@ -10,6 +10,7 @@ import { RecordLoadState } from '../components/RecordLoadState';
 import { useTheme } from '../context/AppProviders';
 import { spacing, typography } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { photoNote } from '../domain/photoNotes';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BoardDetail'>;
 
@@ -46,6 +47,12 @@ export function BoardDetailScreen({ navigation, route }: Props) {
   const downstreamBoards = installationBoards.filter((candidate) => candidate.electrical_source?.kind === 'BOARD' && candidate.electrical_source.boardId === board.id);
   const suppliedAssets = siteAssets.filter((asset) => asset.electrical_source?.kind === 'BOARD' && asset.electrical_source.boardId === board.id);
   const evidence = [board.photo, ...(board.extra_photos ?? [])].filter((uri): uri is string => Boolean(uri));
+  const evidenceLabels = [
+    ...(board.photo ? [photoNote(board.photo_notes, 'photo') || undefined] : []),
+    ...(board.extra_photos ?? []).map((_, index) => (
+      photoNote(board.photo_notes, `extraPhotos[${index}]`) || undefined
+    )),
+  ];
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={styles.pad}>
@@ -90,7 +97,7 @@ export function BoardDetailScreen({ navigation, route }: Props) {
         {!downstreamBoards.length && !suppliedAssets.length ? <Text style={{ color: colors.mutedForeground }}>No downstream switchboards or supplied assets.</Text> : null}
       </Card>
       <SectionHeader title={`Switchboard evidence (${evidence.length})`} />
-      {evidence.length ? <PhotoThumbnailGrid uris={evidence} /> : <Text style={{ color: colors.mutedForeground }}>No switchboard evidence recorded.</Text>}
+      {evidence.length ? <PhotoThumbnailGrid uris={evidence} labels={evidenceLabels} /> : <Text style={{ color: colors.mutedForeground }}>No switchboard evidence recorded.</Text>}
 
       <SectionHeader title={`Meters (${board.meters.length})`} />
       {board.meters.length === 0 ? (

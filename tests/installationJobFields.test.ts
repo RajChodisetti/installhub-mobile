@@ -19,6 +19,10 @@ test('Field App authors planning fields and shows assigned job details without o
     new URL('../src/services/backupMedia.ts', import.meta.url),
     'utf8',
   );
+  const clientPickerSource = readFileSync(
+    new URL('../src/components/ClientAddressPicker.tsx', import.meta.url),
+    'utf8',
+  );
 
   assert.match(source, /label="Electricity NMI"/);
   assert.match(source, /initialElectricityNmi/);
@@ -32,6 +36,11 @@ test('Field App authors planning fields and shows assigned job details without o
   assert.match(source, /knownReplacementMeters/);
   assert.match(source, /Select one or more known site meters, or add a meter number that is not listed/);
   assert.match(source, /storedReplacementMeterNumbers\(replacement_meter_numbers\)/);
+  assert.match(source, /if \(nextClientSiteId !== undefined\) setClientSiteId\(nextClientSiteId\)/);
+  assert.doesNotMatch(source, /setClientSiteId\(null\);\s*setSiteAddress\(manualAustralianAddressEdit/);
+  assert.match(clientPickerSource, /onClientChange\(value, clientId\)/);
+  assert.match(clientPickerSource, /Save as a new client/);
+  assert.match(clientPickerSource, /manualAustralianAddressEdit\(address, \{ display_address: value \}\),\s*undefined/);
   assert.match(source, /M3 - Inspection/);
   assert.match(source, /M4 - BD\/Upselling/);
   assert.match(source, /M5 — Other/);

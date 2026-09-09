@@ -53,7 +53,6 @@ export function assignedWorkSummarySha256(
     scheduledStartAt: summary.scheduled_start_at ?? '',
     scheduledEndAt: summary.scheduled_end_at ?? null,
     deadlineAt: summary.deadline_at ?? '',
-    scheduleStatus: summary.schedule_status ?? '',
   }));
 }
 
@@ -63,7 +62,6 @@ const ASSIGNED_WORK_SCHEDULE_SUMMARY_FIELDS = [
   'scheduled_start_at',
   'scheduled_end_at',
   'deadline_at',
-  'schedule_status',
 ] as const satisfies ReadonlyArray<keyof AssignedWorkJobSummarySnapshot>;
 
 export function assignedWorkScheduleChangedFields(

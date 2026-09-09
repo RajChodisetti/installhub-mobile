@@ -13,10 +13,10 @@ function fixture(): ClientReportData {
       site_address: 'Address', inspector_name: 'Technician', audit_date: '2026-09-05',
       status: 'Draft', cloud_backup_enabled: false, created_at: '', updated_at: '',
     },
-    zones: [{ id: 'zone', audit_id: 'installation', zone_name: 'Plant', zone_description: '', photos: ['file:///zone.jpg'], created_at: '', updated_at: '' }],
+    zones: [{ id: 'zone', audit_id: 'installation', zone_name: 'Plant', zone_description: '', photos: ['file:///zone.jpg'], photo_notes: { 'photos[0]': 'Incoming supply room' }, created_at: '', updated_at: '' }],
     electricalAssets: [{
       id: 'board', audit_id: 'installation', zone_id: 'zone', asset_name: 'Main', asset_type: 'MSB',
-      display_code: 'MSB-01', meters: [{ id: 'meter', device_name: 'Meter', device_type: 'A3RM', device_id: 'SERIAL', ww_photos: { labeling: 'file:///label.jpg' } }],
+      display_code: 'MSB-01', meters: [{ id: 'meter', device_name: 'Meter', device_type: 'A3RM', device_id: 'SERIAL', ww_photos: { labeling: 'file:///label.jpg' }, photo_notes: { 'wwPhotos.labeling': 'Channel labels after work' } }],
       meter_present: true, electrical_source: { kind: 'TBC' }, created_at: '', updated_at: '',
     }],
     siteAssets: [{
@@ -36,6 +36,7 @@ test('gallery and report include zone, legacy meter and form evidence with porta
   const data = fixture();
   const report = clientReportModel(data);
   assert.deepEqual(report.photos.map((photo) => photo.key), ['zone:zone:0', 'meter:meter:labeling', 'form:form:photo']);
+  assert.deepEqual(report.photos.map((photo) => photo.label), ['Incoming supply room', 'Channel labels after work', 'Water <meter>']);
   assert.deepEqual(report.missingEvidence, ['Site asset · HVAC']);
   assert.equal(report.meterCount, 1);
   assert.equal(report.completedFormCount, 1);
@@ -77,6 +78,7 @@ test('client PDF contains the same selected evidence and escapes all captured te
   assert.match(html, /Water &lt;meter&gt;/);
   assert.match(html, /2 of 3 available photos included/);
   assert.doesNotMatch(html, /Plant photo 1/);
+  assert.doesNotMatch(html, /Incoming supply room/);
   assert.match(html, /Honeywell Q400/);
   // Native print must keep a heading (including its rule) with the following
   // content while allowing the selected-evidence collection to span pages.
