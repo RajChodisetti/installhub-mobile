@@ -20,6 +20,7 @@ import {
   dashboardJobGroupLabel,
   dashboardJobTiming,
   filterDashboardJobs,
+  recentAssignedJobs,
   type DashboardStatusFilter,
 } from '../domain/jobDashboard';
 
@@ -37,6 +38,12 @@ export function DashboardScreen({ navigation }: Props) {
   const filtered = useMemo(
     () => filterDashboardJobs(items, query, status),
     [items, query, status],
+  );
+  const recent = useMemo(() => recentAssignedJobs(filtered), [filtered]);
+  const recentIds = useMemo(() => new Set(recent.map((item) => item.id)), [recent]);
+  const otherJobs = useMemo(
+    () => filtered.filter((item) => !recentIds.has(item.id)),
+    [filtered, recentIds],
   );
   const jobCounts = useMemo(() => filtered.reduce(
     (counts, installation) => {
@@ -130,6 +137,24 @@ export function DashboardScreen({ navigation }: Props) {
     }
   };
 
+  const installationRow = (item: Installation, groupTitle?: string) => (
+    <View key={item.id}>
+      {groupTitle ? <SectionHeader title={groupTitle} /> : null}
+      <InstallationCard
+        item={item}
+        counts={countsByInstallation[item.id]}
+        onPress={() => { if (!recoveringId) navigation.navigate('InstallationDetail', { installationId: item.id }); }}
+        onDelete={() => { void deleteInstallation(item); }}
+        deleteDisabled={Boolean(deletingId || recoveringId)}
+      />
+      {item.assigned_work_refresh_conflict || item.backup_conflict?.kind === 'CONFLICT' ? (
+        <Button title={recoveringId === item.id ? 'Reviewing recovery…' : 'Review sync conflict'}
+          variant="secondary" disabled={Boolean(recoveringId || deletingId)}
+          onPress={() => { void recoverInstallation(item.id); }} style={{ marginBottom: spacing.md }} />
+      ) : null}
+    </View>
+  );
+
   const listHeader = (
     <View>
       <View style={styles.hero}>
@@ -184,13 +209,21 @@ export function DashboardScreen({ navigation }: Props) {
         onPress={() => navigation.navigate('RemoteInstallations')}
         style={{ marginBottom: spacing.sm }}
       />
+      {recent.length ? (
+        <View>
+          <SectionHeader title="Recent jobs" />
+          <Text style={[styles.sectionHint, { color: colors.mutedForeground }]}>Four most recently assigned jobs</Text>
+          {recent.map((item) => installationRow(item))}
+        </View>
+      ) : null}
+      {otherJobs.length ? <SectionHeader title="Other jobs" /> : null}
     </View>
   );
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
-        data={filtered}
+        data={otherJobs}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={listHeader}
         refreshControl={(
@@ -200,7 +233,9 @@ export function DashboardScreen({ navigation }: Props) {
             tintColor={colors.primary}
           />
         )}
-        ListEmptyComponent={loading && !items.length
+        ListEmptyComponent={filtered.length
+          ? null
+          : loading && !items.length
           ? <LoadingState />
           : (
             <EmptyState
@@ -211,26 +246,11 @@ export function DashboardScreen({ navigation }: Props) {
         renderItem={({ item, index }) => {
           const group = dashboardJobTiming(item).group;
           const previousGroup = index > 0
-            ? dashboardJobTiming(filtered[index - 1]).group
+            ? dashboardJobTiming(otherJobs[index - 1]).group
             : undefined;
-          return (
-            <View>
-              {group !== previousGroup ? (
-                <SectionHeader title={dashboardJobGroupLabel(group)} />
-              ) : null}
-              <InstallationCard
-                item={item}
-                counts={countsByInstallation[item.id]}
-                onPress={() => { if (!recoveringId) navigation.navigate('InstallationDetail', { installationId: item.id }); }}
-                onDelete={() => { void deleteInstallation(item); }}
-                deleteDisabled={Boolean(deletingId || recoveringId)}
-              />
-              {item.assigned_work_refresh_conflict || item.backup_conflict?.kind === 'CONFLICT' ? (
-                <Button title={recoveringId === item.id ? 'Reviewing recovery…' : 'Review sync conflict'}
-                  variant="secondary" disabled={Boolean(recoveringId || deletingId)}
-                  onPress={() => { void recoverInstallation(item.id); }} style={{ marginBottom: spacing.md }} />
-              ) : null}
-            </View>
+          return installationRow(
+            item,
+            group !== previousGroup ? dashboardJobGroupLabel(group) : undefined,
           );
         }}
         ListFooterComponent={<View style={{ height: 24 }} />}
@@ -249,4 +269,5 @@ const styles = StyleSheet.create({
   statusFilters: { flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.md },
   summaryCard: { marginBottom: spacing.md, paddingVertical: spacing.md },
   primaryActions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm },
+  sectionHint: { fontSize: 12, marginBottom: spacing.sm, marginTop: -spacing.xs },
 });

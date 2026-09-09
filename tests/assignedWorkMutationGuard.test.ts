@@ -567,6 +567,8 @@ test('assignment pull, materialization and actor-scoped sync recheck one auth ge
       < assignedSync.indexOf('apiClient.pull('),
   );
   assert.match(assignedSync, /apiClient\.pull\([\s\S]*cloudAuthority/);
+  assert.match(assignedSync, /apiClient\.pull\([\s\S]*installationId,[\s\S]*cloudAuthority/);
+  assert.match(assignedSync, /\.filter\(\(id\) => !installationId \|\| id === installationId\)/);
   assert.match(assignedSync, /await apiClient\.pull[\s\S]*assertCurrentSession\(\)/);
   assert.match(assignedSync, /await updateStore\(\(store\) => \{\s*assertCurrentSession\(\)/);
   assert.match(assignedSync, /assignedWorkAuthority: authority/);

@@ -237,7 +237,10 @@ test('only final exact accepted backup confirmation can establish a missing dura
 });
 
 /** Execute the production mapper and pull orchestration with controlled I/O. */
-function pullHarness(store: AppDataStore, pull: () => Promise<unknown>) {
+function pullHarness(
+  store: AppDataStore,
+  pull: (since?: string, installationId?: string, authority?: unknown) => Promise<unknown>,
+) {
   let current = true;
   let beforeCommit: (() => void) | undefined;
   const assertCurrent = () => { if (!current) throw new Error('Session replaced'); };
@@ -265,11 +268,33 @@ function pullHarness(store: AppDataStore, pull: () => Promise<unknown>) {
     },
   });
   return {
-    sync: () => (exports.syncAssignedInstallations as (actor: string, authority: unknown) => Promise<unknown>)('actor', {}),
+    sync: (installationId?: string) => (exports.syncAssignedInstallations as (
+      actor: string,
+      authority: unknown,
+      installationId?: string,
+    ) => Promise<unknown>)('actor', {}, installationId),
     replaceSession: () => { current = false; },
     onCommit: (callback: () => void) => { beforeCommit = callback; },
   };
 }
+
+test('notification-scoped assigned refresh pulls only the notified installation', async () => {
+  const unregister = noScreens();
+  try {
+    const store = fixture();
+    let requestedSince: string | undefined;
+    let requestedInstallationId: string | undefined;
+    const response = remoteResponse(store);
+    const harness = pullHarness(store, async (since, installationId) => {
+      requestedSince = since;
+      requestedInstallationId = installationId;
+      return response;
+    });
+    await harness.sync('job');
+    assert.equal(requestedSince, '1970-01-01T00:00:00.000Z');
+    assert.equal(requestedInstallationId, 'job');
+  } finally { unregister(); }
+});
 
 function remoteResponse(store: AppDataStore) {
   const remote = incoming(store);

@@ -44,6 +44,33 @@ export function filterDashboardJobs(items: Installation[], query: string, status
     && dashboardJobSearchMatch(item, query)));
 }
 
+/** The assignment summary's first-observed pull time is retained across
+ * unchanged refreshes, so it is the closest durable device-side assignment
+ * timestamp. Keep this view separate from the normal schedule-priority order. */
+export function recentAssignedJobs(
+  items: Installation[],
+  limit = 4,
+): Installation[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error('Recent assigned job limit must be a positive integer.');
+  }
+  return items
+    .filter((item) => item.assigned_work_state === 'active'
+      && Boolean(item.assigned_work_job_summary))
+    .sort((left, right) => {
+      const leftAssignedAt = timestamp(left.assigned_work_job_summary?.pulled_at)
+        ?? timestamp(left.created_at)
+        ?? Number.NEGATIVE_INFINITY;
+      const rightAssignedAt = timestamp(right.assigned_work_job_summary?.pulled_at)
+        ?? timestamp(right.created_at)
+        ?? Number.NEGATIVE_INFINITY;
+      return rightAssignedAt - leftAssignedAt
+        || right.updated_at.localeCompare(left.updated_at)
+        || left.site_name.localeCompare(right.site_name);
+    })
+    .slice(0, limit);
+}
+
 /** Every typed fragment may partially match a different job field, in any order. */
 export function dashboardJobSearchMatch(item: Installation, query: string): boolean {
   const summary = item.assigned_work_job_summary;

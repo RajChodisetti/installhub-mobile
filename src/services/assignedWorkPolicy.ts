@@ -155,6 +155,7 @@ export const ASSIGNED_WORK_SERVER_METADATA_FIELDS = [
   'site_address_fingerprint',
   'inspector_name',
   'audit_date',
+  'job_end_date',
   'timezone',
   'maas',
   'service_type',
@@ -182,6 +183,7 @@ const ASSIGNED_WORK_SCHEDULER_METADATA_FIELDS = new Set<
 >([
   'inspector_name',
   'audit_date',
+  'job_end_date',
   'job_comments',
   'existing_device_id',
 ]);
@@ -209,6 +211,7 @@ export function assignedWorkServerMetadataFromInstallation(
     site_address_fingerprint: installation.site_address_fingerprint ?? '',
     inspector_name: installation.inspector_name,
     audit_date: installation.audit_date,
+    job_end_date: installation.job_end_date ?? null,
     timezone: installation.timezone ?? null,
     maas: installation.maas ?? null,
     service_type: installation.service_type ?? null,
@@ -319,6 +322,7 @@ export function assignedWorkServerMetadataFromRemote(
       fallback.inspector_name,
     ),
     audit_date: requiredText(remote, 'auditDate', 'audit_date', fallback.audit_date),
+    job_end_date: nullableText(remote, 'jobEndDate', 'job_end_date', fallback.job_end_date),
     timezone: nullableText(remote, 'timezone', 'timezone', fallback.timezone),
     maas: nullableBoolean(remote, 'maas', 'maas', fallback.maas),
     service_type: nullableText(remote, 'serviceType', 'service_type', fallback.service_type),

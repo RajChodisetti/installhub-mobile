@@ -50,7 +50,7 @@ interface SyncStatusValue {
   lastSyncedAt: string | null;
   lastConfirmedBackupAt: string | null;
   triggerSync: () => Promise<SyncProgress>;
-  triggerSyncAfterServerChange: () => Promise<SyncProgress>;
+  triggerSyncAfterServerChange: (installationId?: string) => Promise<SyncProgress>;
   retrySync: () => Promise<SyncProgress>;
 }
 
@@ -73,7 +73,7 @@ type AuthenticatedSyncFlight = {
 type AutomaticSyncScope = Pick<
   AuthenticatedSyncFlight,
   'actorUserId' | 'authority'
->;
+> & { installationId?: string };
 
 type TrailingServerChangeSync = AutomaticSyncScope & {
   after: AuthenticatedSyncFlight;
@@ -165,7 +165,13 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
             assertCurrentAssignedWorkAuthority(authority, actorUserId);
           },
           beforeNewBackups: async () => {
-            try { await syncAssignedInstallations(actorUserId, cloudAuthority); }
+            try {
+              await syncAssignedInstallations(
+                actorUserId,
+                cloudAuthority,
+                automaticScope?.installationId,
+              );
+            }
             catch (error) { assignmentError = error; }
             assertCurrentAssignedWorkAuthority(authority, actorUserId);
             assertCurrentCloudSessionAuthority(cloudAuthority, actorUserId);
@@ -244,7 +250,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
   // captured older server state. Coalesce one actor-fenced follow-up run behind
   // that exact flight while preserving the normal backup-recovery-before-pull
   // sequence inside startSync.
-  const triggerSyncAfterServerChange = useCallback((): Promise<SyncProgress> => {
+  const triggerSyncAfterServerChange = useCallback((installationId?: string): Promise<SyncProgress> => {
     const actorUserId = user?.id;
     if (!actorUserId) return Promise.resolve(defaultProgress);
     const authority = captureAssignedWorkMutationAuthority();
@@ -253,7 +259,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
     } catch {
       return Promise.resolve(defaultProgress);
     }
-    const scope = { actorUserId, authority };
+    const scope = { actorUserId, authority, installationId };
     const currentFlight = activeSync.current;
     if (!currentFlight) return startSync(undefined, scope);
 
@@ -262,6 +268,7 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
       queued
       && queued.after === currentFlight
       && queued.actorUserId === actorUserId
+      && queued.installationId === installationId
       && actorForCurrentAssignedWorkAuthority(queued.authority) === actorUserId
     ) {
       return queued.promise;
@@ -347,8 +354,8 @@ export function SyncStatusProvider({ children }: { children: React.ReactNode }) 
       ),
       getLastNotificationResponse: () => Notifications.getLastNotificationResponseAsync(),
       clearLastNotificationResponse: () => Notifications.clearLastNotificationResponseAsync(),
-    }, () => {
-      void triggerSyncAfterServerChange();
+    }, (notification) => {
+      void triggerSyncAfterServerChange(notification.sourceId);
     });
   }, [triggerSyncAfterServerChange, user?.id]);
 

@@ -46,7 +46,8 @@ test('Scheduler refresh accepts only complete InstallHub installation payloads',
 test('live receipt, response, and a cold-start response request refresh and clean up listeners', async () => {
   let received: ((value: ReturnType<typeof notification>) => void) | undefined;
   let responded: ((value: ReturnType<typeof response>) => void) | undefined;
-  let receivedRemovals = 0; let responseRemovals = 0; let clears = 0; let refreshes = 0;
+  let receivedRemovals = 0; let responseRemovals = 0; let clears = 0;
+  const refreshedInstallationIds: string[] = [];
   const dependencies: SchedulerNotificationListenerDependencies = {
     addNotificationReceivedListener: (listener) => {
       received = listener;
@@ -61,7 +62,7 @@ test('live receipt, response, and a cold-start response request refresh and clea
   };
   const cleanup = listenForInstallHubSchedulerNotifications(
     dependencies,
-    () => { refreshes += 1; },
+    (data) => { refreshedInstallationIds.push(data.sourceId); },
   );
   received?.(notification(validData, 'received-1'));
   received?.(notification({ ...validData, sourceApp: 'ecoaudit' }, 'foreign-1'));
@@ -69,7 +70,11 @@ test('live receipt, response, and a cold-start response request refresh and clea
   responded?.(response(validData, 'received-1'));
   responded?.(response({ ...validData, type: 'other' }, 'foreign-2'));
   await settle();
-  assert.equal(refreshes, 3);
+  assert.deepEqual(refreshedInstallationIds, [
+    'installation-1',
+    'installation-1',
+    'installation-1',
+  ]);
   assert.equal(clears, 1);
 
   cleanup();
@@ -77,7 +82,7 @@ test('live receipt, response, and a cold-start response request refresh and clea
   assert.equal(responseRemovals, 1);
   received?.(notification(validData, 'received-after-cleanup'));
   responded?.(response(validData, 'response-after-cleanup'));
-  assert.equal(refreshes, 3);
+  assert.equal(refreshedInstallationIds.length, 3);
 });
 
 test('foreign cold-start responses remain available and do not refresh', async () => {

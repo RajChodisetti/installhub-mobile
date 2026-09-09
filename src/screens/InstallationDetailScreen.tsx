@@ -92,6 +92,7 @@ const assignedWorkChangeLabels: Record<string, string> = {
   customer_name: 'client name',
   inspector_name: 'assigned technician',
   audit_date: 'scheduled date',
+  job_end_date: 'job end date',
   existing_device_id: 'existing device ID',
   job_comments: 'job comments',
   schedule_event_id: 'Scheduler assignment',
@@ -351,6 +352,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         ['Job Number #', recordedValue(item.custom_job_number)],
         ['Job Type', recordedValue(item.service_type)],
         ['Scheduled date', item.audit_date ? formatDate(item.audit_date) : 'Not recorded'],
+        ['Job end date', item.job_end_date ? formatDate(item.job_end_date) : 'Not recorded'],
         ['Technician', recordedValue(item.inspector_name)],
         ['Scheduled start', assignedJobSummary?.scheduled_start_at
           ? formatDateTime(assignedJobSummary.scheduled_start_at)

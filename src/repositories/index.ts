@@ -466,7 +466,7 @@ export const installationsRepo: InstallationsRepository = {
       const domainKeys: Array<keyof Installation> = [
         'client_id', 'client_site_id', 'client_name', 'customer_name', 'site_name',
         ...INSTALLATION_ADDRESS_KEYS,
-        'inspector_name', 'audit_date', 'site_code', 'timezone', 'maas',
+        'inspector_name', 'audit_date', 'job_end_date', 'site_code', 'timezone', 'maas',
         'service_type', 'existing_device_id', 'metering_solution_type', 'planned_meter_type', 'custom_job_number',
         'site_contact_name', 'site_contact_phone', 'site_contact_email',
         'fergus_job_number', 'quote_number', 'job_comments', 'access_information',

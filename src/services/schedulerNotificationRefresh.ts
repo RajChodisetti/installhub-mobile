@@ -79,7 +79,7 @@ export function isInstallHubSchedulerNotificationData(
  */
 export function listenForInstallHubSchedulerNotifications(
   dependencies: SchedulerNotificationListenerDependencies,
-  requestRefresh: () => void,
+  requestRefresh: (notification: InstallHubSchedulerNotificationData) => void,
 ): () => void {
   let active = true;
   const handledRequestIds = new Set<string>();
@@ -88,10 +88,11 @@ export function listenForInstallHubSchedulerNotifications(
     if (!isInstallHubSchedulerNotificationData(notification.request.content.data)) {
       return false;
     }
+    const data = notification.request.content.data;
     const requestId = notification.request.identifier?.trim();
     if (requestId && handledRequestIds.has(requestId)) return true;
     if (requestId) handledRequestIds.add(requestId);
-    requestRefresh();
+    requestRefresh(data);
     return true;
   };
 

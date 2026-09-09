@@ -237,6 +237,7 @@ function assignedWorkJobSummaryFromPull(
     site_state: text(source, 'siteState', 'site_state'),
     site_postcode: text(source, 'sitePostcode', 'site_postcode'),
     audit_date: text(source, 'auditDate', 'audit_date'),
+    job_end_date: optionalText(source, 'jobEndDate', 'job_end_date'),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     maas: nullableBool(source, 'maas') ?? null,
     service_type: text(source, 'serviceType', 'service_type'),
@@ -752,6 +753,7 @@ export async function importRemoteInstallationAsCopy(
     ...installationAddressFields(importedAddress),
     inspector_name: text(source, 'inspectorName', 'inspector_name'),
     audit_date: text(source, 'auditDate', 'audit_date'),
+    job_end_date: optionalText(source, 'jobEndDate', 'job_end_date'),
     maas: nullableBool(source, 'maas'),
     service_type: optionalText(source, 'serviceType', 'service_type'),
     existing_device_id: optionalText(source, 'existingDeviceId', 'existing_device_id'),
@@ -1326,6 +1328,7 @@ export async function importRemoteInstallationAsCopy(
 export async function syncAssignedInstallations(
   actorUserId: string,
   cloudAuthority: CloudSessionAuthority,
+  installationId?: string,
 ): Promise<{ hydrated: number; activeAssigned: number; hidden: number }> {
   const authority = captureAssignedWorkMutationAuthority();
   const assertCurrentSession = () => {
@@ -1352,14 +1355,14 @@ export async function syncAssignedInstallations(
   }));
   const response = await apiClient.pull(
     '1970-01-01T00:00:00.000Z',
-    undefined,
+    installationId,
     cloudAuthority,
   );
   assertCurrentSession();
   const previouslyActiveIds = activeAssignedWorkCheckoutIds(
     getStore().installations,
     actorUserId,
-  );
+  ).filter((id) => !installationId || id === installationId);
   const plan = planAssignedInstallationPull(
     actorUserId,
     response.installations,

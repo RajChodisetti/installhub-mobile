@@ -391,6 +391,18 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
   if (auditDate?.trim() && !validCalendarDate(auditDate.trim())) {
     throw new Error('Cannot import canonical v2: installation audit date must be a real date in YYYY-MM-DD format when supplied.');
   }
+  const jobEndDate = optionalTextValue(
+    installation,
+    'jobEndDate',
+    'job_end_date',
+    'installation job end date',
+  );
+  if (jobEndDate?.trim() && !validCalendarDate(jobEndDate.trim())) {
+    throw new Error('Cannot import canonical v2: installation job end date must be a real date in YYYY-MM-DD format when supplied.');
+  }
+  if (jobEndDate?.trim() && auditDate?.trim() && jobEndDate.trim() < auditDate.trim()) {
+    throw new Error('Cannot import canonical v2: installation job end date cannot be before the audit date.');
+  }
   if (requiredInteger(installation, 'treeSchemaVersion', 'tree_schema_version', 'installation tree schema version') !== 2) {
     throw new Error('Cannot import canonical v2: installation tree schema version must be 2.');
   }

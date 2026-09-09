@@ -4,6 +4,7 @@ import {
   dashboardJobTiming,
   filterDashboardJobs,
   localDashboardSnapshot,
+  recentAssignedJobs,
   sortDashboardJobs,
 } from '../src/domain/jobDashboard';
 import type { AppDataStore, Installation } from '../src/types';
@@ -74,6 +75,29 @@ test('status and installer search combine while pending imports remain hidden', 
   assert.deepEqual(filterDashboardJobs(items, 'Casey', 'Completed').map((item) => item.id), ['completed']);
   assert.deepEqual(filterDashboardJobs(items, 'not found', 'Completed'), []);
   assert.equal(items.length, 4);
+});
+
+test('recent jobs returns only the four newest active assignments', () => {
+  const assigned = Array.from({ length: 6 }, (_, index) => installation(`assigned-${index}`, {
+    assigned_work_state: 'active',
+    assigned_work_job_summary: {
+      actor_user_id: 'actor', assigned_inspector_user_id: 'actor',
+      client_name: 'Client', site_name: `Assigned ${index}`, site_address: 'Address',
+      audit_date: '2026-09-10', inspector_name: 'Technician',
+      pulled_at: `2026-09-0${index + 1}T10:00:00.000Z`,
+    },
+  }));
+  const inactive = installation('inactive', {
+    assigned_work_state: 'inactive',
+    assigned_work_job_summary: assigned[0]!.assigned_work_job_summary,
+  });
+  const local = installation('local', { assigned_work_state: 'none' });
+
+  assert.deepEqual(
+    recentAssignedJobs([...assigned, inactive, local]).map((item) => item.id),
+    ['assigned-5', 'assigned-4', 'assigned-3', 'assigned-2'],
+  );
+  assert.throws(() => recentAssignedJobs(assigned, 0), /positive integer/);
 });
 
 test('job search matches partial tokens across titles, references, clients and addresses', () => {

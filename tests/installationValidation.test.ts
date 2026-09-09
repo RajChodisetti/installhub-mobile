@@ -63,6 +63,23 @@ test('installation identity validates a real audit date and IANA timezone', () =
   assert.equal(validIanaTimezone(''), false);
 });
 
+test('job end date is optional, real, and not before the scheduled date', () => {
+  const base = {
+    client_name: 'Client', site_name: 'Site', site_address: 'Address', inspector_name: 'Inspector',
+    site_code: 'SITE', audit_date: '2026-09-09', timezone: 'Australia/Sydney',
+  };
+  assert.deepEqual(validateInstallationIdentity({ ...base, job_end_date: null }), []);
+  assert.deepEqual(validateInstallationIdentity({
+    ...base, job_end_date: '2026-02-30',
+  }).map((error) => error.field), ['job_end_date']);
+  assert.deepEqual(validateInstallationIdentity({
+    ...base, job_end_date: '2026-09-08',
+  }).map((error) => error.field), ['job_end_date']);
+  assert.equal(installationIdentityForWrite({
+    ...base, job_end_date: ' 2026-09-11 ',
+  }).job_end_date, '2026-09-11');
+});
+
 test('installation short code is bounded for generated asset prefixes', () => {
   const base = {
     client_name: 'Client', site_name: 'Site', site_address: 'Address', inspector_name: 'Inspector',

@@ -2,13 +2,13 @@ import type { Installation } from '../types';
 import { normalizedSiteCode, isValidInstallationSiteCode } from './installationSiteCode';
 
 export interface InstallationFieldError {
-  field: 'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'timezone';
+  field: 'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'timezone';
   message: string;
 }
 
 type InstallationIdentity = Pick<
   Installation,
-  'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'timezone'
+  'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'timezone'
 >;
 
 /** Match portal defaults without changing an unchanged historical site code. */
@@ -28,6 +28,9 @@ export function installationIdentityForWrite<T extends InstallationIdentity>(
     site_address: values.site_address.trim(),
     inspector_name: values.inspector_name.trim(),
     audit_date: values.audit_date.trim() || today,
+    ...(Object.prototype.hasOwnProperty.call(values, 'job_end_date')
+      ? { job_end_date: values.job_end_date?.trim() || null }
+      : {}),
     timezone: values.timezone?.trim() || 'Australia/Sydney',
     site_code: preserveCode
       ? initial.site_code
@@ -58,6 +61,15 @@ export function validateInstallationIdentity(
   const errors: InstallationFieldError[] = [];
   if (installation.audit_date?.trim() && !validCalendarDate(installation.audit_date.trim())) {
     errors.push({ field: 'audit_date', message: 'Audit date must be a real date in YYYY-MM-DD format.' });
+  }
+  if (installation.job_end_date?.trim() && !validCalendarDate(installation.job_end_date.trim())) {
+    errors.push({ field: 'job_end_date', message: 'Job end date must be a real date in YYYY-MM-DD format.' });
+  } else if (
+    installation.job_end_date?.trim()
+    && installation.audit_date?.trim()
+    && installation.job_end_date.trim() < installation.audit_date.trim()
+  ) {
+    errors.push({ field: 'job_end_date', message: 'Job end date cannot be before the scheduled date.' });
   }
   if (
     installation.site_code?.trim()
