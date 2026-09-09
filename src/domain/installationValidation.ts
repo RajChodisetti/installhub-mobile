@@ -2,13 +2,13 @@ import type { Installation } from '../types';
 import { normalizedSiteCode, isValidInstallationSiteCode } from './installationSiteCode';
 
 export interface InstallationFieldError {
-  field: 'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'timezone';
+  field: 'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'job_end_time' | 'timezone';
   message: string;
 }
 
 type InstallationIdentity = Pick<
   Installation,
-  'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'timezone'
+  'client_name' | 'site_name' | 'site_code' | 'site_address' | 'inspector_name' | 'audit_date' | 'job_end_date' | 'job_end_time' | 'timezone'
 >;
 
 /** Match portal defaults without changing an unchanged historical site code. */
@@ -30,6 +30,9 @@ export function installationIdentityForWrite<T extends InstallationIdentity>(
     audit_date: values.audit_date.trim() || today,
     ...(Object.prototype.hasOwnProperty.call(values, 'job_end_date')
       ? { job_end_date: values.job_end_date?.trim() || null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(values, 'job_end_time')
+      ? { job_end_time: values.job_end_time?.trim() || null }
       : {}),
     timezone: values.timezone?.trim() || 'Australia/Sydney',
     site_code: preserveCode
@@ -70,6 +73,12 @@ export function validateInstallationIdentity(
     && installation.job_end_date.trim() < installation.audit_date.trim()
   ) {
     errors.push({ field: 'job_end_date', message: 'Job end date cannot be before the scheduled date.' });
+  }
+  if (
+    installation.job_end_time?.trim()
+    && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(installation.job_end_time.trim())
+  ) {
+    errors.push({ field: 'job_end_time', message: 'Job end time must use 24-hour HH:mm format.' });
   }
   if (
     installation.site_code?.trim()

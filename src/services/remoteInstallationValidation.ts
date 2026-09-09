@@ -403,6 +403,15 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
   if (jobEndDate?.trim() && auditDate?.trim() && jobEndDate.trim() < auditDate.trim()) {
     throw new Error('Cannot import canonical v2: installation job end date cannot be before the audit date.');
   }
+  const jobEndTime = optionalTextValue(
+    installation,
+    'jobEndTime',
+    'job_end_time',
+    'installation job end time',
+  );
+  if (jobEndTime?.trim() && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(jobEndTime.trim())) {
+    throw new Error('Cannot import canonical v2: installation job end time must use 24-hour HH:mm format when supplied.');
+  }
   if (requiredInteger(installation, 'treeSchemaVersion', 'tree_schema_version', 'installation tree schema version') !== 2) {
     throw new Error('Cannot import canonical v2: installation tree schema version must be 2.');
   }

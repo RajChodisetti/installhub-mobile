@@ -353,6 +353,7 @@ export function InstallationForm({
     | 'inspector_name'
     | 'audit_date'
     | 'job_end_date'
+    | 'job_end_time'
     | 'timezone'
     | 'maas'
     | 'service_type'
@@ -390,6 +391,7 @@ export function InstallationForm({
   const [inspector_name, setInspector] = useState(initial?.inspector_name ?? user?.full_name ?? user?.email ?? '');
   const [audit_date, setDate] = useState(initial?.audit_date ?? new Date().toISOString().slice(0, 10));
   const [job_end_date, setJobEndDate] = useState(initial?.job_end_date ?? '');
+  const [job_end_time, setJobEndTime] = useState(initial?.job_end_time ?? '');
   const [timezone, setTimezone] = useState(
     initial?.timezone ?? 'Australia/Sydney',
   );
@@ -654,6 +656,14 @@ export function InstallationForm({
         onChangeText={setJobEndDate}
       />
       <TextField
+        label="Job end time (optional, HH:mm)"
+        value={job_end_time}
+        error={errorFor('job_end_time')}
+        onChangeText={setJobEndTime}
+        keyboardType="numbers-and-punctuation"
+        placeholder="e.g. 17:30"
+      />
+      <TextField
         label="Installation timezone"
         accessibilityHint="Use an IANA timezone such as Australia/Sydney"
         value={timezone}
@@ -752,6 +762,7 @@ export function InstallationForm({
               inspector_name: inspector_name.trim(),
               audit_date: audit_date.trim(),
               job_end_date,
+              job_end_time,
               timezone: timezone.trim(),
               maas: nullableBoolean(maas),
               service_type: nullableText(service_type),

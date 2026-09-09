@@ -457,6 +457,7 @@ export interface AssignedWorkJobSummarySnapshot {
   site_postcode?: string;
   audit_date: string;
   job_end_date?: string | null;
+  job_end_time?: string | null;
   inspector_name: string;
   maas?: boolean | null;
   service_type?: string;
@@ -513,6 +514,7 @@ export interface AssignedWorkServerMetadataSnapshot {
   inspector_name: string;
   audit_date: string;
   job_end_date: string | null;
+  job_end_time: string | null;
   timezone: string | null;
   maas: boolean | null;
   service_type: string | null;
@@ -592,6 +594,8 @@ export interface Installation {
   audit_date: string;
   /** Optional planned job end date in YYYY-MM-DD format. */
   job_end_date?: string | null;
+  /** Optional planned local job end time in 24-hour HH:mm format. */
+  job_end_time?: string | null;
   status: InstallationStatus;
   /** Scheduler-provided job classification and site-access metadata. */
   maas?: boolean | null;

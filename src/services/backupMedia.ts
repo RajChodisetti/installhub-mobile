@@ -685,6 +685,7 @@ export function buildBackupPayload(
       inspectorName: tree.installation.inspector_name,
       auditDate: tree.installation.audit_date,
       jobEndDate: tree.installation.job_end_date ?? null,
+      jobEndTime: tree.installation.job_end_time ?? null,
       status: tree.installation.status,
       externalKey: tree.installation.external_key,
       siteCode: tree.installation.site_code,

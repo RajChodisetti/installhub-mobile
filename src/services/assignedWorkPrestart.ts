@@ -34,6 +34,8 @@ export function assignedWorkSummarySha256(
     siteState: summary.site_state ?? '',
     sitePostcode: summary.site_postcode ?? '',
     auditDate: summary.audit_date,
+    jobEndDate: summary.job_end_date ?? '',
+    jobEndTime: summary.job_end_time ?? '',
     technicianName: summary.inspector_name,
     maas: summary.maas ?? null,
     serviceType: summary.service_type ?? '',

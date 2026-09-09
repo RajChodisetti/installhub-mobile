@@ -93,6 +93,7 @@ const assignedWorkChangeLabels: Record<string, string> = {
   inspector_name: 'assigned technician',
   audit_date: 'scheduled date',
   job_end_date: 'job end date',
+  job_end_time: 'job end time',
   existing_device_id: 'existing device ID',
   job_comments: 'job comments',
   schedule_event_id: 'Scheduler assignment',
@@ -295,6 +296,9 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     ['Scheduled start', assignedJobSummary?.scheduled_start_at
       ? formatDateTime(assignedJobSummary.scheduled_start_at)
       : 'Not scheduled'],
+    ['Scheduled finish', assignedJobSummary?.scheduled_end_at
+      ? formatDateTime(assignedJobSummary.scheduled_end_at)
+      : assignedJobSummary?.job_end_time || 'Not recorded'],
     ['Deadline', assignedJobSummary?.deadline_at
       ? formatDateTime(assignedJobSummary.deadline_at)
       : 'Not recorded'],
@@ -353,6 +357,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
         ['Job Type', recordedValue(item.service_type)],
         ['Scheduled date', item.audit_date ? formatDate(item.audit_date) : 'Not recorded'],
         ['Job end date', item.job_end_date ? formatDate(item.job_end_date) : 'Not recorded'],
+        ['Job end time', item.job_end_time || 'Not recorded'],
         ['Technician', recordedValue(item.inspector_name)],
         ['Scheduled start', assignedJobSummary?.scheduled_start_at
           ? formatDateTime(assignedJobSummary.scheduled_start_at)

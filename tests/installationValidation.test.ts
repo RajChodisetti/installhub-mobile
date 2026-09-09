@@ -78,6 +78,15 @@ test('job end date is optional, real, and not before the scheduled date', () => 
   assert.equal(installationIdentityForWrite({
     ...base, job_end_date: ' 2026-09-11 ',
   }).job_end_date, '2026-09-11');
+  assert.deepEqual(validateInstallationIdentity({
+    ...base, job_end_time: '17:30',
+  }), []);
+  assert.deepEqual(validateInstallationIdentity({
+    ...base, job_end_time: '25:00',
+  }).map((error) => error.field), ['job_end_time']);
+  assert.equal(installationIdentityForWrite({
+    ...base, job_end_time: ' 17:30 ',
+  }).job_end_time, '17:30');
 });
 
 test('installation short code is bounded for generated asset prefixes', () => {

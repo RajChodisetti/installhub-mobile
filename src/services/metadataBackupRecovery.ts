@@ -86,7 +86,7 @@ const rootCaptureFields = [
   'customerName', 'maas', 'serviceType', 'meteringSolutionType', 'plannedMeterType', 'customJobNumber',
   'siteContactName', 'siteContactPhone', 'siteContactEmail', 'fergusJobNumber', 'quoteNumber',
   'jobComments', 'accessInformation', 'warrantyDevice', 'monitoringInstalled', 'hardwareInstalled',
-  'solarCapacityKw', 'additionalMonitoringRequired', 'additionalMonitoringHardware', 'inspectorName', 'auditDate', 'jobEndDate', 'siteCode',
+  'solarCapacityKw', 'additionalMonitoringRequired', 'additionalMonitoringHardware', 'inspectorName', 'auditDate', 'jobEndDate', 'jobEndTime', 'siteCode',
 ] as const;
 const entityFields = {
   gridSupplies: ['id', 'installationId', 'name', 'isDefault', 'nmi', 'externalKey'],
