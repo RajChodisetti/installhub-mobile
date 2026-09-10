@@ -153,6 +153,7 @@ export interface MeterDevice {
     extra?: string[];
   };
   photoNotes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
   notes?: string;
 }
 
@@ -379,8 +380,17 @@ export interface FormAttachment {
   uri: string;
   mime_type: string;
   caption?: string;
+  /** Uses the full available report width when true. */
+  largeInPdf?: boolean;
   captured_at: string;
 }
+
+export interface PhotoMetadata {
+  /** Uses the full available report width when true. */
+  largeInPdf?: boolean;
+}
+
+export type PhotoMetadataMap = Record<string, PhotoMetadata>;
 
 export interface FormSubmission {
   id: string;
@@ -700,6 +710,7 @@ export interface Zone {
   zone_description: string;
   photos: string[];
   photo_notes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
   created_at: string;
   updated_at: string;
 }
@@ -786,6 +797,7 @@ export interface Meter {
   ww_commissioning?: WattwatcherCommissioning;
   ww_photos?: WattwatcherPhotos;
   photo_notes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
 }
 
 export interface ElectricalAsset {
@@ -808,6 +820,7 @@ export interface ElectricalAsset {
   photo?: string;
   extra_photos?: string[];
   photo_notes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
   meter_present: boolean;
   meters: Meter[];
   sub_circuits_description?: string;
@@ -844,6 +857,7 @@ export interface SiteAsset {
   comments?: string;
   extra_photos?: string[];
   photo_notes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
   created_at: string;
   updated_at: string;
 }
@@ -872,6 +886,8 @@ export interface SiteAssetEditorDraftRecord {
     extraPhotos?: string[];
     /** Additive per-photo annotations keyed by the canonical upload field name. */
     photoNotes?: Record<string, string>;
+    /** Additive PDF layout choices keyed by the canonical upload field name. */
+    photoMetadata?: PhotoMetadataMap;
     sourceKey: string;
     sourceBoardSearch: string;
     meteringKind: 'METERED' | 'UNMETERED' | 'TBC';

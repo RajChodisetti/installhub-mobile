@@ -53,6 +53,7 @@ export async function addFormPhoto(
     slot,
     uri: destination.uri,
     mime_type: 'image/jpeg',
+    largeInPdf: false,
     captured_at: nowIso(),
   };
 }

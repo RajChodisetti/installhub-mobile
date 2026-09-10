@@ -129,7 +129,7 @@ test('production original-quality PDF reads same retained bytes through new cont
   assert.equal(uri, 'file:///cache/form-reports/form.pdf');
   assert.ok(h.reads.includes(currentPhoto)); assert.ok(!h.reads.includes(oldPhoto));
   assert.deepEqual(h.resized, []); assert.equal(h.printed.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(h.embedded[0])), { 'meter.face_photo': [{ uri: `data:image/jpeg;base64,${originalBytes.toString('base64')}`, caption: 'Original caption' }] });
+  assert.deepEqual(JSON.parse(JSON.stringify(h.embedded[0])), { 'meter.face_photo': [{ uri: `data:image/jpeg;base64,${originalBytes.toString('base64')}`, caption: 'Original caption', largeInPdf: false }] });
   assert.equal(JSON.stringify(submission), before);
   assert.deepEqual(h.files.get(currentPhoto), originalBytes); assert.ok(!h.deleted.includes(currentPhoto));
 });

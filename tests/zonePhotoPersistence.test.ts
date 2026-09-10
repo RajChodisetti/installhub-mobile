@@ -32,11 +32,18 @@ for (const failure of ['picker', 'save', 'refresh', 'none'] as const) {
     }).outputText;
     vm.runInNewContext(code, {
       exports, Error,
-      zone: { photos: ['file:///old-photo.jpg'] }, zoneId: 'qa-zone',
+      zone: { photos: ['file:///old-photo.jpg'], photoMetadata: undefined }, zoneId: 'qa-zone',
       pickLocalPhoto: picker, takeLocalPhoto: picker,
-      zonesRepo: { update: async (_id: string, values: { photos: string[] }) => {
+      setPhotoLargeInPdf: (_metadata: unknown, fieldName: string, largeInPdf: boolean) => ({
+        [fieldName]: { largeInPdf },
+      }),
+      zonesRepo: { update: async (_id: string, values: { photos: string[]; photoMetadata: Record<string, { largeInPdf: boolean }> }) => {
         if (failure === 'save') throw new Error('Save denied');
         assert.equal(values.photos.join(','), 'file:///old-photo.jpg,file:///new-photo.jpg');
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(values.photoMetadata)),
+          { 'photos[1]': { largeInPdf: false } },
+        );
         persisted = true;
       } },
       refresh: async () => { if (failure === 'refresh') throw new Error('Refresh unavailable'); },

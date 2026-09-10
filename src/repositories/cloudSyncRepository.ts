@@ -757,6 +757,18 @@ function queueIdentity(reference: BackupMediaReference): string {
   ].join('|');
 }
 
+function stableQueueIdentity(reference: Pick<
+  BackupMediaReference,
+  'installation_id' | 'entity_type' | 'entity_id' | 'local_uri'
+>): string {
+  return [
+    reference.installation_id,
+    reference.entity_type,
+    reference.entity_id,
+    reference.local_uri,
+  ].join('|');
+}
+
 function queueStatusRank(status: CloudUploadQueueItem['status']): number {
   if (status === 'cleared') return 4;
   if (status === 'uploading') return 3;
@@ -767,7 +779,9 @@ function queueStatusRank(status: CloudUploadQueueItem['status']): number {
 /**
  * Rebuilds one installation's queue from the media identities that are still
  * referenced by its current local tree. Exact matches keep their upload state;
- * removed/replaced files (including failed and cleared rows) are discarded.
+ * a unique same-entity/local-URI match is rebound when an array delete changes
+ * only the field index. Removed/replaced files and ambiguous duplicates are
+ * discarded rather than inheriting another photo's upload result.
  */
 export function reconciledBackupMediaQueue(
   queue: CloudUploadQueueItem[],
@@ -782,24 +796,53 @@ export function reconciledBackupMediaQueue(
 
   const desired = new Map<string, BackupMediaReference>();
   const desiredIdentityByAlias = new Map<string, string>();
+  const desiredIdentitiesByStableMedia = new Map<string, Set<string>>();
+  const addStableCandidate = (
+    reference: BackupMediaReference,
+    identity: string,
+  ) => {
+    const stableIdentity = stableQueueIdentity(reference);
+    const identities = desiredIdentitiesByStableMedia.get(stableIdentity) ?? new Set<string>();
+    identities.add(identity);
+    desiredIdentitiesByStableMedia.set(stableIdentity, identities);
+  };
   for (const reference of references) {
     const identity = queueIdentity(reference);
     desired.set(identity, reference);
+    addStableCandidate(reference, identity);
     for (const alias of reference.legacy_aliases ?? []) {
-      desiredIdentityByAlias.set(queueIdentity({
+      const aliased = {
         ...reference,
         ...alias,
-      }), identity);
+      };
+      desiredIdentityByAlias.set(queueIdentity(aliased), identity);
+      addStableCandidate(aliased, identity);
     }
   }
 
   const bestCurrent = new Map<string, CloudUploadQueueItem>();
+  const currentIdentitiesByStableMedia = new Map<string, Set<string>>();
+  for (const item of queue) {
+    if (item.installation_id !== installationId) continue;
+    const stableIdentity = stableQueueIdentity(item);
+    const identities = currentIdentitiesByStableMedia.get(stableIdentity) ?? new Set<string>();
+    identities.add(queueIdentity(item));
+    currentIdentitiesByStableMedia.set(stableIdentity, identities);
+  }
   for (const item of queue) {
     if (item.installation_id !== installationId) continue;
     const rawIdentity = queueIdentity(item);
-    const identity = desired.has(rawIdentity)
+    let identity = desired.has(rawIdentity)
       ? rawIdentity
       : desiredIdentityByAlias.get(rawIdentity);
+    if (!identity) {
+      const stableIdentity = stableQueueIdentity(item);
+      const stableCandidates = desiredIdentitiesByStableMedia.get(stableIdentity);
+      const currentIdentities = currentIdentitiesByStableMedia.get(stableIdentity);
+      if (stableCandidates?.size === 1 && currentIdentities?.size === 1) {
+        identity = [...stableCandidates][0];
+      }
+    }
     if (!identity) continue;
     const current = bestCurrent.get(identity);
     if (!current || queueStatusRank(item.status) > queueStatusRank(current.status)) {

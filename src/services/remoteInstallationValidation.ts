@@ -125,6 +125,25 @@ function hasDeclaredProperty(
     Boolean(snake && Object.prototype.hasOwnProperty.call(record, snake));
 }
 
+function validatePhotoMetadata(
+  record: Record<string, unknown>,
+  label: string,
+): void {
+  const value = property(record, 'photoMetadata', 'photo_metadata');
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Cannot import canonical v2: ${label} photo metadata must be an object.`);
+  }
+  for (const [key, metadata] of Object.entries(value as Record<string, unknown>)) {
+    if (!key.trim() || !metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new Error(`Cannot import canonical v2: ${label} photo metadata entry is invalid.`);
+    }
+    if (typeof (metadata as Record<string, unknown>).largeInPdf !== 'boolean') {
+      throw new Error(`Cannot import canonical v2: ${label} photo metadata ${key} must declare largeInPdf as boolean.`);
+    }
+  }
+}
+
 function requiredText(
   record: Record<string, unknown>,
   camel: string,
@@ -487,6 +506,7 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
     requiredText(zone, 'zoneName', 'zone_name', `zone ${zoneId} name`);
     requiredText(zone, 'zoneDescription', 'zone_description', `zone ${zoneId} description`, true);
     requiredStringList(zone, 'photos', undefined, `zone ${zoneId} photos`);
+    validatePhotoMetadata(zone, `zone ${zoneId}`);
     const zoneCode = optionalText(zone, 'zoneCode', 'zone_code');
     if (zoneCode) {
       if (!isValidZoneCode(zoneCode)) {
@@ -505,6 +525,7 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
   for (const meter of meterDevices) {
     const meterId = text(meter, 'id');
     validateInstallationOwnership(meter, installationId, `meter ${meterId}`);
+    validatePhotoMetadata(meter, `meter ${meterId}`);
     const deviceFamily = exactEnum(
       meter,
       'deviceFamily',
@@ -717,6 +738,7 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
     }
     validateDisplayCode(board, 'displayCode', 'display_code', `board ${id} display code`);
     requiredStringList(board, 'extraPhotos', 'extra_photos', `board ${id} extra photos`);
+    validatePhotoMetadata(board, `board ${id}`);
     requiredBoolean(board, 'meterPresent', 'meter_present', `board ${id} meter-present flag`);
     const zoneId = requiredText(board, 'zoneId', 'zone_id', `board ${id} zone ID`);
     if (!zoneIds.has(zoneId)) {
@@ -774,6 +796,7 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
     }
     validateDisplayCode(asset, 'displayCode', 'display_code', `site asset ${id} display code`);
     requiredStringList(asset, 'extraPhotos', 'extra_photos', `site asset ${id} extra photos`);
+    validatePhotoMetadata(asset, `site asset ${id}`);
     requiredBoolean(asset, 'meterPresent', 'meter_present', `site asset ${id} meter-present flag`);
     const zoneId = requiredText(asset, 'zoneId', 'zone_id', `site asset ${id} zone ID`);
     if (!zoneIds.has(zoneId)) {
@@ -1172,6 +1195,10 @@ export function validateCanonicalRemoteTreeIds(tree: RemoteInstallationTree): vo
       }
       if (attachment.caption != null && typeof attachment.caption !== 'string') {
         throw new Error(`Cannot import canonical v2: attachment ${attachmentId} caption is invalid.`);
+      }
+      const largeInPdf = property(attachment, 'largeInPdf', 'large_in_pdf');
+      if (largeInPdf !== undefined && typeof largeInPdf !== 'boolean') {
+        throw new Error(`Cannot import canonical v2: attachment ${attachmentId} large-in-PDF choice is invalid.`);
       }
     }
   }

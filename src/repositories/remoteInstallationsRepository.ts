@@ -52,6 +52,8 @@ import {
   siteAssetTypeCode,
 } from '../domain/installationV2';
 import { defaultMeterCustomName } from '../domain/namingV2';
+import { optionalPhotoMetadataMap } from '../domain/photoMetadata';
+import { reconcileThumbnailDownloadsForInstallation } from '../services/thumbnailWorkerPolicy';
 import {
   installationAddressFields,
   normalizeAustralianAddress,
@@ -459,6 +461,8 @@ function mapMeter(record: Record<string, unknown>, id: string): Meter {
       labeling: optionalText(photos, 'labeling'),
       extra: array<string>(photos, 'extra'),
     },
+    photo_notes: stringRecord(record, 'photoNotes', 'photo_notes'),
+    photoMetadata: optionalPhotoMetadataMap(record.photoMetadata ?? record.photo_metadata),
   };
 }
 
@@ -846,8 +850,8 @@ export async function importRemoteInstallationAsCopy(
           copy_index: copyIndex,
         }
       : {}),
-    thumbnail_status: !isAssignedMaterialization && photoUris.length ? 'pending' : 'ready',
-    thumbnail_total: isAssignedMaterialization ? 0 : photoUris.length,
+    thumbnail_status: photoUris.length ? 'pending' : 'ready',
+    thumbnail_total: photoUris.length,
     thumbnail_ready: 0,
     created_at: isAssignedMaterialization
       ? optionalText(source, 'createdAt', 'created_at') ?? now
@@ -872,6 +876,7 @@ export async function importRemoteInstallationAsCopy(
     zone_description: text(zone, 'zoneDescription', 'zone_description'),
     photos: array<string>(zone, 'photos'),
     photo_notes: stringRecord(zone, 'photoNotes', 'photo_notes'),
+    photoMetadata: optionalPhotoMetadataMap(zone.photoMetadata ?? zone.photo_metadata),
     created_at: now,
     updated_at: now,
   }));
@@ -926,6 +931,7 @@ export async function importRemoteInstallationAsCopy(
     photo: optionalText(board, 'photo'),
     extra_photos: array<string>(board, 'extraPhotos', 'extra_photos'),
     photo_notes: stringRecord(board, 'photoNotes', 'photo_notes'),
+    photoMetadata: optionalPhotoMetadataMap(board.photoMetadata ?? board.photo_metadata),
     meter_present: canonicalV2
       ? (tree.meterDevices ?? []).some(
           (meter) => text(meter, 'installedOnBoardId', 'installed_on_board_id') === text(board, 'id'),
@@ -1017,6 +1023,7 @@ export async function importRemoteInstallationAsCopy(
     comments: optionalText(asset, 'comments'),
     extra_photos: array<string>(asset, 'extraPhotos', 'extra_photos'),
     photo_notes: stringRecord(asset, 'photoNotes', 'photo_notes'),
+    photoMetadata: optionalPhotoMetadataMap(asset.photoMetadata ?? asset.photo_metadata),
     created_at: now,
     updated_at: now,
     };
@@ -1146,6 +1153,7 @@ export async function importRemoteInstallationAsCopy(
           }
         : undefined,
       photoNotes: stringRecord(meter, 'photoNotes', 'photo_notes'),
+      photoMetadata: optionalPhotoMetadataMap(meter.photoMetadata ?? meter.photo_metadata),
       notes: optionalText(meter, 'notes'),
     };
   });
@@ -1214,6 +1222,11 @@ export async function importRemoteInstallationAsCopy(
         ? text(attachment, 'mimeType', 'mime_type')
         : text(attachment, 'mimeType', 'mime_type') || 'image/jpeg',
       caption: optionalText(attachment, 'caption'),
+      largeInPdf: (
+        attachment.largeInPdf !== undefined
+          ? attachment.largeInPdf
+          : attachment.large_in_pdf
+      ) === true,
       captured_at: canonicalV2
         ? text(attachment, 'capturedAt', 'captured_at')
         : text(attachment, 'capturedAt', 'captured_at') || now,
@@ -1272,6 +1285,13 @@ export async function importRemoteInstallationAsCopy(
           installation, gridSupplies, zones, electricalAssets, siteAssets,
           meterDevices, measurementAssignments, formSubmissions, watermark: now,
         }, options.cleanRefreshBaseline, response.pulledAt);
+        reconcileThumbnailDownloadsForInstallation(
+          store,
+          installationId,
+          photoUris,
+          now,
+          () => createId('thumb'),
+        );
         return;
       }
       if (
@@ -1301,8 +1321,15 @@ export async function importRemoteInstallationAsCopy(
       store.cloudSync.force_dirty_installation_ids = store.cloudSync.force_dirty_installation_ids
         .filter((id) => id !== installationId);
     }
+    reconcileThumbnailDownloadsForInstallation(
+      store,
+      installationId,
+      photoUris,
+      now,
+      () => createId('thumb'),
+    );
   });
-  if (!isAssignedMaterialization) {
+  if (photoUris.length) {
     assertAssignedMaterializationSession();
     const thumbnailWorkerLease = bindAuthenticatedCloudActionLease(
       materializationActorUserId!,

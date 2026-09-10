@@ -397,6 +397,7 @@ export function meterDeviceFromLegacy(
         }
       : undefined,
     photoNotes: meter.photo_notes,
+    photoMetadata: meter.photoMetadata,
     notes: meter.notes ?? meter.ww_switchboard?.notes ?? meter.ww_commissioning?.notes,
   };
 }
@@ -480,6 +481,7 @@ function legacyMeterFromCanonical(device: MeterDevice, existing?: Meter): Meter 
         }
       : undefined,
     photo_notes: device.photoNotes,
+    photoMetadata: device.photoMetadata,
     ww_switchboard: {
       ...(existing?.ww_switchboard ?? {}),
       ...(commissioning?.switchboard ? {

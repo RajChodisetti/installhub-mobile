@@ -156,9 +156,10 @@ export function RemoteInstallationsScreen({ navigation }: Props) {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Text style={[styles.intro, { color: colors.mutedForeground }]}>
-        Backups you own or that are assigned to you appear here. Import always
-        creates the next local cpN copy; original images stay in Cloud Backup
-        and only small previews are cached.
+        Existing jobs and site backups you can access appear here. Downloading
+        creates the next editable local cpN copy with the complete site record,
+        forms, and photo references. Original images stay in Cloud Backup and
+        secure 400 px previews are cached on this device.
       </Text>
       <SearchBar
         value={query}
@@ -218,7 +219,7 @@ export function RemoteInstallationsScreen({ navigation }: Props) {
               </Text>
             ) : null}
             <Button
-              title={importingId === item.id ? 'Preparing copy…' : 'Import next copy'}
+              title={importingId === item.id ? 'Downloading site copy…' : 'Download next site copy'}
               disabled={actionBusy}
               style={{ marginTop: spacing.md }}
               onPress={() => confirmImport(item)}

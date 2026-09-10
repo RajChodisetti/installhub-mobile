@@ -432,10 +432,28 @@ test('assigned materialization quarantines a different owner inside the insert t
   );
   const transaction = source.slice(
     source.indexOf('  await updateStore((store) => {', source.indexOf('export async function importRemoteInstallationAsCopy')),
-    source.indexOf('  if (!isAssignedMaterialization)', source.indexOf('export async function importRemoteInstallationAsCopy')),
+    source.indexOf('  if (photoUris.length)', source.indexOf('export async function importRemoteInstallationAsCopy')),
   );
   assert.match(
     transaction,
     /assignedWorkCheckoutBelongsToDifferentActor[\s\S]*quarantineAssignedWorkCheckout[\s\S]*store\.installations\.unshift\(installation\)/,
   );
+});
+
+test('assigned jobs and cpN copies both queue authenticated photo previews', () => {
+  const source = readFileSync(
+    new URL('../src/repositories/remoteInstallationsRepository.ts', import.meta.url),
+    'utf8',
+  );
+  const materialization = source.slice(
+    source.indexOf('export async function importRemoteInstallationAsCopy'),
+    source.indexOf('export async function syncAssignedInstallations'),
+  );
+  assert.match(materialization, /thumbnail_status: photoUris\.length \? 'pending' : 'ready'/);
+  assert.match(materialization, /thumbnail_total: photoUris\.length/);
+  assert.match(
+    materialization,
+    /if \(photoUris\.length\)[\s\S]*enqueueThumbnailDownloads\([\s\S]*runThumbnailDownloadWorker/,
+  );
+  assert.doesNotMatch(materialization, /if \(!isAssignedMaterialization\)[\s\S]*enqueueThumbnailDownloads/);
 });

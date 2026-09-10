@@ -1,5 +1,6 @@
 import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { PDFDocument } from 'pdf-lib';
@@ -10,8 +11,19 @@ import type {
   VirtualMeterDefinition,
 } from '../types';
 import { buildElectricalDiagramModel } from '../domain/electricalDiagram';
+import {
+  collectClientReportPhotos,
+  type ClientReportPhoto,
+} from '../domain/clientReport';
 import { deriveVirtualMetersFromEntities } from '../domain/installationV2';
-import { createFormPdf } from './formReport';
+import {
+  FORM_PDF_TIERS,
+  FormPdfGenerationError,
+  MissingLocalFormEvidenceError,
+  RemoteFormEvidenceError,
+  createFormPdf,
+} from './formReport';
+import { resolveOwnedMediaUri } from './ownedMediaPaths';
 import { FORM_REPORT_THEME as theme } from './formReportTheme';
 import {
   buildElectricalMapReportHtml,
@@ -25,6 +37,7 @@ import {
 import { buildCompletionNotesSummaryHtml } from './installationReportNotes';
 
 const MIN_VALID_PDF_BYTES = 5 * 1024;
+const MAX_PDF_HTML_BYTES = 120 * 1024 * 1024;
 
 export interface InstallationPackReportInput {
   /** One repository snapshot captured when the user starts generation. */
@@ -142,6 +155,14 @@ function installationReportModel(tree: InstallationBackupTree) {
   });
 }
 
+export function installationEntityEvidencePhotos(
+  tree: InstallationBackupTree,
+): ClientReportPhoto[] {
+  return collectClientReportPhotos(tree).filter(
+    (photo) => !photo.key.startsWith('form:'),
+  );
+}
+
 export function installationReportWeight(
   tree: InstallationBackupTree,
   selectedFormIds?: string[],
@@ -149,13 +170,18 @@ export function installationReportWeight(
   const forms = selectInstallationReportForms(tree, selectedFormIds);
   const model = installationReportModel(tree);
   const attachments = forms.flatMap((form) => form.attachments);
-  const remoteAttachmentCount = attachments.filter((attachment) =>
-    /^https?:\/\//i.test(attachment.uri),
-  ).length;
+  const entityPhotos = installationEntityEvidencePhotos(tree);
+  const evidenceCount = attachments.length + entityPhotos.length;
+  const largeEvidenceCount = attachments.filter((attachment) => attachment.largeInPdf).length
+    + entityPhotos.filter((photo) => photo.largeInPdf).length;
+  const remoteAttachmentCount = [
+    ...attachments.map((attachment) => attachment.uri),
+    ...entityPhotos.map((photo) => photo.uri),
+  ].filter((uri) => /^https?:\/\//i.test(uri)).length;
   const estimatedPages = Math.max(
     4,
     3 + Math.ceil(model.nodes.length / 16) + forms.length * 2 +
-      Math.ceil(attachments.length / 4),
+      largeEvidenceCount + Math.ceil((evidenceCount - largeEvidenceCount) / 4),
   );
   const reasons: string[] = [];
   let path: InstallationReportGenerationPath = 'DEVICE';
@@ -168,7 +194,7 @@ export function installationReportWeight(
   } else {
     if (model.nodes.length >= 70) reasons.push('the electrical map has many symbols');
     if (forms.length >= 10) reasons.push('many completed forms are selected');
-    if (attachments.length >= 40) reasons.push('the selected forms contain many images');
+    if (evidenceCount >= 40) reasons.push('the installation contains many evidence images');
     if (estimatedPages >= 35) reasons.push('the estimated report is long');
     if (reasons.length) path = 'API_RECOMMENDED';
   }
@@ -176,7 +202,7 @@ export function installationReportWeight(
   return {
     nodeCount: model.nodes.length,
     formCount: forms.length,
-    attachmentCount: attachments.length,
+    attachmentCount: evidenceCount,
     remoteAttachmentCount,
     estimatedPages,
     path,
@@ -184,11 +210,64 @@ export function installationReportWeight(
   };
 }
 
+function evidenceSource(
+  photo: ClientReportPhoto,
+  images: Record<string, string>,
+): string {
+  const source = images[photo.key];
+  if (!source || !/^data:image\/(jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(source)) {
+    throw new Error(`Installation evidence is unavailable for ${photo.label}.`);
+  }
+  return source;
+}
+
+function compactEvidenceGrid(
+  photos: ClientReportPhoto[],
+  images: Record<string, string>,
+): string {
+  const columns = photos.length <= 2 ? 2 : 3;
+  const rows: string[] = [];
+  for (let index = 0; index < photos.length; index += columns) {
+    const cells = photos.slice(index, index + columns).map((photo) => (
+      `<figure class="evidence-photo"><img src="${evidenceSource(photo, images)}" alt="${escapeHtml(photo.label)}"/><figcaption>${escapeHtml(photo.label)}</figcaption></figure>`
+    ));
+    while (cells.length < columns) cells.push('<figure class="evidence-photo evidence-empty"></figure>');
+    rows.push(`<div class="evidence-row">${cells.join('')}</div>`);
+  }
+  return `<div class="evidence-grid evidence-cols-${columns}">${rows.join('')}</div>`;
+}
+
+function installationEvidenceHtml(
+  photos: ClientReportPhoto[],
+  images: Record<string, string>,
+): string {
+  if (!photos.length) {
+    return '<section class="report-section"><h2>Photographic evidence</h2><p>No zone, switchboard, meter, or site-asset evidence was recorded.</p></section>';
+  }
+  let content = '';
+  let compact: ClientReportPhoto[] = [];
+  const flushCompact = () => {
+    if (!compact.length) return;
+    content += compactEvidenceGrid(compact, images);
+    compact = [];
+  };
+  for (const photo of photos) {
+    if (photo.largeInPdf) {
+      flushCompact();
+      content += `<figure class="evidence-large"><img src="${evidenceSource(photo, images)}" alt="${escapeHtml(photo.label)}"/><figcaption>${escapeHtml(photo.label)}</figcaption></figure>`;
+    } else compact.push(photo);
+  }
+  flushCompact();
+  return `<section class="report-section evidence-section"><h2>Photographic evidence</h2><p>${photos.length} zone, switchboard, meter and site-asset photo${photos.length === 1 ? '' : 's'}.</p>${content}</section>`;
+}
+
 export function buildInstallationSummaryHtml(input: {
   tree: InstallationBackupTree;
   completedForms: FormSubmission[];
   detailMode: InstallationReportDetailMode;
   brandLogoDataUri: string;
+  evidencePhotos?: ClientReportPhoto[];
+  evidenceImages?: Record<string, string>;
 }): string {
   const { tree, completedForms, detailMode } = input;
   const { installation } = tree;
@@ -200,6 +279,12 @@ export function buildInstallationSummaryHtml(input: {
   const completionNotesSection = buildCompletionNotesSummaryHtml(
     installation.status === 'Completed' ? installation.completion_notes : null,
   );
+  const evidenceSection = input.evidenceImages
+    ? installationEvidenceHtml(
+        input.evidencePhotos ?? installationEntityEvidencePhotos(tree),
+        input.evidenceImages,
+      )
+    : '';
   const formRows = completedForms.length
     ? completedForms
         .map(
@@ -245,6 +330,16 @@ export function buildInstallationSummaryHtml(input: {
     th, td { border: 1px solid ${theme.border}; padding: 6px 8px; text-align: left; vertical-align: top; }
     th { color: ${theme.slate}; background: ${theme.surfaceMuted}; font-size: 7pt; text-transform: uppercase; letter-spacing: .04em; }
     tr { break-inside: avoid; }
+    .evidence-grid { display: table; width: 100%; border-collapse: separate; border-spacing: 7px; table-layout: fixed; }
+    .evidence-row { display: table-row; }
+    .evidence-photo { display: table-cell; padding: 5px; margin: 0; border: 1px solid #CBD5E1; border-radius: 5px; vertical-align: top; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+    .evidence-cols-2 .evidence-photo { width: 50%; }
+    .evidence-cols-3 .evidence-photo { width: 33.333%; }
+    .evidence-photo img { display: block; width: 100%; height: auto; max-height: 172px; object-fit: contain; }
+    .evidence-empty { border-color: transparent; }
+    .evidence-large { width: 100%; margin: 8px 0; padding: 5px; border: 1px solid #CBD5E1; border-radius: 5px; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+    .evidence-large img { display: block; width: 100%; height: auto; max-height: 370px; object-fit: contain; }
+    .evidence-photo figcaption, .evidence-large figcaption { color: ${theme.slate}; font-size: 7.5pt; line-height: 1.35; margin-top: 5px; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; }
     .forms-index { break-before: page; page-break-before: always; }
     ${ELECTRICAL_MAP_REPORT_CSS}
   </style>
@@ -282,6 +377,7 @@ export function buildInstallationSummaryHtml(input: {
   </div>
   ${completionNotesSection}
   ${electricalMap}
+  ${evidenceSection}
   <section class="forms-index">
     <h2>Completed form appendices</h2>
     <p>The selected completed forms follow this installation and electrical-map section in the order shown.</p>
@@ -296,8 +392,14 @@ async function summaryPdf(input: {
   completedForms: FormSubmission[];
   detailMode: InstallationReportDetailMode;
   brandLogoDataUri: string;
-}): Promise<File> {
-  const html = buildInstallationSummaryHtml(input);
+}, qualityTier: number): Promise<File> {
+  const evidencePhotos = installationEntityEvidencePhotos(input.tree);
+  const evidenceImages = await embedInstallationEvidence(evidencePhotos, qualityTier);
+  const html = buildInstallationSummaryHtml({
+    ...input,
+    evidencePhotos,
+    evidenceImages,
+  });
   const rendered = new File((await Print.printToFileAsync({
     html,
     width: A4_PRINT_WIDTH,
@@ -307,6 +409,62 @@ async function summaryPdf(input: {
     throw new Error('The device created an empty installation summary PDF.');
   }
   return rendered;
+}
+
+async function embedInstallationEvidence(
+  photos: ClientReportPhoto[],
+  qualityTier: number,
+): Promise<Record<string, string>> {
+  const tier = FORM_PDF_TIERS[qualityTier] ?? FORM_PDF_TIERS[0];
+  const images: Record<string, string> = {};
+  let encodedBytes = 0;
+  for (const photo of photos) {
+    if (/^https?:\/\//i.test(photo.uri)) {
+      throw new RemoteFormEvidenceError(
+        'This installation uses cloud evidence. Generate it on the API server to use the original images.',
+      );
+    }
+    const localUri = resolveOwnedMediaUri(photo.uri);
+    const original = new File(localUri);
+    if (!original.exists) {
+      throw new MissingLocalFormEvidenceError(
+        `Original evidence is unavailable on this device for ${photo.label}. The photo has been kept unchanged.`,
+      );
+    }
+    const reportedMime = String(original.type ?? '').toLowerCase();
+    const extension = original.extension.toLowerCase();
+    const originalMime = /^(image\/jpeg|image\/png|image\/webp)$/.test(reportedMime)
+      ? reportedMime
+      : extension === '.png'
+        ? 'image/png'
+        : extension === '.webp'
+          ? 'image/webp'
+          : extension === '.jpg' || extension === '.jpeg'
+            ? 'image/jpeg'
+            : null;
+    let source = original;
+    let generated: File | null = null;
+    if (qualityTier > 0 || !originalMime) {
+      const processed = await manipulateAsync(
+        localUri,
+        [{ resize: { width: tier.width } }],
+        { compress: tier.quality, format: SaveFormat.JPEG },
+      );
+      generated = new File(processed.uri);
+      source = generated;
+    }
+    const base64 = await source.base64();
+    if (generated?.exists) generated.delete();
+    encodedBytes += base64.length;
+    if (encodedBytes > MAX_PDF_HTML_BYTES) {
+      throw new FormPdfGenerationError(
+        'The installation evidence is too large to render safely on this device.',
+        qualityTier + 1 < FORM_PDF_TIERS.length ? qualityTier + 1 : null,
+      );
+    }
+    images[photo.key] = `data:${generated ? 'image/jpeg' : originalMime};base64,${base64}`;
+  }
+  return images;
 }
 
 export async function createInstallationPackPdf(
@@ -324,7 +482,7 @@ export async function createInstallationPackPdf(
     completedForms,
     detailMode: input.detailMode,
     brandLogoDataUri: await brandLogoDataUri(),
-  });
+  }, qualityTier);
   const sourceFiles: File[] = [summary];
   for (let index = 0; index < completedForms.length; index += 1) {
     onProgress(`Rendering form ${index + 1} of ${completedForms.length}…`);

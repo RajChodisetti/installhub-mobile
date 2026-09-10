@@ -14,6 +14,7 @@ import type {
   MeterChannelPurpose,
   MeterDevice,
   MeterDeviceType,
+  PhotoMetadataMap,
   SiteAsset,
   SiteAssetTypeCode,
   WattwatcherChannel,
@@ -103,6 +104,12 @@ import {
   removeIndexedPhotoNote,
   setPhotoNote,
 } from '../../domain/photoNotes';
+import {
+  photoIsLargeInPdf,
+  removePhotoMetadata,
+  removeIndexedPhotoMetadata,
+  setPhotoLargeInPdf,
+} from '../../domain/photoMetadata';
 import {
   deleteRemovedLocalPhotos,
   pickLocalPhoto,
@@ -225,15 +232,23 @@ function PhotoAttachmentField({
   label,
   uris,
   photoNotes,
+  photoMetadata,
   noteField,
   onChange,
+  onAddAnother,
   single = false,
 }: {
   label: string;
   uris: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: PhotoMetadataMap;
   noteField: string;
-  onChange: (uris: string[], photoNotes: Record<string, string>) => void;
+  onChange: (
+    uris: string[],
+    photoNotes: Record<string, string>,
+    photoMetadata: PhotoMetadataMap,
+  ) => void;
+  onAddAnother?: (uri: string) => void;
   single?: boolean;
 }) {
   const { colors } = useTheme();
@@ -243,7 +258,17 @@ function PhotoAttachmentField({
     setPhotoBusy(true);
     try {
       const uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
-      if (uri) onChange(single ? [uri] : [...uris, uri], photoNotes ?? {});
+      if (!uri) return;
+      if (single && uris.length && onAddAnother) {
+        onAddAnother(uri);
+      } else {
+        const nextFieldName = single ? noteField : `${noteField}[${uris.length}]`;
+        onChange(
+          single ? [uri] : [...uris, uri],
+          photoNotes ?? {},
+          setPhotoLargeInPdf(photoMetadata, nextFieldName, false),
+        );
+      }
     } catch (error) {
       Alert.alert(
         'Photo not added',
@@ -252,6 +277,14 @@ function PhotoAttachmentField({
     } finally {
       setPhotoBusy(false);
     }
+  };
+
+  const choosePhotoSource = () => {
+    Alert.alert('Add photo', 'Choose a source.', [
+      { text: 'Camera', onPress: () => { void addPhoto('camera'); } },
+      { text: 'Photo Library', onPress: () => { void addPhoto('library'); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const confirmRemove = (uri: string, index: number) => {
@@ -264,7 +297,14 @@ function PhotoAttachmentField({
           const nextNotes = single
             ? setPhotoNote(photoNotes, noteField, '')
             : removeIndexedPhotoNote(photoNotes, noteField, index);
-          onChange(single ? [] : uris.filter((_, itemIndex) => itemIndex !== index), nextNotes);
+          const nextMetadata = single
+            ? removePhotoMetadata(photoMetadata, noteField)
+            : removeIndexedPhotoMetadata(photoMetadata, noteField, index);
+          onChange(
+            single ? [] : uris.filter((_, itemIndex) => itemIndex !== index),
+            nextNotes,
+            nextMetadata,
+          );
         },
       },
     ]);
@@ -281,14 +321,72 @@ function PhotoAttachmentField({
           {uris.map((uri, index) => {
             const fieldName = single ? noteField : `${noteField}[${index}]`;
             return (
-              <TextArea
-                key={`${uri}:${index}:note`}
-                label={`${label} ${index + 1} title / notes / comments`}
-                value={photoNote(photoNotes, fieldName)}
-                maxLength={PHOTO_NOTE_MAX_LENGTH}
-                placeholder="Add context for this photo"
-                onChangeText={(value) => onChange(uris, setPhotoNote(photoNotes, fieldName, value))}
-              />
+              <React.Fragment key={`${uri}:${index}`}>
+                <TextArea
+                  label={`${label} ${index + 1} title / notes / comments`}
+                  value={photoNote(photoNotes, fieldName)}
+                  maxLength={PHOTO_NOTE_MAX_LENGTH}
+                  placeholder="Add context for this photo"
+                  onChangeText={(value) => onChange(
+                    uris,
+                    setPhotoNote(photoNotes, fieldName, value),
+                    photoMetadata ?? {},
+                  )}
+                />
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={`Show ${label} ${index + 1} large in PDF`}
+                  accessibilityHint="Uses the full available report width instead of the compact photo grid."
+                  accessibilityState={{ checked: photoIsLargeInPdf(photoMetadata, fieldName) }}
+                  onPress={() => onChange(
+                    uris,
+                    photoNotes ?? {},
+                    setPhotoLargeInPdf(
+                      photoMetadata,
+                      fieldName,
+                      !photoIsLargeInPdf(photoMetadata, fieldName),
+                    ),
+                  )}
+                  style={({ pressed }) => ({
+                    minHeight: 44,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: spacing.sm,
+                    paddingHorizontal: spacing.sm,
+                    marginTop: -spacing.sm,
+                    marginBottom: spacing.sm,
+                    borderRadius: radii.sm,
+                    opacity: pressed ? 0.72 : 1,
+                  })}
+                >
+                  <View style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 5,
+                    borderWidth: 2,
+                    borderColor: photoIsLargeInPdf(photoMetadata, fieldName)
+                      ? colors.primary
+                      : colors.border,
+                    backgroundColor: photoIsLargeInPdf(photoMetadata, fieldName)
+                      ? colors.primary
+                      : colors.card,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                    {photoIsLargeInPdf(photoMetadata, fieldName) ? (
+                      <Text style={{ color: colors.primaryForeground, fontWeight: '900' }}>✓</Text>
+                    ) : null}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                      Show large in PDF
+                    </Text>
+                    <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 2 }}>
+                      Full report width; leave unticked for the compact photo grid.
+                    </Text>
+                  </View>
+                </Pressable>
+              </React.Fragment>
             );
           })}
         </>
@@ -297,27 +395,14 @@ function PhotoAttachmentField({
           No photo attached.
         </Text>
       )}
-      <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
-        <Button
-          title={photoBusy
-            ? 'Opening…'
-            : uris.length
-              ? single ? 'Retake photo' : 'Take another photo'
-              : 'Take photo'}
-          disabled={photoBusy}
-          onPress={() => { void addPhoto('camera'); }}
-          style={{ flex: 1 }}
-        />
-        <Button
-          title={uris.length
-            ? single ? 'Replace from library' : 'Choose another photo'
-            : 'Choose photo'}
-          variant="secondary"
-          disabled={photoBusy}
-          onPress={() => { void addPhoto('library'); }}
-          style={{ flex: 1 }}
-        />
-      </View>
+      <Button
+        title={photoBusy ? 'Opening…' : uris.length ? 'Add another photo' : 'Add photo'}
+        variant={uris.length ? 'secondary' : 'primary'}
+        disabled={photoBusy}
+        accessibilityHint="Choose Camera or Photo Library. This control remains available after each attachment."
+        onPress={choosePhotoSource}
+        style={{ marginTop: spacing.sm }}
+      />
     </View>
   );
 }
@@ -837,6 +922,7 @@ export function ElectricalAssetForm({
   const [photo, setPhoto] = useState(initial?.photo ?? '');
   const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
   const [photo_notes, setPhotoNotes] = useState(initial?.photo_notes ?? {});
+  const [photoMetadata, setPhotoMetadata] = useState(initial?.photoMetadata ?? {});
   const [sub_circuits_description, setSubCircuitsDescription] = useState(
     initial?.sub_circuits_description ?? '',
   );
@@ -992,11 +1078,21 @@ export function ElectricalAssetForm({
         label="Main switchboard photo"
         uris={photo ? [photo] : []}
         photoNotes={photo_notes}
+        photoMetadata={photoMetadata}
         noteField="photo"
         single
-        onChange={(uris, notes) => {
+        onAddAnother={(uri) => {
+          setPhotoMetadata((current) => setPhotoLargeInPdf(
+            current,
+            `extraPhotos[${extra_photos.length}]`,
+            false,
+          ));
+          setExtraPhotos((current) => [...current, uri]);
+        }}
+        onChange={(uris, notes, metadata) => {
           setPhoto(uris[0] ?? '');
           setPhotoNotes(notes);
+          setPhotoMetadata(metadata);
         }}
       />
       <TextField label="Amperage rating" value={amperage_rating} onChangeText={setAmps} />
@@ -1015,10 +1111,12 @@ export function ElectricalAssetForm({
         label="Extra photos"
         uris={extra_photos}
         photoNotes={photo_notes}
+        photoMetadata={photoMetadata}
         noteField="extraPhotos"
-        onChange={(uris, notes) => {
+        onChange={(uris, notes, metadata) => {
           setExtraPhotos(uris);
           setPhotoNotes(notes);
+          setPhotoMetadata(metadata);
         }}
       />
       <Button
@@ -1060,6 +1158,7 @@ export function ElectricalAssetForm({
               photo,
               extra_photos,
               photo_notes,
+              photoMetadata,
               meter_present: (initial?.meters?.length ?? 0) > 0,
               sub_circuits_description,
               comments,
@@ -1211,6 +1310,7 @@ export function SiteAssetForm({
   const [location_photo, setLocationPhoto] = useState(initial?.location_photo ?? '');
   const [extra_photos, setExtraPhotos] = useState(initial?.extra_photos ?? []);
   const [photo_notes, setPhotoNotes] = useState(initial?.photo_notes ?? {});
+  const [photoMetadata, setPhotoMetadata] = useState(initial?.photoMetadata ?? {});
   const initialSource = initial?.electrical_source ?? (
     initial?.electrical_board_tbc || !initial?.electrical_board_id
       ? { kind: 'TBC' as const }
@@ -1353,6 +1453,7 @@ export function SiteAssetForm({
     locationPhoto: location_photo,
     extraPhotos: extra_photos,
     photoNotes: photo_notes,
+    photoMetadata,
     sourceKey,
     sourceBoardSearch,
     meteringKind,
@@ -1381,6 +1482,7 @@ export function SiteAssetForm({
       setLocationPhoto(saved.locationPhoto ?? initial?.location_photo ?? '');
       setExtraPhotos(saved.extraPhotos ?? initial?.extra_photos ?? []);
       setPhotoNotes(saved.photoNotes ?? initial?.photo_notes ?? {});
+      setPhotoMetadata(saved.photoMetadata ?? initial?.photoMetadata ?? {});
       setSourceKey(saved.sourceKey);
       setSourceBoardSearch(saved.sourceBoardSearch);
       setMeteringKind(saved.meteringKind);
@@ -1444,7 +1546,7 @@ export function SiteAssetForm({
   }, [
     active, asset_name, comments, customCode, custom_type_name, deviceDetour,
     direction, display_code, draftAssetId, draftHydrated, draftInstallationId, draftScope, extra_photos,
-    location_description, location_photo, photo_notes,
+    location_description, location_photo, photo_notes, photoMetadata,
     meterSearch, meteringKind, phaseMode, selectedChannelIds, selectedMeterId,
     sourceBoardSearch, sourceKey, type_code,
   ]);
@@ -1734,11 +1836,21 @@ export function SiteAssetForm({
         label="Location photo"
         uris={location_photo ? [location_photo] : []}
         photoNotes={photo_notes}
+        photoMetadata={photoMetadata}
         noteField="locationPhoto"
         single
-        onChange={(uris, notes) => {
+        onAddAnother={(uri) => {
+          setPhotoMetadata((current) => setPhotoLargeInPdf(
+            current,
+            `extraPhotos[${extra_photos.length}]`,
+            false,
+          ));
+          setExtraPhotos((current) => [...current, uri]);
+        }}
+        onChange={(uris, notes, metadata) => {
           setLocationPhoto(uris[0] ?? '');
           setPhotoNotes(notes);
+          setPhotoMetadata(metadata);
         }}
       />
       <Card style={{ marginBottom: spacing.md }}>
@@ -2027,10 +2139,12 @@ export function SiteAssetForm({
         label="Additional photos"
         uris={extra_photos}
         photoNotes={photo_notes}
+        photoMetadata={photoMetadata}
         noteField="extraPhotos"
-        onChange={(uris, notes) => {
+        onChange={(uris, notes, metadata) => {
           setExtraPhotos(uris);
           setPhotoNotes(notes);
+          setPhotoMetadata(metadata);
         }}
       />
       {draftPersistenceError ? (
@@ -2084,6 +2198,7 @@ export function SiteAssetForm({
               comments,
               extra_photos,
               photo_notes,
+              photoMetadata,
             }, { ...meteringDraft, baselineAssignments: mappingBaseline.current });
             deleteRemovedLocalPhotos(
               [initial?.location_photo, ...(initial?.extra_photos ?? [])],
@@ -2631,11 +2746,25 @@ export function WattwatcherForm({
           label="Installed device"
           uris={data.ww_photos?.device_installed ? [data.ww_photos.device_installed] : []}
           photoNotes={data.photo_notes}
+          photoMetadata={data.photoMetadata}
           noteField="wwPhotos.deviceInstalled"
           single
-          onChange={(uris, notes) => onChange({
+          onAddAnother={(uri) => onChange({
+            ...data,
+            photoMetadata: setPhotoLargeInPdf(
+              data.photoMetadata,
+              `wwPhotos.extra[${data.ww_photos?.extra?.length ?? 0}]`,
+              false,
+            ),
+            ww_photos: {
+              ...(data.ww_photos ?? {}),
+              extra: [...(data.ww_photos?.extra ?? []), uri],
+            },
+          })}
+          onChange={(uris, notes, metadata) => onChange({
             ...data,
             photo_notes: notes,
+            photoMetadata: metadata,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               device_installed: uris[0],
@@ -2646,11 +2775,25 @@ export function WattwatcherForm({
           label="Switchboard overview"
           uris={data.ww_photos?.switchboard_overview ? [data.ww_photos.switchboard_overview] : []}
           photoNotes={data.photo_notes}
+          photoMetadata={data.photoMetadata}
           noteField="wwPhotos.switchboardOverview"
           single
-          onChange={(uris, notes) => onChange({
+          onAddAnother={(uri) => onChange({
+            ...data,
+            photoMetadata: setPhotoLargeInPdf(
+              data.photoMetadata,
+              `wwPhotos.extra[${data.ww_photos?.extra?.length ?? 0}]`,
+              false,
+            ),
+            ww_photos: {
+              ...(data.ww_photos ?? {}),
+              extra: [...(data.ww_photos?.extra ?? []), uri],
+            },
+          })}
+          onChange={(uris, notes, metadata) => onChange({
             ...data,
             photo_notes: notes,
+            photoMetadata: metadata,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               switchboard_overview: uris[0],
@@ -2661,11 +2804,25 @@ export function WattwatcherForm({
           label="Device and channel labeling"
           uris={data.ww_photos?.labeling ? [data.ww_photos.labeling] : []}
           photoNotes={data.photo_notes}
+          photoMetadata={data.photoMetadata}
           noteField="wwPhotos.labeling"
           single
-          onChange={(uris, notes) => onChange({
+          onAddAnother={(uri) => onChange({
+            ...data,
+            photoMetadata: setPhotoLargeInPdf(
+              data.photoMetadata,
+              `wwPhotos.extra[${data.ww_photos?.extra?.length ?? 0}]`,
+              false,
+            ),
+            ww_photos: {
+              ...(data.ww_photos ?? {}),
+              extra: [...(data.ww_photos?.extra ?? []), uri],
+            },
+          })}
+          onChange={(uris, notes, metadata) => onChange({
             ...data,
             photo_notes: notes,
+            photoMetadata: metadata,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               labeling: uris[0],
@@ -2676,10 +2833,12 @@ export function WattwatcherForm({
           label="Extra meter photos"
           uris={data.ww_photos?.extra ?? []}
           photoNotes={data.photo_notes}
+          photoMetadata={data.photoMetadata}
           noteField="wwPhotos.extra"
-          onChange={(extra, notes) => onChange({
+          onChange={(extra, notes, metadata) => onChange({
             ...data,
             photo_notes: notes,
+            photoMetadata: metadata,
             ww_photos: {
               ...(data.ww_photos ?? {}),
               extra,
@@ -2713,6 +2872,7 @@ export function createEmptyMeter(deviceType: MeterDeviceType = 'A3RM'): Meter {
     ww_verification: {},
     ww_commissioning: {},
     ww_photos: { extra: [] },
+    photoMetadata: {},
   };
 }
 

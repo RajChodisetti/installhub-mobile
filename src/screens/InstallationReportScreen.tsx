@@ -515,7 +515,9 @@ export function InstallationReportScreen({ navigation, route }: Props) {
           </Text>
         </View>
         <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
-          Every PDF includes the Sustainability Wise logo, the generated electrical single-line map, its complete symbol key, and exact load, asset, device and channel details.
+          Every PDF includes the Sustainability Wise logo, one complete whole-map electrical view,
+          its symbol key, exact load, asset, device and channel details, all recorded entity photos,
+          and the selected completed-form evidence. It does not add cropped or zoomed map pages.
         </Text>
         <SelectChips
           label="Organise details"

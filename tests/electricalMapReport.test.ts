@@ -33,6 +33,11 @@ test('PDF map is an icon-first vector diagram with exact devices, loads and line
   assert.match(html, /Supply - confirmed FED_FROM cable path/);
   assert.match(html, /Measures - confirmed channels; never changes supply/);
   assert.match(html, /Residual - calculation, not a physical cable/);
+  assert.match(html, /Installation electrical map - whole view/);
+  assert.match(html, /complete whole-map view/);
+  assert.match(html, /does not add cropped, zoomed, or individual map pages/);
+  assert.equal((html.match(/class="map-frame/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /Electrical map detail/);
 });
 
 test('zone details keep equal display names separated by stable zone identity', () => {

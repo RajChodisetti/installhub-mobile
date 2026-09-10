@@ -39,7 +39,7 @@ export function localDashboardSnapshot(store: AppDataStore, actorUserId: string 
 }
 
 export function filterDashboardJobs(items: Installation[], query: string, status: DashboardStatusFilter): Installation[] {
-  return sortDashboardJobs(items.filter((item) => item.thumbnail_status !== 'pending'
+  return sortDashboardJobs(items.filter((item) => !(item.is_imported_copy && item.thumbnail_status === 'pending')
     && (status === 'All' || item.status === status)
     && dashboardJobSearchMatch(item, query)));
 }

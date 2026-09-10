@@ -13,7 +13,7 @@ function fixture(): ClientReportData {
       site_address: 'Address', inspector_name: 'Technician', audit_date: '2026-09-05',
       status: 'Draft', cloud_backup_enabled: false, created_at: '', updated_at: '',
     },
-    zones: [{ id: 'zone', audit_id: 'installation', zone_name: 'Plant', zone_description: '', photos: ['file:///zone.jpg'], photo_notes: { 'photos[0]': 'Incoming supply room' }, created_at: '', updated_at: '' }],
+    zones: [{ id: 'zone', audit_id: 'installation', zone_name: 'Plant', zone_description: '', photos: ['file:///zone.jpg'], photo_notes: { 'photos[0]': 'Incoming supply room' }, photoMetadata: { 'photos[0]': { largeInPdf: true } }, created_at: '', updated_at: '' }],
     electricalAssets: [{
       id: 'board', audit_id: 'installation', zone_id: 'zone', asset_name: 'Main', asset_type: 'MSB',
       display_code: 'MSB-01', meters: [{ id: 'meter', device_name: 'Meter', device_type: 'A3RM', device_id: 'SERIAL', ww_photos: { labeling: 'file:///label.jpg' }, photo_notes: { 'wwPhotos.labeling': 'Channel labels after work' } }],
@@ -37,6 +37,7 @@ test('gallery and report include zone, legacy meter and form evidence with porta
   const report = clientReportModel(data);
   assert.deepEqual(report.photos.map((photo) => photo.key), ['zone:zone:0', 'meter:meter:labeling', 'form:form:photo']);
   assert.deepEqual(report.photos.map((photo) => photo.label), ['Incoming supply room', 'Channel labels after work', 'Water <meter>']);
+  assert.deepEqual(report.photos.map((photo) => photo.largeInPdf), [true, false, false]);
   assert.deepEqual(report.missingEvidence, ['Site asset · HVAC']);
   assert.equal(report.meterCount, 1);
   assert.equal(report.completedFormCount, 1);
@@ -86,4 +87,18 @@ test('client PDF contains the same selected evidence and escapes all captured te
   assert.equal((html.match(/<figure>/g) ?? []).length, 2);
   assert.throws(() => buildClientReportHtml(data, excluded, {}), /Preview image unavailable/);
   assert.throws(() => buildClientReportHtml(data, excluded, { ...images, 'meter:meter:labeling': 'javascript:alert(1)' }), /Preview image unavailable/);
+});
+
+test('client PDF keeps flagged evidence full width and compact evidence in EcoAudit grids', () => {
+  const data = fixture();
+  const photos = collectClientReportPhotos(data);
+  const images = Object.fromEntries(photos.map((photo) => [photo.key, 'data:image/jpeg;base64,YWJj']));
+  const html = buildClientReportHtml(data, {}, images);
+
+  assert.match(html, /class="photo-large"/);
+  assert.match(html, /class="photo-grid cols-2"/);
+  assert.match(html, /max-height:172px/);
+  assert.match(html, /max-height:370px/);
+  assert.match(html, /border:1px solid #CBD5E1/);
+  assert.match(html, /Incoming supply room/);
 });

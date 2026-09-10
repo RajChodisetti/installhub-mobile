@@ -1,6 +1,6 @@
 import { FormScrollView } from '../components/ui';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useInstallation } from '../hooks';
@@ -41,6 +41,11 @@ import {
   removeIndexedPhotoNote,
   setPhotoNote,
 } from '../domain/photoNotes';
+import {
+  photoIsLargeInPdf,
+  removeIndexedPhotoMetadata,
+  setPhotoLargeInPdf,
+} from '../domain/photoMetadata';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ZoneWorkspace'>;
 const ZONE_PAGE_SIZE = 100;
@@ -155,7 +160,14 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
     try {
       uri = source === 'camera' ? await takeLocalPhoto() : await pickLocalPhoto();
       if (!uri) return;
-      await zonesRepo.update(zoneId, { photos: [...zone.photos, uri] });
+      await zonesRepo.update(zoneId, {
+        photos: [...zone.photos, uri],
+        photoMetadata: setPhotoLargeInPdf(
+          zone.photoMetadata,
+          `photos[${zone.photos.length}]`,
+          false,
+        ),
+      });
       saved = true;
       await refresh();
     } catch (error) {
@@ -167,6 +179,14 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
         error instanceof Error ? error.message : saved ? 'Retry loading the zone.' : 'The photo could not be saved.',
       );
     }
+  };
+
+  const choosePhotoSource = () => {
+    Alert.alert('Add photo', 'Choose a source.', [
+      { text: 'Camera', onPress: () => { void addPhoto('camera'); } },
+      { text: 'Photo Library', onPress: () => { void addPhoto('library'); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   if (loading && !installation) return <LoadingState />;
@@ -213,8 +233,8 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
 
       <SectionHeader
         title={`Photos (${zone.photos.length})`}
-        actionLabel="+ Library"
-        onAction={readOnly ? undefined : () => void addPhoto('library')}
+        actionLabel="Add photo"
+        onAction={readOnly ? undefined : choosePhotoSource}
       />
       <Text style={{ color: colors.mutedForeground, fontSize: 12, marginBottom: 8 }}>
         Use the named Remove control below a photo to delete it.
@@ -224,7 +244,7 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
       ) : (
         <PhotoThumbnailGrid
           uris={zone.photos}
-          onAdd={readOnly ? undefined : () => void addPhoto('library')}
+          onAdd={readOnly ? undefined : choosePhotoSource}
           onRemove={readOnly ? undefined : (uri, photoIndex) => {
             Alert.alert('Remove photo?', undefined, [
               { text: 'Cancel', style: 'cancel' },
@@ -237,6 +257,11 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
                     await zonesRepo.update(zoneId, {
                       photos: zone.photos.filter((_, index) => index !== photoIndex),
                       photo_notes: removeIndexedPhotoNote(zone.photo_notes, 'photos', photoIndex),
+                      photoMetadata: removeIndexedPhotoMetadata(
+                        zone.photoMetadata,
+                        'photos',
+                        photoIndex,
+                      ),
                     });
                     removed = true;
                     deleteLocalPhoto(uri);
@@ -253,33 +278,78 @@ export function ZoneWorkspaceScreen({ navigation, route }: Props) {
           }}
         />
       )}
-      {zone.photos.map((uri, index) => (
-        <TextArea
-          key={`${uri}:${index}:note`}
-          label={`Photo ${index + 1} title / notes / comments`}
-          defaultValue={photoNote(zone.photo_notes, `photos[${index}]`)}
-          editable={!readOnly}
-          maxLength={PHOTO_NOTE_MAX_LENGTH}
-          placeholder="Add context for this photo"
-          onEndEditing={(event) => {
-            const value = event.nativeEvent.text;
-            void zonesRepo.update(zoneId, {
-              photo_notes: setPhotoNote(zone.photo_notes, `photos[${index}]`, value),
-            }).then(refresh).catch((caught) => Alert.alert(
-              'Photo note not saved',
-              caught instanceof Error ? caught.message : 'Try saving the note again.',
-            ));
-          }}
-        />
-      ))}
-      <Button
-        title="Take photo"
-        variant="ghost"
-        disabled={readOnly}
-        style={{ marginTop: spacing.sm, marginBottom: spacing.md }}
-        onPress={() => void addPhoto('camera')}
-      />
-
+      {zone.photos.map((uri, index) => {
+        const fieldName = `photos[${index}]`;
+        const largeInPdf = photoIsLargeInPdf(zone.photoMetadata, fieldName);
+        return (
+          <View key={`${uri}:${index}:metadata`}>
+            <TextArea
+              label={`Photo ${index + 1} title / notes / comments`}
+              defaultValue={photoNote(zone.photo_notes, fieldName)}
+              editable={!readOnly}
+              maxLength={PHOTO_NOTE_MAX_LENGTH}
+              placeholder="Add context for this photo"
+              onEndEditing={(event) => {
+                const value = event.nativeEvent.text;
+                void zonesRepo.update(zoneId, {
+                  photo_notes: setPhotoNote(zone.photo_notes, fieldName, value),
+                }).then(refresh).catch((caught) => Alert.alert(
+                  'Photo note not saved',
+                  caught instanceof Error ? caught.message : 'Try saving the note again.',
+                ));
+              }}
+            />
+            <Pressable
+              disabled={readOnly}
+              accessibilityRole="checkbox"
+              accessibilityLabel={`Show zone photo ${index + 1} large in PDF`}
+              accessibilityHint="Uses the full available report width instead of the compact photo grid."
+              accessibilityState={{ checked: largeInPdf, disabled: readOnly }}
+              onPress={() => {
+                void zonesRepo.update(zoneId, {
+                  photoMetadata: setPhotoLargeInPdf(
+                    zone.photoMetadata,
+                    fieldName,
+                    !largeInPdf,
+                  ),
+                }).then(refresh).catch((caught) => Alert.alert(
+                  'PDF photo size not saved',
+                  caught instanceof Error ? caught.message : 'Try saving the photo size again.',
+                ));
+              }}
+              style={({ pressed }) => ({
+                minHeight: 44,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: spacing.sm,
+                paddingHorizontal: spacing.sm,
+                marginTop: -spacing.sm,
+                marginBottom: spacing.sm,
+                opacity: pressed ? 0.72 : readOnly ? 0.62 : 1,
+              })}
+            >
+              <View style={{
+                width: 22,
+                height: 22,
+                borderWidth: 2,
+                borderRadius: 5,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderColor: largeInPdf ? colors.primary : colors.border,
+                backgroundColor: largeInPdf ? colors.primary : colors.card,
+              }}>
+                {largeInPdf ? <Text style={{ color: colors.primaryForeground, fontWeight: '900' }}>✓</Text> : null}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.foreground, fontWeight: '700' }}>Show large in PDF</Text>
+                <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 2 }}>
+                  Full report width; leave unticked for the compact photo grid.
+                </Text>
+              </View>
+            </Pressable>
+          </View>
+        );
+      })}
       <SearchBar
         value={inventorySearch}
         onChangeText={(value) => {

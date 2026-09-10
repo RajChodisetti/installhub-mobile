@@ -10,6 +10,10 @@ const navigatorSource = readFileSync(
   new URL('../src/navigation/RootNavigator.tsx', import.meta.url),
   'utf8',
 );
+const remoteInstallationsSource = readFileSync(
+  new URL('../src/screens/RemoteInstallationsScreen.tsx', import.meta.url),
+  'utf8',
+);
 
 const workspaceActions = [
   ['Open Electrical Map', 'DataView'],
@@ -56,6 +60,16 @@ test('secondary tools contain no duplicate field-work actions', () => {
   assert.doesNotMatch(secondaryToolsSource, /Installation data & checks/);
   assert.doesNotMatch(secondaryToolsSource, /Metering Table/);
   assert.doesNotMatch(secondaryToolsSource, /Full Installation Report/);
+});
+
+test('site downloads keep work available while authenticated photo previews finish', () => {
+  assert.match(detailSource, /Site photo previews/);
+  assert.match(detailSource, /Download remaining previews/);
+  assert.match(detailSource, /accessibilityLiveRegion="polite"/);
+  assert.match(detailSource, /you can continue working while they finish/);
+  assert.match(remoteInstallationsSource, /complete site record/);
+  assert.match(remoteInstallationsSource, /secure 400 px previews are cached on this device/);
+  assert.match(remoteInstallationsSource, /Download next site copy/);
 });
 
 // Photo collection and persisted report-selection behavior are covered by

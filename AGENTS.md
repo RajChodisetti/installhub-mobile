@@ -114,6 +114,8 @@ Installation (id)
 - Cloud Backup is opt-in per installation. New and migrated installations default to local-only.
 - Remote imports are local-only copies named `<site> cp1`, `cp2`, and so on. Keep their original
   remote photo URLs immutable; cache only authenticated 400 px previews.
+- Assigned Scheduler checkouts also queue authenticated 400 px previews. Keep the job visible and
+  editable while those previews download, and expose progress plus an explicit retry action.
 - Reuse imported source IDs for API PDFs only after both the local import-provenance invariants and
   the stored source-tree hash match a fresh pull. Any uncertainty must opt in and sync the cpN tree.
 - Form media is copied into the app document directory; amendments must not delete files referenced

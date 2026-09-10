@@ -237,6 +237,48 @@ test('cloud payload never leaks local file URIs and substitutes confirmed URLs',
     payload.formSubmissions[0]?.attachments[0]?.caption,
     'Completed installation',
   );
+  assert.equal(
+    payload.formSubmissions[0]?.attachments[0]?.largeInPdf,
+    false,
+  );
+});
+
+test('photo PDF sizing is additive on entities and explicit on current-client attachments', () => {
+  const sizedTree: InstallationBackupTree = {
+    ...tree,
+    zones: [{
+      ...tree.zones[0]!,
+      photoMetadata: { 'photos[0]': { largeInPdf: false } },
+    }],
+    electricalAssets: [{
+      ...tree.electricalAssets[0]!,
+      photoMetadata: { photo: { largeInPdf: true } },
+    }],
+    formSubmissions: [{
+      ...tree.formSubmissions[0]!,
+      attachments: [{
+        ...tree.formSubmissions[0]!.attachments[0]!,
+        largeInPdf: true,
+      }],
+    }],
+  };
+  const queue: CloudUploadQueueItem[] = discoverBackupMedia(sizedTree).map((item, index) => ({
+    ...item,
+    id: `sized-${index}`,
+    status: 'cleared',
+    attempts: 1,
+    remote_url: `https://api.example.test/v1/files/sized-${index}.jpg`,
+    updated_at: '2026-07-22T00:00:00.000Z',
+  }));
+  const payload = buildBackupPayload(sizedTree, queue);
+
+  assert.deepEqual(payload.zones[0]?.photoMetadata, {
+    'photos[0]': { largeInPdf: false },
+  });
+  assert.deepEqual(payload.electricalAssets[0]?.photoMetadata, {
+    photo: { largeInPdf: true },
+  });
+  assert.equal(payload.formSubmissions[0]?.attachments[0]?.largeInPdf, true);
 });
 
 test('cloud payload labels metadata and complete pushes without changing legacy callers', () => {
@@ -387,6 +429,98 @@ test('queue reconciliation removes evidence deleted after a failed upload', () =
   assert.equal(reconciled.some((item) => item.status === 'failed'), false);
   assert.equal(reconciled.length, failedQueue.length - 1);
   assert.equal(reconciled.every((item) => item.id.startsWith('existing-')), true);
+});
+
+test('deleting an indexed photo rebinds the surviving cleared upload and remote URL', () => {
+  const beforeDelete: InstallationBackupTree = {
+    ...tree,
+    zones: [{
+      ...tree.zones[0]!,
+      photos: ['file:///first.jpg', 'file:///survivor.jpg'],
+      photo_notes: {
+        'photos[0]': 'Remove me',
+        'photos[1]': 'Keep me',
+      },
+      photoMetadata: {
+        'photos[0]': { largeInPdf: true },
+        'photos[1]': { largeInPdf: false },
+      },
+    }],
+  };
+  const zoneQueue: CloudUploadQueueItem[] = discoverBackupMedia(beforeDelete)
+    .filter((reference) => reference.entity_type === 'zone')
+    .map((reference, index) => ({
+      ...reference,
+      id: `zone-upload-${index}`,
+      status: 'cleared',
+      attempts: 1,
+      remote_url: `https://api.example.test/v1/files/${index === 0 ? 'first' : 'survivor'}.jpg`,
+      updated_at: '2026-07-22T00:00:00.000Z',
+    }));
+  const afterDelete: InstallationBackupTree = {
+    ...beforeDelete,
+    zones: [{
+      ...beforeDelete.zones[0]!,
+      photos: ['file:///survivor.jpg'],
+      photo_notes: { 'photos[0]': 'Keep me' },
+      photoMetadata: { 'photos[0]': { largeInPdf: false } },
+    }],
+  };
+
+  assert.deepEqual(
+    buildBackupPayload(afterDelete, zoneQueue).zones[0]?.photos,
+    ['https://api.example.test/v1/files/survivor.jpg'],
+  );
+  const rebound = reconciledBackupMediaQueue(
+    zoneQueue,
+    tree.installation.id,
+    discoverBackupMedia(afterDelete).filter((reference) => reference.entity_type === 'zone'),
+  );
+  assert.deepEqual(rebound.map((row) => ({
+    id: row.id,
+    field: row.field_name,
+    local: row.local_uri,
+    remote: row.remote_url,
+    status: row.status,
+  })), [{
+    id: 'zone-upload-1',
+    field: 'photos[0]',
+    local: 'file:///survivor.jpg',
+    remote: 'https://api.example.test/v1/files/survivor.jpg',
+    status: 'cleared',
+  }]);
+});
+
+test('ambiguous same-entity media never inherits an arbitrary upload after reindexing', () => {
+  const ambiguous: CloudUploadQueueItem[] = [1, 2].map((index) => ({
+    id: `ambiguous-${index}`,
+    installation_id: tree.installation.id,
+    entity_type: 'zone',
+    entity_id: 'zone-1',
+    field_name: `photos[${index}]`,
+    local_uri: 'file:///duplicate.jpg',
+    mime_type: 'image/jpeg',
+    status: 'cleared',
+    attempts: 1,
+    remote_url: `https://api.example.test/v1/files/duplicate-${index}.jpg`,
+    updated_at: '2026-07-22T00:00:00.000Z',
+  }));
+  const current: InstallationBackupTree = {
+    ...tree,
+    zones: [{ ...tree.zones[0]!, photos: ['file:///duplicate.jpg'] }],
+  };
+
+  assert.deepEqual(buildBackupPayload(current, ambiguous).zones[0]?.photos, []);
+  const reconciled = reconciledBackupMediaQueue(
+    ambiguous,
+    tree.installation.id,
+    discoverBackupMedia(current).filter((reference) => reference.entity_type === 'zone'),
+    () => 'new-safe-upload',
+  );
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0]?.id, 'new-safe-upload');
+  assert.equal(reconciled[0]?.status, 'pending');
+  assert.equal(reconciled[0]?.remote_url, undefined);
 });
 
 test('queue reconciliation replaces failed evidence with one exact pending identity', () => {

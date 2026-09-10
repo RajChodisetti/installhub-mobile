@@ -509,8 +509,11 @@ the caller's accessible owned/assigned inventory. Draft installations that
 are not already local are materialized with the exact server installation,
 child, form, attachment, and tree-revision identities; they are not renamed or
 converted into `cpN` copies. They are immediately cloud-enabled and their pull
-watermark prevents an unchanged checkout from being pushed back. Offline edits
-then follow the normal Cloud Backup path. A self-owned installation is classified
+watermark prevents an unchanged checkout from being pushed back. Remote photo
+references remain immutable while authenticated 400 px previews are queued in
+the durable cache. Assigned jobs remain visible and editable while previews
+download; installation detail shows progress and can retry exhausted failures.
+Offline edits then follow the normal Cloud Backup path. A self-owned installation is classified
 as active assigned work only when its assignee matches the actor and the pull also
 contains an active Scheduler event ID/status; an ordinary self-created unscheduled
 Draft remains local work. If a later complete inventory no

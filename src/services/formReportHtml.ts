@@ -12,6 +12,7 @@ export type EmbeddedFormImage =
   | {
       uri: string;
       caption?: string;
+      largeInPdf?: boolean;
     };
 
 function escapeHtml(value: unknown): string {
@@ -102,11 +103,12 @@ function coverPrimaryDetails(submission: FormSubmission): {
   };
 }
 
-function photoGrid(images: EmbeddedFormImage[], label: string): string {
+function compactPhotoGrid(images: EmbeddedFormImage[], label: string): string {
+  const columns = images.length <= 2 ? 2 : 3;
   const rows: string[] = [];
-  for (let index = 0; index < images.length; index += 2) {
+  for (let index = 0; index < images.length; index += columns) {
     const cells = images
-      .slice(index, index + 2)
+      .slice(index, index + columns)
       .map((image) => {
         const uri = typeof image === 'string' ? image : image.uri;
         const caption =
@@ -117,10 +119,38 @@ function photoGrid(images: EmbeddedFormImage[], label: string): string {
           ${caption ? `<div class="photo-caption">${escapeHtml(caption)}</div>` : ''}
         </div>`;
       });
-    if (cells.length === 1) cells.push('<div class="photo photo-empty"></div>');
+    while (cells.length < columns) cells.push('<div class="photo photo-empty"></div>');
     rows.push(`<div class="photo-row">${cells.join('')}</div>`);
   }
-  return `<div class="photo-grid">${rows.join('')}</div>`;
+  return `<div class="photo-grid photos-cols-${columns}">${rows.join('')}</div>`;
+}
+
+function largePhoto(image: EmbeddedFormImage, label: string): string {
+  const uri = typeof image === 'string' ? image : image.uri;
+  const caption = typeof image === 'string' ? '' : String(image.caption ?? '').trim();
+  const accessibleLabel = caption || label;
+  return `<div class="photo-large">
+    <img src="${escapeHtml(uri)}" alt="${escapeHtml(accessibleLabel)}" />
+    ${caption ? `<div class="photo-caption">${escapeHtml(caption)}</div>` : ''}
+  </div>`;
+}
+
+function photoGrid(images: EmbeddedFormImage[], label: string): string {
+  let html = '';
+  let compact: EmbeddedFormImage[] = [];
+  const flushCompact = () => {
+    if (!compact.length) return;
+    html += compactPhotoGrid(compact, label);
+    compact = [];
+  };
+  for (const image of images) {
+    if (typeof image !== 'string' && image.largeInPdf === true) {
+      flushCompact();
+      html += largePhoto(image, label);
+    } else compact.push(image);
+  }
+  flushCompact();
+  return html;
 }
 
 export function buildFormReportHtml(
@@ -204,12 +234,16 @@ export function buildFormReportHtml(
     .badge-no { color: ${theme.warningText}; background: ${theme.warningBackground}; border-color: ${theme.warningBorder}; }
     .badge-neutral { color: ${theme.neutralText}; background: ${theme.neutralBackground}; border-color: ${theme.neutralBorder}; }
 
-    .photo-block { break-inside: avoid; page-break-inside: avoid; margin-top: 10px; }
+    .photo-block { margin-top: 10px; }
     .photo-grid { display: table; width: 100%; border-collapse: separate; border-spacing: 7px; table-layout: fixed; }
     .photo-row { display: table-row; }
-    .photo { display: table-cell; width: 50%; min-height: 225px; padding: 5px; border: 1px solid ${theme.border}; border-radius: 6px; text-align: center; vertical-align: top; break-inside: avoid; }
+    .photo { display: table-cell; min-height: 184px; padding: 5px; border: 1px solid #CBD5E1; border-radius: 6px; text-align: center; vertical-align: top; break-inside: avoid; page-break-inside: avoid; }
+    .photos-cols-2 .photo { width: 50%; }
+    .photos-cols-3 .photo { width: 33.333%; }
     .photo-empty { border-color: transparent; }
-    .photo img { max-width: 100%; max-height: 212px; object-fit: contain; border-radius: 4px; }
+    .photo img { display: block; width: 100%; height: auto; max-height: 172px; object-fit: contain; border-radius: 4px; }
+    .photo-large { width: 100%; padding: 5px; margin: 7px 0; border: 1px solid #CBD5E1; border-radius: 6px; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+    .photo-large img { display: block; width: 100%; height: auto; max-height: 370px; object-fit: contain; border-radius: 4px; }
     .photo-caption { color: ${theme.slate}; font-size: 7.5pt; line-height: 1.35; margin-top: 5px; overflow-wrap: anywhere; text-align: left; white-space: pre-wrap; }
     .missing { color: ${theme.muted}; font-size: 8.5pt; font-style: italic; border: 1px dashed ${theme.neutralBorder}; background: ${theme.surfaceMuted}; padding: 10px 12px; }
     .page-header { position: fixed; top: -12mm; left: 0; right: 0; height: 8mm; display: table; width: 100%; border-bottom: 1px solid ${theme.borderStrong}; color: ${theme.navy}; font-size: 7pt; }

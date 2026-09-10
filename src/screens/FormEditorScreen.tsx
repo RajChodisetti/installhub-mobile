@@ -350,12 +350,23 @@ export function FormEditorScreen({ navigation, route }: Props) {
     setAddingSlot(field.key);
     try {
       const attachment = await addFormPhoto(form.id, field.key, source);
-      if (attachment) setAttachments((current) => [...current, attachment]);
+      if (attachment) setAttachments((current) => [
+        ...current,
+        { ...attachment, largeInPdf: false },
+      ]);
     } catch (error) {
       Alert.alert('Photo error', error instanceof Error ? error.message : 'Could not save photo');
     } finally {
       setAddingSlot(null);
     }
+  };
+
+  const choosePhotoSource = (field: FormFieldDefinition) => {
+    Alert.alert('Add photo', 'Choose a source.', [
+      { text: 'Camera', onPress: () => { void addPhoto(field, 'camera'); } },
+      { text: 'Photo Library', onPress: () => { void addPhoto(field, 'library'); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const confirmRemovePhoto = (item: FormAttachment) => {
@@ -484,62 +495,98 @@ export function FormEditorScreen({ navigation, route }: Props) {
                     />
                   ) : null}
                   {readOnly ? (
-                    item.caption?.trim() ? (
+                    item.caption?.trim() || item.largeInPdf ? (
                       <View style={styles.savedCaption}>
-                        <Text style={[styles.savedCaptionLabel, { color: colors.mutedForeground }]}>
-                          Title / notes / comments
-                        </Text>
-                        <Text style={[styles.savedCaptionText, { color: colors.foreground }]}>
-                          {item.caption.trim()}
-                        </Text>
+                        {item.caption?.trim() ? (
+                          <>
+                            <Text style={[styles.savedCaptionLabel, { color: colors.mutedForeground }]}>
+                              Title / notes / comments
+                            </Text>
+                            <Text style={[styles.savedCaptionText, { color: colors.foreground }]}>
+                              {item.caption.trim()}
+                            </Text>
+                          </>
+                        ) : null}
+                        {item.largeInPdf ? (
+                          <Text style={[styles.savedCaptionLabel, { color: colors.primary, marginTop: spacing.xs }]}>
+                            Large in PDF
+                          </Text>
+                        ) : null}
                       </View>
                     ) : null
                   ) : (
-                    <TextArea
-                      label={`Photo ${index + 1} title / notes / comments`}
-                      accessibilityLabel={`Title, notes, or comments for ${field.label} photo ${index + 1}`}
-                      value={item.caption ?? ''}
-                      placeholder="Add context for this photo"
-                      maxLength={500}
-                      onChangeText={(caption) =>
-                        setAttachments((current) =>
-                          current.map((candidate) =>
-                            candidate.id === item.id
-                              ? {
-                                  ...candidate,
-                                  caption: caption === '' ? undefined : caption,
-                                }
-                              : candidate,
-                          ),
-                        )
-                      }
-                      style={styles.captionInput}
-                    />
+                    <>
+                      <TextArea
+                        label={`Photo ${index + 1} title / notes / comments`}
+                        accessibilityLabel={`Title, notes, or comments for ${field.label} photo ${index + 1}`}
+                        value={item.caption ?? ''}
+                        placeholder="Add context for this photo"
+                        maxLength={500}
+                        onChangeText={(caption) =>
+                          setAttachments((current) =>
+                            current.map((candidate) =>
+                              candidate.id === item.id
+                                ? {
+                                    ...candidate,
+                                    caption: caption === '' ? undefined : caption,
+                                  }
+                                : candidate,
+                            ),
+                          )
+                        }
+                        style={styles.captionInput}
+                      />
+                      <Pressable
+                        accessibilityRole="checkbox"
+                        accessibilityLabel={`Show ${field.label} photo ${index + 1} large in PDF`}
+                        accessibilityHint="Uses the full available report width instead of the compact photo grid."
+                        accessibilityState={{ checked: item.largeInPdf === true }}
+                        onPress={() => setAttachments((current) => current.map((candidate) => (
+                          candidate.id === item.id
+                            ? { ...candidate, largeInPdf: candidate.largeInPdf !== true }
+                            : candidate
+                        )))}
+                        style={({ pressed }) => [styles.largePhotoChoice, {
+                          opacity: pressed ? 0.72 : 1,
+                        }]}
+                      >
+                        <View style={[
+                          styles.largePhotoCheckbox,
+                          {
+                            borderColor: item.largeInPdf ? colors.primary : colors.border,
+                            backgroundColor: item.largeInPdf ? colors.primary : colors.card,
+                          },
+                        ]}>
+                          {item.largeInPdf ? (
+                            <Text style={{ color: colors.primaryForeground, fontWeight: '900' }}>✓</Text>
+                          ) : null}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.foreground, fontWeight: '700' }}>
+                            Show large in PDF
+                          </Text>
+                          <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 2 }}>
+                            Full report width; leave unticked for the compact photo grid.
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </>
                   )}
                 </View>
               ))}
             </View>
           </ScrollView>
           {!readOnly ? (
-            <View style={styles.photoActions}>
-              <Button
-                title={addingSlot === field.key
-                  ? 'Opening…'
-                  : items.length
-                    ? 'Take another photo'
-                    : 'Take photo'}
-                disabled={!!addingSlot}
-                onPress={() => void addPhoto(field, 'camera')}
-                style={{ flex: 1 }}
-              />
-              <Button
-                title={items.length ? 'Choose another photo' : 'Choose photo'}
-                variant="secondary"
-                disabled={!!addingSlot}
-                onPress={() => void addPhoto(field, 'library')}
-                style={{ flex: 1 }}
-              />
-            </View>
+            <Button
+              title={addingSlot === field.key
+                ? 'Opening…'
+                : items.length ? 'Add another photo' : 'Add photo'}
+              variant={items.length ? 'secondary' : 'primary'}
+              disabled={!!addingSlot}
+              accessibilityHint="Choose Camera or Photo Library. This control remains available after each attachment."
+              onPress={() => choosePhotoSource(field)}
+              style={{ marginTop: spacing.sm }}
+            />
           ) : null}
           {fieldError ? <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{fieldError}</Text> : null}
         </View>
@@ -1076,5 +1123,20 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   savedCaptionText: { fontSize: 14, lineHeight: 20, marginTop: 3 },
-  photoActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  largePhotoChoice: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    marginTop: -spacing.sm,
+  },
+  largePhotoCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 5,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

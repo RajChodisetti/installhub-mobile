@@ -64,17 +64,26 @@ test('scheduled jobs sort by the nearest scheduled or deadline date', () => {
   );
 });
 
-test('status and installer search combine while pending imports remain hidden', () => {
+test('status and installer search combine while only pending local copies remain hidden', () => {
   const draft = installation('draft', { inspector_name: 'Casey Installer' });
   const completed = installation('completed', { status: 'Completed', inspector_name: 'Casey Installer' });
   const other = installation('other', { inspector_name: 'Someone Else' });
-  const pending = installation('pending', { inspector_name: 'Casey Installer', thumbnail_status: 'pending' });
-  const items = [draft, completed, other, pending];
-  assert.deepEqual(filterDashboardJobs(items, '  CASEY ', 'All').map((item) => item.id), ['draft', 'completed']);
-  assert.deepEqual(filterDashboardJobs(items, 'Casey', 'Draft').map((item) => item.id), ['draft']);
+  const pendingCopy = installation('pending-copy', {
+    inspector_name: 'Casey Installer',
+    thumbnail_status: 'pending',
+    is_imported_copy: true,
+  });
+  const pendingAssigned = installation('pending-assigned', {
+    inspector_name: 'Casey Installer',
+    thumbnail_status: 'pending',
+    assigned_work_state: 'active',
+  });
+  const items = [draft, completed, other, pendingCopy, pendingAssigned];
+  assert.deepEqual(filterDashboardJobs(items, '  CASEY ', 'All').map((item) => item.id), ['draft', 'pending-assigned', 'completed']);
+  assert.deepEqual(filterDashboardJobs(items, 'Casey', 'Draft').map((item) => item.id), ['draft', 'pending-assigned']);
   assert.deepEqual(filterDashboardJobs(items, 'Casey', 'Completed').map((item) => item.id), ['completed']);
   assert.deepEqual(filterDashboardJobs(items, 'not found', 'Completed'), []);
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 5);
 });
 
 test('recent jobs returns only the four newest active assignments', () => {

@@ -44,6 +44,50 @@ export function nextThumbnailDownloadForActor(
   ) ?? null;
 }
 
+/**
+ * Reconciles one installation's complete remote-photo snapshot inside the
+ * caller's already-authorized store transaction. Ready cache entries for
+ * unchanged references survive a clean server refresh; removed references do
+ * not keep the installation permanently pending.
+ */
+export function reconcileThumbnailDownloadsForInstallation(
+  store: AppDataStore,
+  installationId: string,
+  remoteUris: readonly string[],
+  updatedAt: string,
+  createQueueId: () => string,
+): void {
+  const uniqueUris = [...new Set(remoteUris)];
+  const existingByUri = new Map(
+    store.cloudSync.thumbnail_queue
+      .filter((job) => job.installation_id === installationId)
+      .map((job) => [job.remote_uri, job] as const),
+  );
+  const currentJobs = uniqueUris.map((remoteUri) => (
+    existingByUri.get(remoteUri) ?? {
+      id: createQueueId(),
+      installation_id: installationId,
+      remote_uri: remoteUri,
+      status: 'pending' as const,
+      attempts: 0,
+      updated_at: updatedAt,
+    }
+  ));
+  store.cloudSync.thumbnail_queue = [
+    ...store.cloudSync.thumbnail_queue.filter(
+      (job) => job.installation_id !== installationId,
+    ),
+    ...currentJobs,
+  ];
+
+  const installation = store.installations.find((item) => item.id === installationId);
+  if (!installation) return;
+  installation.thumbnail_total = currentJobs.length;
+  installation.thumbnail_ready = currentJobs.filter((job) => job.status === 'ready').length;
+  installation.thumbnail_status =
+    installation.thumbnail_ready === installation.thumbnail_total ? 'ready' : 'pending';
+}
+
 export function updateThumbnailDownloadForActor(
   store: AppDataStore,
   id: string,

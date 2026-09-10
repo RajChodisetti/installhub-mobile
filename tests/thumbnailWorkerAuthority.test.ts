@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   nextThumbnailDownloadForActor,
+  reconcileThumbnailDownloadsForInstallation,
   thumbnailDownloadsForActor,
   updateThumbnailDownloadForActor,
 } from '../src/services/thumbnailWorkerPolicy';
@@ -53,6 +54,40 @@ function actorPartitionedStore(): AppDataStore {
     user: null,
   } as unknown as AppDataStore;
 }
+
+test('complete photo snapshots preserve ready previews and remove stale queue references', () => {
+  const store = actorPartitionedStore();
+  store.cloudSync.thumbnail_queue.push({
+    id: 'thumbnail-stale',
+    installation_id: 'installation-a',
+    remote_uri: 'https://api.example.test/v1/files/stale.jpg',
+    status: 'failed',
+    attempts: 5,
+    updated_at: '2026-08-21T09:00:00.000Z',
+  });
+  store.cloudSync.thumbnail_queue[0]!.status = 'ready';
+
+  reconcileThumbnailDownloadsForInstallation(
+    store,
+    'installation-a',
+    [
+      'https://api.example.test/v1/files/a.jpg',
+      'https://api.example.test/v1/files/new.jpg',
+      'https://api.example.test/v1/files/new.jpg',
+    ],
+    '2026-08-21T10:00:00.000Z',
+    () => 'thumbnail-new',
+  );
+
+  const jobs = store.cloudSync.thumbnail_queue.filter(
+    (job) => job.installation_id === 'installation-a',
+  );
+  assert.deepEqual(jobs.map((job) => job.id), ['thumbnail-a', 'thumbnail-new']);
+  assert.deepEqual(jobs.map((job) => job.status), ['ready', 'pending']);
+  assert.equal(store.installations[0]!.thumbnail_total, 2);
+  assert.equal(store.installations[0]!.thumbnail_ready, 1);
+  assert.equal(store.installations[0]!.thumbnail_status, 'pending');
+});
 
 test('an A thumbnail pending when B starts remains completely untouched', () => {
   const store = actorPartitionedStore();

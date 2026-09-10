@@ -112,6 +112,7 @@ async function embedAttachments(
       ...(attachment.caption?.trim()
         ? { caption: attachment.caption.trim() }
         : {}),
+      largeInPdf: attachment.largeInPdf === true,
     });
   }
   return result;

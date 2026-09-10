@@ -181,15 +181,29 @@ function queueKey(
   return [entityType, entityId, fieldName, localUri].join('|');
 }
 
+function stableMediaKey(
+  entityType: string,
+  entityId: string,
+  localUri: string,
+): string {
+  return [entityType, entityId, localUri].join('|');
+}
+
 function remoteResolver(queue: CloudUploadQueueItem[]) {
-  const remoteByKey = new Map(
-    queue
-      .filter((item) => item.status === 'cleared' && item.remote_url)
-      .map((item) => [
-        queueKey(item.entity_type, item.entity_id, item.field_name, item.local_uri),
-        item.remote_url!,
-      ]),
-  );
+  const remoteByKey = new Map<string, string>();
+  const remoteByStableMedia = new Map<string, string>();
+  const ambiguousStableMedia = new Set<string>();
+  for (const item of queue) {
+    if (item.status !== 'cleared' || !item.remote_url) continue;
+    remoteByKey.set(
+      queueKey(item.entity_type, item.entity_id, item.field_name, item.local_uri),
+      item.remote_url,
+    );
+    const stableKey = stableMediaKey(item.entity_type, item.entity_id, item.local_uri);
+    const current = remoteByStableMedia.get(stableKey);
+    if (current && current !== item.remote_url) ambiguousStableMedia.add(stableKey);
+    else remoteByStableMedia.set(stableKey, item.remote_url);
+  }
   return (
     entityType: string,
     entityId: string,
@@ -198,7 +212,12 @@ function remoteResolver(queue: CloudUploadQueueItem[]) {
   ): string | null => {
     if (!uri) return null;
     if (!isLocalMediaUri(uri)) return uri;
-    return remoteByKey.get(queueKey(entityType, entityId, fieldName, uri)) ?? null;
+    const exact = remoteByKey.get(queueKey(entityType, entityId, fieldName, uri));
+    if (exact) return exact;
+    const stableKey = stableMediaKey(entityType, entityId, uri);
+    return ambiguousStableMedia.has(stableKey)
+      ? null
+      : remoteByStableMedia.get(stableKey) ?? null;
   };
 }
 
@@ -287,8 +306,10 @@ function wireMeter(
           extra: (meter.ww_photos.extra ?? [])
             .map((uri, index) => meterPhoto(`extra[${index}]`, uri))
             .filter((uri): uri is string => Boolean(uri)),
-        }
+      }
       : {},
+    photoNotes: meter.photo_notes ?? {},
+    photoMetadata: meter.photoMetadata,
   };
 }
 
@@ -308,6 +329,7 @@ function wireZone(
       .map((uri, index) => remote('zone', zone.id, `photos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
     photoNotes: zone.photo_notes ?? {},
+    photoMetadata: zone.photoMetadata,
     createdAt: zone.created_at,
     updatedAt: zone.updated_at,
   };
@@ -352,6 +374,7 @@ function wireElectricalAsset(
         remote('electrical_asset', board.id, `extraPhotos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
     photoNotes: board.photo_notes ?? {},
+    photoMetadata: board.photoMetadata,
     meterPresent: board.meter_present,
     meters: board.meters.map((meter, index) => wireMeter(board, meter, index, remote)),
     subCircuitsDescription: board.sub_circuits_description ?? null,
@@ -400,6 +423,7 @@ function wireSiteAsset(
       .map((uri, index) => remote('site_asset', asset.id, `extraPhotos[${index}]`, uri))
       .filter((uri): uri is string => Boolean(uri)),
     photoNotes: asset.photo_notes ?? {},
+    photoMetadata: asset.photoMetadata,
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
   };
@@ -495,6 +519,7 @@ function wireMeterDevice(
         }
       : {},
     photoNotes: meter.photoNotes ?? {},
+    photoMetadata: meter.photoMetadata,
     notes: meter.notes ?? null,
   };
 }
@@ -533,6 +558,7 @@ function wireForm(
             uri,
             mimeType: attachment.mime_type,
             caption: attachment.caption ?? null,
+            largeInPdf: attachment.largeInPdf === true,
             capturedAt: attachment.captured_at,
           }
         : null;

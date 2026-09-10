@@ -440,19 +440,12 @@ export function buildElectricalMapReportHtml(
   model: ElectricalDiagramModel,
   detailMode: InstallationReportDetailMode,
 ): string {
-  const layout = buildElectricalDiagramLayout(model);
-  const windows = planElectricalReportWindows(layout);
-  const overview = `<section class="report-section map-page"><h2>Installation electrical map</h2><div class="map-frame overview">${renderElectricalDiagramSvg(model)}</div>${legendHtml()}<p class="map-note">Every known electrical item remains visible. Solid copper lines show safe FED_FROM supply links; blue dashed lines show measurements; grey dotted lines show calculated residual relationships. Branch roots have no invented upstream link.</p></section>`;
-  const requestedWindowCount = windows[0]
-    ? windows[0].rowCount * windows[0].columnCount
-    : 0;
-  const omittedWindowCount = Math.max(0, requestedWindowCount - windows.length);
-  const detailPages = windows.map((window, index) => `<section class="report-section map-page"><h2>Electrical map detail - row ${window.row + 1} of ${window.rowCount}, column ${window.column + 1} of ${window.columnCount}</h2><div class="map-frame detail">${renderElectricalDiagramSvg(model, { window, includeTitle: false })}</div><p class="map-note"><strong>Detail page ${index + 1} of ${windows.length}.</strong> Adjacent rows and columns overlap to preserve connector continuity. Refer to the complete overview for the full topology and legend.${omittedWindowCount > 0 && index === windows.length - 1 ? ` ${omittedWindowCount} additional map window${omittedWindowCount === 1 ? '' : 's'} ${omittedWindowCount === 1 ? 'was' : 'were'} omitted from this bounded on-device report; use API server generation for the complete large-format pack.` : ''}</p></section>`).join('');
+  const overview = `<section class="report-section map-page"><h2>Installation electrical map - whole view</h2><div class="map-frame overview">${renderElectricalDiagramSvg(model)}</div>${legendHtml()}<p class="map-note">This is the complete whole-map view; the report does not add cropped, zoomed, or individual map pages. Every known electrical item remains visible. Solid copper lines show safe FED_FROM supply links; blue dashed lines show measurements; grey dotted lines show calculated residual relationships. Branch roots have no invented upstream link.</p></section>`;
   const details = detailMode === 'by-zone'
     ? zoneDetailsHtml(model)
     : hierarchyDetailsHtml(model);
   const unresolved = `<section class="report-section"><h2>Needs follow-up</h2>${model.unresolved.length ? `<p>${model.unresolved.length} relationship${model.unresolved.length === 1 ? '' : 's'} need follow-up. Known records and safe downstream branches remain in the map.</p><table><thead><tr><th>Record</th><th>Relationship</th><th>Missing end</th><th>Reason</th></tr></thead><tbody>${model.unresolved.map((relationship) => `<tr><td>${escapeElectricalReportHtml(`${relationship.subjectType}: ${relationship.subjectId}`)}</td><td>${escapeElectricalReportHtml(relationship.relation)}</td><td>${escapeElectricalReportHtml(relationship.missingEnd)}</td><td>${escapeElectricalReportHtml(relationship.reason)}</td></tr>`).join('')}</tbody></table>` : '<p>No electrical relationships need follow-up.</p>'}</section>`;
-  return `${overview}${detailPages}${details}${unresolved}`;
+  return `${overview}${details}${unresolved}`;
 }
 
 export const ELECTRICAL_MAP_REPORT_CSS = `

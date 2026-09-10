@@ -204,7 +204,7 @@ export function DashboardScreen({ navigation }: Props) {
         />
       </View>
       <Button
-        title="Browse Cloud Backups"
+        title="Download Existing Job / Site Copy"
         variant="ghost"
         onPress={() => navigation.navigate('RemoteInstallations')}
         style={{ marginBottom: spacing.sm }}

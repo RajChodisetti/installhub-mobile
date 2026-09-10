@@ -90,13 +90,13 @@ const rootCaptureFields = [
 ] as const;
 const entityFields = {
   gridSupplies: ['id', 'installationId', 'name', 'isDefault', 'nmi', 'externalKey'],
-  zones: ['id', 'installationId', 'zoneId', 'zoneName', 'zoneCode', 'zoneDescription'],
+  zones: ['id', 'installationId', 'zoneId', 'zoneName', 'zoneCode', 'zoneDescription', 'photoNotes', 'photoMetadata'],
   electricalAssets: ['id', 'installationId', 'zoneId', 'assetName', 'typeCode', 'customTypeName', 'electricalSource',
-    'locationDescription', 'phase', 'amperageRating', 'siteNmi', 'photo', 'meterPresent', 'subCircuitsDescription', 'comments'],
+    'locationDescription', 'phase', 'amperageRating', 'siteNmi', 'photo', 'photoNotes', 'photoMetadata', 'meterPresent', 'subCircuitsDescription', 'comments'],
   siteAssets: ['id', 'installationId', 'zoneId', 'assetName', 'typeCode', 'customTypeName', 'electricalSource', 'meteringState',
-    'locationDescription', 'locationPhoto', 'meterPresent', 'comments'],
+    'locationDescription', 'locationPhoto', 'photoNotes', 'photoMetadata', 'meterPresent', 'comments'],
   meterDevices: ['id', 'installationId', 'installedOnBoardId', 'customName', 'deviceFamily', 'deviceModel',
-    'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'lifecycleState', 'commissioningData', 'notes'],
+    'customManufacturerName', 'customModelName', 'deviceNumber', 'serialNumber', 'lifecycleState', 'commissioningData', 'photoNotes', 'photoMetadata', 'notes'],
   measurementAssignments: ['id', 'installationId', 'meterId', 'phaseMode', 'target', 'direction', 'status'],
   formSubmissions: ['id', 'installationId', 'formType', 'schemaVersion', 'zoneId', 'boardId', 'meterId', 'siteAssetId',
     'supersedesId', 'historicalMeterRemoved'],

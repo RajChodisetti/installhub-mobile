@@ -745,6 +745,36 @@ test('report HTML renders escaped photo captions and still accepts legacy image 
   assert.match(html, /src="data:image\/jpeg;base64,legacy"/);
 });
 
+test('report HTML uses compact grids and atomic full-width photos without cropping captions', () => {
+  const submission: FormSubmission = {
+    id: 'form-photo-layout',
+    form_type: 'honeywell-q400',
+    schema_version: 2,
+    status: 'Completed',
+    installation_id: 'installation-1',
+    answers: {},
+    attachments: [],
+    created_at: '2026-07-23T00:00:00.000Z',
+    updated_at: '2026-07-23T00:00:00.000Z',
+  };
+  const html = buildFormReportHtml(submission, {
+    'water.lcd_photo': [
+      { uri: 'data:image/jpeg;base64,one', caption: 'Compact one', largeInPdf: false },
+      { uri: 'data:image/jpeg;base64,two', caption: 'Compact two', largeInPdf: false },
+      { uri: 'data:image/jpeg;base64,three', caption: 'Compact three', largeInPdf: false },
+      { uri: 'data:image/jpeg;base64,large', caption: 'Large <panel>', largeInPdf: true },
+    ],
+  });
+
+  assert.match(html, /class="photo-grid photos-cols-3"/);
+  assert.match(html, /class="photo-large"/);
+  assert.match(html, /Large &lt;panel&gt;/);
+  assert.match(html, /\.photo img \{[^}]*height: auto;[^}]*max-height: 172px;[^}]*object-fit: contain;/);
+  assert.match(html, /\.photo-large img \{[^}]*height: auto;[^}]*max-height: 370px;[^}]*object-fit: contain;/);
+  assert.match(html, /border: 1px solid #CBD5E1/);
+  assert.match(html, /\.photo-large \{[^}]*break-inside: avoid;[^}]*page-break-inside: avoid;/);
+});
+
 test('Installation PDF omits A6M-only channels for an A3RM submission', () => {
   const submission: FormSubmission = {
     id: 'form-a3rm-v2',

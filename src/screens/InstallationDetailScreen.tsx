@@ -34,6 +34,8 @@ import {
   getInstallationBackupTree,
   getInstallationSyncMetadata,
   getPendingCompleteBackupAttempt,
+  listThumbnailDownloads,
+  updateThumbnailDownload,
 } from '../repositories/cloudSyncRepository';
 import { useSyncStatus } from '../services/SyncStatusContext';
 import { formatDate, formatDateTime } from '../utils';
@@ -84,6 +86,7 @@ import {
   runLeasedCloudActionStep,
 } from '../services/cloudActionLease';
 import { replacementMeterNumbersFromStored } from '../domain/replacementMeterPlanning';
+import { runThumbnailDownloadWorker } from '../services/thumbnailCache';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstallationDetail'>;
 
@@ -147,6 +150,7 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
   const [gridBusy, setGridBusy] = useState(false);
   const [secondaryOpen, setSecondaryOpen] = useState(false);
   const [finalizedNamesOpen, setFinalizedNamesOpen] = useState(false);
+  const [previewDownloadBusy, setPreviewDownloadBusy] = useState(false);
 
   useEffect(() => {
     if (!item) return;
@@ -1086,6 +1090,42 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
     );
   }
 
+  async function downloadRemainingPhotoPreviews() {
+    if (previewDownloadBusy) return;
+    setPreviewDownloadBusy(true);
+    try {
+      const lease = await captureAuthenticatedCloudActionLease();
+      const jobs = await listThumbnailDownloads(
+        lease.actorUserId,
+        lease.processAuthority,
+      );
+      for (const job of jobs) {
+        if (job.installation_id !== installationId || job.status !== 'failed') continue;
+        lease.assertCurrent();
+        await updateThumbnailDownload(
+          job.id,
+          {
+            status: 'pending',
+            attempts: 0,
+            local_uri: undefined,
+            last_error: undefined,
+          },
+          lease.actorUserId,
+          lease.processAuthority,
+        );
+      }
+      lease.assertCurrent();
+      await runThumbnailDownloadWorker(lease);
+    } catch (error) {
+      Alert.alert(
+        'Photo previews not downloaded',
+        cloudConnectionErrorMessage(error),
+      );
+    } finally {
+      setPreviewDownloadBusy(false);
+    }
+  }
+
   return (
     <FormScrollView
       style={{ flex: 1, backgroundColor: colors.background }}
@@ -1178,6 +1218,37 @@ export function InstallationDetailScreen({ navigation, route }: Props) {
           <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
             This local checkout and unsent work are retained for recovery. Refresh assigned work or ask the scheduler to reassign the job before continuing.
           </Text>
+        </Card>
+      ) : null}
+      {(item.thumbnail_total ?? 0) > (item.thumbnail_ready ?? 0) ? (
+        <Card
+          accessibilityRole="summary"
+          accessibilityLiveRegion="polite"
+          accessibilityLabel={`Site photo previews ${item.thumbnail_ready ?? 0} of ${item.thumbnail_total ?? 0} downloaded`}
+          style={{
+            marginTop: spacing.md,
+            borderWidth: 2,
+            borderColor: colors.primary,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm }}>
+            <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: '800', flex: 1 }}>
+              Site photo previews
+            </Text>
+            <Badge label={`${item.thumbnail_ready ?? 0}/${item.thumbnail_total ?? 0}`} tone="default" />
+          </View>
+          <Text style={{ color: colors.mutedForeground, marginTop: spacing.sm, lineHeight: 20 }}>
+            The complete site record is ready. Secure photo previews are downloading in the background; you can continue working while they finish.
+          </Text>
+          <Button
+            title={previewDownloadBusy ? 'Downloading previews…' : 'Download remaining previews'}
+            variant="secondary"
+            disabled={previewDownloadBusy}
+            accessibilityHint="Retries this site’s missing authenticated photo previews"
+            accessibilityState={{ busy: previewDownloadBusy }}
+            style={{ marginTop: spacing.md }}
+            onPress={() => { void downloadRemainingPhotoPreviews(); }}
+          />
         </Card>
       ) : null}
       <Card
